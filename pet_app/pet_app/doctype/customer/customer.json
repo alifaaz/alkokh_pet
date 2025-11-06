@@ -11,12 +11,15 @@
   "alternate_mobile",
   "email",
   "emergency_contact_mobile",
+  "column_break_onkn",
+  "status",
   "id_type",
   "id_number",
   "registratin_date",
   "customer_type",
-  "status",
+  "section_break_atsr",
   "address",
+  "section_break_lxbo",
   "notes"
  ],
  "fields": [
@@ -83,12 +86,24 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "column_break_onkn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_atsr",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_lxbo",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-06 04:55:41.010495",
+ "modified": "2025-11-06 05:35:31.613531",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Customer",

@@ -10,13 +10,15 @@
   "owner_name",
   "vaccine_name",
   "vaccination_date",
+  "certificate_number",
+  "column_break_tfdd",
   "next_due_date",
   "veterinarian",
   "batch_number",
   "manufacturer",
   "administration_site",
-  "notes",
-  "certificate_number"
+  "section_break_ulpo",
+  "notes"
  ],
  "fields": [
   {
@@ -77,12 +79,20 @@
    "fieldname": "certificate_number",
    "fieldtype": "Data",
    "label": "Certificate Number"
+  },
+  {
+   "fieldname": "column_break_tfdd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_ulpo",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-06 04:58:00.665637",
+ "modified": "2025-11-06 05:37:05.047595",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Vaccination Record",

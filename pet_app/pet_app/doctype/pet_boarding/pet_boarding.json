@@ -1,0 +1,180 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "BRD-.####",
+ "creation": "2025-11-06 05:12:44.668054",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "pet",
+  "owner_name",
+  "mobile",
+  "status",
+  "column_break_qyhy",
+  "check_in_date",
+  "check_out_date",
+  "number_of_days",
+  "column_break_omqg",
+  "check_in_time",
+  "check_out_time",
+  "section_break_icbq",
+  "boarding_type",
+  "cage_number",
+  "food_provided",
+  "column_break_zkui",
+  "deposit_amount",
+  "daily_rate",
+  "total_cost",
+  "balance_due",
+  "section_break_yrkw",
+  "feeding_schedule",
+  "special_instructions"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet"
+  },
+  {
+   "fetch_from": "pet.owner_customer",
+   "fieldname": "owner_name",
+   "fieldtype": "Link",
+   "label": "Owner",
+   "options": "Customer"
+  },
+  {
+   "fetch_from": "owner_name.mobile",
+   "fieldname": "mobile",
+   "fieldtype": "Data",
+   "label": "Mobile"
+  },
+  {
+   "fieldname": "check_in_date",
+   "fieldtype": "Date",
+   "label": "Check In Date"
+  },
+  {
+   "fieldname": "check_in_time",
+   "fieldtype": "Time",
+   "label": "Check In Time"
+  },
+  {
+   "fieldname": "check_out_date",
+   "fieldtype": "Date",
+   "label": "Check Out Date"
+  },
+  {
+   "fieldname": "check_out_time",
+   "fieldtype": "Time",
+   "label": "Check Out Time"
+  },
+  {
+   "fieldname": "number_of_days",
+   "fieldtype": "Int",
+   "label": "Number of Days"
+  },
+  {
+   "fieldname": "boarding_type",
+   "fieldtype": "Select",
+   "label": "Boarding Type",
+   "options": "Standard\nDeluxe\nVIP"
+  },
+  {
+   "fieldname": "daily_rate",
+   "fieldtype": "Currency",
+   "label": "Daily Rate"
+  },
+  {
+   "fieldname": "total_cost",
+   "fieldtype": "Currency",
+   "label": "Total Cost"
+  },
+  {
+   "fieldname": "deposit_amount",
+   "fieldtype": "Currency",
+   "label": "Deposit Amount"
+  },
+  {
+   "fieldname": "balance_due",
+   "fieldtype": "Currency",
+   "label": "Balance Due"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Reserved\nChecked In\nChecked Out\nCancelled"
+  },
+  {
+   "fieldname": "cage_number",
+   "fieldtype": "Data",
+   "label": "Cage Number"
+  },
+  {
+   "fieldname": "special_instructions",
+   "fieldtype": "Text",
+   "label": "Special Instructions"
+  },
+  {
+   "default": "0",
+   "fieldname": "food_provided",
+   "fieldtype": "Check",
+   "label": "Food Provided"
+  },
+  {
+   "fieldname": "feeding_schedule",
+   "fieldtype": "Small Text",
+   "label": "Feeding Schedule"
+  },
+  {
+   "fieldname": "column_break_qyhy",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_omqg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_icbq",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_zkui",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_yrkw",
+   "fieldtype": "Section Break"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-11-06 05:28:53.942241",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Boarding",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -11,11 +11,13 @@
   "owner_name1",
   "mobile",
   "email",
+  "column_break_rlnz",
+  "status",
   "appointment_date",
   "appointment_time",
   "service_type",
   "duration_minutes",
-  "status",
+  "section_break_djnr",
   "notes"
  ],
  "fields": [
@@ -85,12 +87,20 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "column_break_rlnz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_djnr",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-06 04:56:34.776919",
+ "modified": "2025-11-06 05:33:50.540718",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Appointment",
