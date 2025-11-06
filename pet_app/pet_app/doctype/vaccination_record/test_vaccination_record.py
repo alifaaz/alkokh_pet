@@ -13,9 +13,9 @@ IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 
 
 
-class IntegrationTestPet(IntegrationTestCase):
+class IntegrationTestVaccinationRecord(IntegrationTestCase):
 	"""
-	Integration tests for Pet.
+	Integration tests for VaccinationRecord.
 	Use this class for testing interactions between multiple components.
 	"""
 
