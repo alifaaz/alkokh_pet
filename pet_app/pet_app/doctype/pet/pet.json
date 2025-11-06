@@ -1,257 +1,159 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:PET-{#####}",
- "creation": "2025-10-29 00:00:00",
+ "autoname": "PET-.#####",
+ "creation": "2025-11-06 01:17:33.360004",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "basic_information_section",
   "pet_name",
-  "species",
+  "animal_species",
+  "animal_type",
   "breed",
-  "gender",
-  "column_break_1",
+  "column_break_pnvc",
   "status",
-  "image",
+  "birth_date",
+  "registration_date",
+  "owner_customer",
+  "section_break_amnw",
   "color",
-  "microchip_number",
-  "physical_details_section",
-  "date_of_birth",
-  "age",
+  "gender",
+  "column_break_fzlf",
   "weight",
-  "column_break_2",
-  "height",
-  "distinctive_marks",
-  "owner_information_section",
-  "owner",
-  "owner_name",
-  "owner_contact",
-  "column_break_3",
-  "acquisition_date",
-  "adoption_date",
-  "medical_information_section",
-  "vaccination_status",
-  "last_vet_visit",
-  "next_vet_visit",
-  "column_break_4",
-  "is_neutered",
-  "allergies",
-  "medical_notes",
-  "additional_details_section",
+  "hight",
+  "section_break_sqwz",
+  "blood_type",
+  "play",
+  "activity_exercise",
+  "column_break_yllm",
   "description",
-  "special_needs",
-  "behavioral_notes"
+  "section_break_joxw",
+  "note"
  ],
  "fields": [
   {
-   "fieldname": "basic_information_section",
-   "fieldtype": "Section Break",
-   "label": "Basic Information"
-  },
-  {
    "fieldname": "pet_name",
    "fieldtype": "Data",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Pet Name",
-   "reqd": 1
+   "label": "Pet Name"
   },
   {
-   "fieldname": "species",
+   "fieldname": "animal_species",
    "fieldtype": "Select",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Species",
-   "options": "Dog\nCat\nBird\nFish\nRabbit\nHamster\nGuinea Pig\nReptile\nOther",
-   "reqd": 1
+   "label": "Animal Species",
+   "options": "Dogs\nCats\nBirds\nFish\nSmall Mammals\nReptiles\nAmphibians\nPocket Pets/Rodents\nFarm Animals\nExotic Pets\nAquatic Pets\nOther/Exotic"
+  },
+  {
+   "fieldname": "animal_type",
+   "fieldtype": "Select",
+   "label": "Animal Type",
+   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInvertebrate"
   },
   {
    "fieldname": "breed",
    "fieldtype": "Data",
-   "in_standard_filter": 1,
    "label": "Breed"
+  },
+  {
+   "fieldname": "birth_date",
+   "fieldtype": "Date",
+   "label": "Birth Date"
+  },
+  {
+   "fieldname": "registration_date",
+   "fieldtype": "Date",
+   "label": "Registration Date"
+  },
+  {
+   "fieldname": "column_break_pnvc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "section_break_amnw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "color",
+   "fieldtype": "Data",
+   "label": "Color"
   },
   {
    "fieldname": "gender",
    "fieldtype": "Select",
    "label": "Gender",
-   "options": "\nMale\nFemale\nUnknown"
+   "options": "Male\nFemale\nUnknown"
   },
   {
-   "fieldname": "status",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Status",
-   "options": "Active\nAdopted\nAvailable for Adoption\nMedical Care\nInactive\nDeceased",
-   "default": "Active",
-   "reqd": 1
-  },
-  {
-   "fieldname": "image",
-   "fieldtype": "Attach Image",
-   "label": "Pet Image"
-  },
-  {
-   "fieldname": "color",
-   "fieldtype": "Data",
-   "label": "Color/Markings"
-  },
-  {
-   "fieldname": "microchip_number",
-   "fieldtype": "Data",
-   "label": "Microchip Number",
-   "unique": 1
-  },
-  {
-   "fieldname": "physical_details_section",
-   "fieldtype": "Section Break",
-   "label": "Physical Details"
-  },
-  {
-   "fieldname": "date_of_birth",
-   "fieldtype": "Date",
-   "label": "Date of Birth"
-  },
-  {
-   "fieldname": "age",
-   "fieldtype": "Data",
-   "label": "Age",
-   "read_only": 1,
-   "description": "Auto-calculated from Date of Birth"
+   "fieldname": "column_break_fzlf",
+   "fieldtype": "Column Break"
   },
   {
    "fieldname": "weight",
    "fieldtype": "Float",
-   "label": "Weight (kg)",
-   "precision": "2"
+   "label": "Weight"
   },
   {
-   "fieldname": "height",
+   "fieldname": "hight",
    "fieldtype": "Float",
-   "label": "Height (cm)",
-   "precision": "2"
+   "label": "Hight"
   },
   {
-   "fieldname": "distinctive_marks",
-   "fieldtype": "Small Text",
-   "label": "Distinctive Marks"
+   "fieldname": "section_break_sqwz",
+   "fieldtype": "Section Break"
   },
   {
-   "fieldname": "owner_information_section",
-   "fieldtype": "Section Break",
-   "label": "Owner Information"
+   "fieldname": "blood_type",
+   "fieldtype": "Data",
+   "label": "Blood Type"
   },
   {
-   "fieldname": "owner",
+   "fieldname": "play",
+   "fieldtype": "Data",
+   "label": "Play"
+  },
+  {
+   "fieldname": "activity_exercise",
+   "fieldtype": "Data",
+   "label": "Activity/Exercise"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Available\nAdopted\nFostered\nMissing\nFound\nDeceased\nUnder treatment\nReserved"
+  },
+  {
+   "fieldname": "column_break_yllm",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_joxw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Long Text",
+   "label": "Note"
+  },
+  {
+   "fieldname": "owner_customer",
    "fieldtype": "Link",
    "label": "Owner",
-   "options": "User"
-  },
-  {
-   "fieldname": "owner_name",
-   "fieldtype": "Data",
-   "label": "Owner Name"
-  },
-  {
-   "fieldname": "owner_contact",
-   "fieldtype": "Data",
-   "label": "Owner Contact",
-   "options": "Phone"
-  },
-  {
-   "fieldname": "acquisition_date",
-   "fieldtype": "Date",
-   "label": "Acquisition Date"
-  },
-  {
-   "fieldname": "adoption_date",
-   "fieldtype": "Date",
-   "label": "Adoption Date",
-   "depends_on": "eval:doc.status=='Adopted'"
-  },
-  {
-   "fieldname": "medical_information_section",
-   "fieldtype": "Section Break",
-   "label": "Medical Information"
-  },
-  {
-   "fieldname": "vaccination_status",
-   "fieldtype": "Select",
-   "label": "Vaccination Status",
-   "options": "\nUp to Date\nDue Soon\nOverdue\nNot Vaccinated"
-  },
-  {
-   "fieldname": "last_vet_visit",
-   "fieldtype": "Date",
-   "label": "Last Vet Visit"
-  },
-  {
-   "fieldname": "next_vet_visit",
-   "fieldtype": "Date",
-   "label": "Next Vet Visit"
-  },
-  {
-   "fieldname": "is_neutered",
-   "fieldtype": "Check",
-   "label": "Spayed/Neutered"
-  },
-  {
-   "fieldname": "allergies",
-   "fieldtype": "Small Text",
-   "label": "Allergies"
-  },
-  {
-   "fieldname": "medical_notes",
-   "fieldtype": "Text",
-   "label": "Medical Notes"
-  },
-  {
-   "fieldname": "additional_details_section",
-   "fieldtype": "Section Break",
-   "label": "Additional Details"
-  },
-  {
-   "fieldname": "description",
-   "fieldtype": "Text Editor",
-   "label": "Description"
-  },
-  {
-   "fieldname": "special_needs",
-   "fieldtype": "Small Text",
-   "label": "Special Needs"
-  },
-  {
-   "fieldname": "behavioral_notes",
-   "fieldtype": "Text",
-   "label": "Behavioral Notes"
-  },
-  {
-   "fieldname": "column_break_1",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "column_break_2",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "column_break_3",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "column_break_4",
-   "fieldtype": "Column Break"
+   "options": "Customer"
   }
  ],
- "image_field": "image",
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-10-29 00:00:00",
+ "modified": "2025-11-06 04:14:56.117124",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet",
- "naming_rule": "By fieldname",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
@@ -265,34 +167,11 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
-  },
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Pet Manager",
-   "share": 1,
-   "write": 1
-  },
-  {
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Guest",
-   "share": 1
   }
  ],
- "search_fields": "pet_name,species,breed,owner_name,status",
- "show_title_field_in_link": 1,
- "sort_field": "modified",
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
  "sort_order": "DESC",
- "states": [],
- "title_field": "pet_name",
- "track_changes": 1
+ "states": []
 }
