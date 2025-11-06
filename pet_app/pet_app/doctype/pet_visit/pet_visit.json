@@ -9,24 +9,30 @@
   "appointment",
   "pet",
   "owner_name",
+  "subtotal",
+  "column_break_cekz",
+  "status",
   "visit_date",
   "visit_time",
+  "next_visit_date",
+  "column_break_pqok",
   "weight",
   "temperature",
   "heart_rate",
-  "chief_complaint",
-  "examination_findings",
-  "diagnosis",
-  "treatement_provided",
-  "subtotal",
-  "discount_amount",
-  "tax_amount",
-  "total_amount",
-  "pament_status",
+  "section_break_ahpz",
   "amount_paid",
-  "status",
-  "next_visit_date",
+  "total_amount",
+  "tax_amount",
+  "column_break_zstn",
+  "pament_status",
+  "discount_amount",
+  "section_break_redk",
+  "chief_complaint",
+  "treatement_provided",
+  "diagnosis",
+  "examination_findings",
   "follow_up_notes",
+  "section_break_mmyz",
   "services",
   "prescriptions"
  ],
@@ -53,7 +59,7 @@
   },
   {
    "fieldname": "visit_date",
-   "fieldtype": "Datetime",
+   "fieldtype": "Data",
    "label": "Visit Date"
   },
   {
@@ -154,12 +160,36 @@
    "fieldtype": "Table",
    "label": "Prescriptions",
    "options": "Visit Prescription"
+  },
+  {
+   "fieldname": "column_break_cekz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_pqok",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_ahpz",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_zstn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_redk",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_mmyz",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-06 04:57:01.069802",
+ "modified": "2025-11-06 05:32:38.513291",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Visit",
