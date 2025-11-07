@@ -26,6 +26,8 @@
   "play",
   "activity_exercise",
   "column_break_yllm",
+  "food_brand",
+  "food_type",
   "description",
   "section_break_joxw",
   "note"
@@ -144,12 +146,24 @@
    "fieldtype": "Link",
    "label": "Owner",
    "options": "Customer"
+  },
+  {
+   "fieldname": "food_brand",
+   "fieldtype": "Link",
+   "label": "Food Brand",
+   "options": "Food Brand"
+  },
+  {
+   "fieldname": "food_type",
+   "fieldtype": "Link",
+   "label": "Food Type",
+   "options": "Food Type"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-06 04:14:56.117124",
+ "modified": "2025-11-07 05:13:03.739990",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet",
