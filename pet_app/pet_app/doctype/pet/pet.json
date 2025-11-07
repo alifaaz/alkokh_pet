@@ -1,0 +1,191 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "PET-.#####",
+ "creation": "2025-11-06 01:17:33.360004",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "pet_name",
+  "animal_species",
+  "animal_type",
+  "breed",
+  "column_break_pnvc",
+  "status",
+  "birth_date",
+  "registration_date",
+  "owner_customer",
+  "section_break_amnw",
+  "color",
+  "gender",
+  "column_break_fzlf",
+  "weight",
+  "hight",
+  "section_break_sqwz",
+  "blood_type",
+  "play",
+  "activity_exercise",
+  "column_break_yllm",
+  "food_brand",
+  "food_type",
+  "description",
+  "section_break_joxw",
+  "note"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet_name",
+   "fieldtype": "Data",
+   "label": "Pet Name"
+  },
+  {
+   "fieldname": "animal_species",
+   "fieldtype": "Select",
+   "label": "Animal Species",
+   "options": "Dogs\nCats\nBirds\nFish\nSmall Mammals\nReptiles\nAmphibians\nPocket Pets/Rodents\nFarm Animals\nExotic Pets\nAquatic Pets\nOther/Exotic"
+  },
+  {
+   "fieldname": "animal_type",
+   "fieldtype": "Select",
+   "label": "Animal Type",
+   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInvertebrate"
+  },
+  {
+   "fieldname": "breed",
+   "fieldtype": "Data",
+   "label": "Breed"
+  },
+  {
+   "fieldname": "birth_date",
+   "fieldtype": "Date",
+   "label": "Birth Date"
+  },
+  {
+   "fieldname": "registration_date",
+   "fieldtype": "Date",
+   "label": "Registration Date"
+  },
+  {
+   "fieldname": "column_break_pnvc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "section_break_amnw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "color",
+   "fieldtype": "Data",
+   "label": "Color"
+  },
+  {
+   "fieldname": "gender",
+   "fieldtype": "Select",
+   "label": "Gender",
+   "options": "Male\nFemale\nUnknown"
+  },
+  {
+   "fieldname": "column_break_fzlf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight"
+  },
+  {
+   "fieldname": "hight",
+   "fieldtype": "Float",
+   "label": "Hight"
+  },
+  {
+   "fieldname": "section_break_sqwz",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "blood_type",
+   "fieldtype": "Data",
+   "label": "Blood Type"
+  },
+  {
+   "fieldname": "play",
+   "fieldtype": "Data",
+   "label": "Play"
+  },
+  {
+   "fieldname": "activity_exercise",
+   "fieldtype": "Data",
+   "label": "Activity/Exercise"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Available\nAdopted\nFostered\nMissing\nFound\nDeceased\nUnder treatment\nReserved"
+  },
+  {
+   "fieldname": "column_break_yllm",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_joxw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Long Text",
+   "label": "Note"
+  },
+  {
+   "fieldname": "owner_customer",
+   "fieldtype": "Link",
+   "label": "Owner",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "food_brand",
+   "fieldtype": "Link",
+   "label": "Food Brand",
+   "options": "Food Brand"
+  },
+  {
+   "fieldname": "food_type",
+   "fieldtype": "Link",
+   "label": "Food Type",
+   "options": "Food Type"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-11-07 05:13:03.739990",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,6 +1,32 @@
 ### Pet App
 
-App for managing pet 
+A comprehensive Frappe app for managing pets with full REST API support.
+
+## Features
+
+- ✅ Complete CRUD operations for pet management
+- ✅ Medical records and vaccination tracking
+- ✅ Adoption management
+- ✅ 16 REST API endpoints with Swagger UI documentation
+- ✅ Automatic CSRF token handling
+- ✅ Token-based authentication
+- ✅ Advanced search and filtering
+
+## API Documentation
+
+Access the interactive API documentation at:
+```
+http://your-site-url/api-docs
+```
+
+**Quick API Overview:**
+- **16 Total Endpoints**: Full CRUD + specialized queries
+- **Automatic CSRF**: Swagger UI handles CSRF tokens automatically
+- **Token Auth**: Use API key + secret for authentication
+
+See [AUTHENTICATION_GUIDE.md](AUTHENTICATION_GUIDE.md) for detailed authentication and CSRF instructions.
+
+
 
 ### Installation
 

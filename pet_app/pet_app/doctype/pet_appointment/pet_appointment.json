@@ -1,0 +1,128 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "APT-.YYY.-.####",
+ "creation": "2025-11-06 04:02:03.360197",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "pet",
+  "owner_name",
+  "owner_name1",
+  "mobile",
+  "email",
+  "column_break_rlnz",
+  "status",
+  "appointment_date",
+  "appointment_time",
+  "service_type",
+  "duration_minutes",
+  "section_break_djnr",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet"
+  },
+  {
+   "fetch_from": "pet.owner_customer",
+   "fieldname": "owner_name",
+   "fieldtype": "Link",
+   "label": "Owner ",
+   "options": "Customer"
+  },
+  {
+   "fetch_from": "owner_name.customer_name",
+   "fieldname": "owner_name1",
+   "fieldtype": "Data",
+   "label": "Owner Name",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "owner_name.mobile",
+   "fieldname": "mobile",
+   "fieldtype": "Data",
+   "label": "Mobile",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "owner_name.email",
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "label": "Email",
+   "read_only": 1
+  },
+  {
+   "fieldname": "appointment_date",
+   "fieldtype": "Date",
+   "label": "Appointment Date"
+  },
+  {
+   "fieldname": "appointment_time",
+   "fieldtype": "Time",
+   "label": "Appointment Time"
+  },
+  {
+   "fieldname": "service_type",
+   "fieldtype": "Select",
+   "label": "Service Type",
+   "options": "Consultation\nVaccination\nGrooming\nSurgery\nCheck-up"
+  },
+  {
+   "default": "default 30",
+   "fieldname": "duration_minutes",
+   "fieldtype": "Int",
+   "label": "Duration Minutes"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Scheduled\nConfirmed\nCompleted\nCancelled\nNo-Show"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "column_break_rlnz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_djnr",
+   "fieldtype": "Section Break"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-11-06 05:33:50.540718",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Appointment",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
