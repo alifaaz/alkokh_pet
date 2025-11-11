@@ -24,11 +24,9 @@ def upload_multiple_files():
 	
 	return uploaded
 
-import frappe
-
 @frappe.whitelist()
 def delete_multiple_files(file_names):
-    """Delete multiple files at once"""
+    """Delete multiple files at once with detailed status"""
     import json
     
     # Convert string to list if needed
@@ -38,10 +36,40 @@ def delete_multiple_files(file_names):
     results = []
     for file_name in file_names:
         try:
-            frappe.delete_doc("File", file_name, force=1)
-            results.append({"file": file_name, "status": "deleted"})
+            # Check if file exists first
+            if frappe.db.exists("File", file_name):
+                frappe.delete_doc("File", file_name, force=1)
+                results.append({
+                    "file": file_name, 
+                    "status": "deleted",
+                    "message": "File deleted successfully"
+                })
+            else:
+                results.append({
+                    "file": file_name, 
+                    "status": "not_found",
+                    "message": "File does not exist"
+                })
         except Exception as e:
-            results.append({"file": file_name, "status": "failed", "error": str(e)})
+            results.append({
+                "file": file_name, 
+                "status": "error",
+                "message": str(e)
+            })
     
     frappe.db.commit()
-    return {"message": "Files processed", "results": results}
+    
+    # Summary
+    deleted_count = len([r for r in results if r["status"] == "deleted"])
+    not_found_count = len([r for r in results if r["status"] == "not_found"])
+    error_count = len([r for r in results if r["status"] == "error"])
+    
+    return {
+        "summary": {
+            "total": len(file_names),
+            "deleted": deleted_count,
+            "not_found": not_found_count,
+            "errors": error_count
+        },
+        "results": results
+    }
