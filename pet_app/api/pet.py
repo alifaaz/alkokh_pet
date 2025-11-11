@@ -23,3 +23,25 @@ def upload_multiple_files():
 		uploaded.append(file_doc.file_url)
 	
 	return uploaded
+
+import frappe
+
+@frappe.whitelist()
+def delete_multiple_files(file_names):
+    """Delete multiple files at once"""
+    import json
+    
+    # Convert string to list if needed
+    if isinstance(file_names, str):
+        file_names = json.loads(file_names)
+    
+    results = []
+    for file_name in file_names:
+        try:
+            frappe.delete_doc("File", file_name, force=1)
+            results.append({"file": file_name, "status": "deleted"})
+        except Exception as e:
+            results.append({"file": file_name, "status": "failed", "error": str(e)})
+    
+    frappe.db.commit()
+    return {"message": "Files processed", "results": results}
