@@ -58,9 +58,7 @@ None - Purely additive features
 ```
 
 ---
-
-## 📚 **الملفات المُضافة/المُعدلة:**
-```
+## 📚 **Added/Modified Files:**```
 pet_app/
 ├── README.md                    (NEW - Documentation)
 ├── pet_app/
