@@ -30,7 +30,8 @@
   "food_type",
   "description",
   "section_break_joxw",
-  "note"
+  "note",
+  "photos"
  ],
  "fields": [
   {
@@ -158,12 +159,18 @@
    "fieldtype": "Link",
    "label": "Food Type",
    "options": "Food Type"
+  },
+  {
+   "fieldname": "photos",
+   "fieldtype": "Table",
+   "label": "Photos",
+   "options": "Pet Photo"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-07 05:13:03.739990",
+ "modified": "2025-11-14 23:37:17.517496",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet",

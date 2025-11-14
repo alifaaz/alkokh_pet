@@ -131,7 +131,20 @@ app_license = "mit"
 # Document Events
 # ---------------
 # Hook on document methods and events
-
+# ═══════════════════════════════════════════════════════════════════
+# Document Events - Auto Folder Creation
+# ═══════════════════════════════════════════════════════════════════
+doc_events = {
+    "Pet": {
+        "on_insert": "pet_app.api.file_utils.create_document_folder_hook"
+    },
+    "Product": {
+        "on_insert": "pet_app.api.file_utils.create_document_folder_hook"
+    },
+    "Guardian": {
+        "on_insert": "pet_app.api.file_utils.create_document_folder_hook"
+    }
+}
 # doc_events = {
 # 	"*": {
 # 		"on_update": "method",
