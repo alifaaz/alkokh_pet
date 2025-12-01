@@ -10,6 +10,7 @@
   "animal_species",
   "animal_type",
   "breed",
+  "image",
   "column_break_pnvc",
   "status",
   "birth_date",
@@ -30,8 +31,7 @@
   "food_type",
   "description",
   "section_break_joxw",
-  "note",
-  "photos"
+  "note"
  ],
  "fields": [
   {
@@ -43,13 +43,13 @@
    "fieldname": "animal_species",
    "fieldtype": "Select",
    "label": "Animal Species",
-   "options": "Dogs\nCats\nBirds\nFish\nSmall Mammals\nReptiles\nAmphibians\nPocket Pets/Rodents\nFarm Animals\nExotic Pets\nAquatic Pets\nOther/Exotic"
+   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInsect\nArachnid\nCrustacean"
   },
   {
    "fieldname": "animal_type",
    "fieldtype": "Select",
    "label": "Animal Type",
-   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInvertebrate"
+   "options": "Dog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther"
   },
   {
    "fieldname": "breed",
@@ -110,8 +110,9 @@
   },
   {
    "fieldname": "blood_type",
-   "fieldtype": "Data",
-   "label": "Blood Type"
+   "fieldtype": "Select",
+   "label": "Blood Type",
+   "options": "A+\nA-\nB+\nB-\nAB+\nAB-\nO+\nO-"
   },
   {
    "fieldname": "play",
@@ -127,7 +128,7 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "Available\nAdopted\nFostered\nMissing\nFound\nDeceased\nUnder treatment\nReserved"
+   "options": "Available\nAdopted\nFostered\nMissing\nFound\nDeceased\nUndertreatment\nReserved"
   },
   {
    "fieldname": "column_break_yllm",
@@ -152,25 +153,24 @@
    "fieldname": "food_brand",
    "fieldtype": "Link",
    "label": "Food Brand",
-   "options": "Food Brand"
+   "options": "FoodBrand"
   },
   {
    "fieldname": "food_type",
    "fieldtype": "Link",
    "label": "Food Type",
-   "options": "Food Type"
+   "options": "FoodType"
   },
   {
-   "fieldname": "photos",
-   "fieldtype": "Table",
-   "label": "Photos",
-   "options": "Pet Photo"
+   "fieldname": "image",
+   "fieldtype": "Image",
+   "label": "Image"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-14 23:37:17.517496",
+ "modified": "2025-12-02 00:27:58.988855",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet",

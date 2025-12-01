@@ -1,274 +1,429 @@
 import frappe
-import json
-from pet_app.api.file_utils import upload_files
-from frappe.auth import LoginManager
-from frappe.utils import random_string
+import hashlib
+import re
+import math
+from frappe.utils import cint
 
-from frappe.utils.password import get_decrypted_password
-# ═══════════════════════════════════════════════════════════════════
-# SECTION 1: Upload Photos
-# ═══════════════════════════════════════════════════════════════════
-
-@frappe.whitelist()
-def upload_pet_photos():
-
-    frappe.form_dict['doctype'] = 'Pet'
-    frappe.form_dict['folder'] = 'pet'
-    return upload_files()
-
-
-# ═══════════════════════════════════════════════════════════════════
-# SECTION 2: Get Pet with Photos (Formatted)
-# ═══════════════════════════════════════════════════════════════════
+# ============================================================
+# 1) Upload Multiple Files  — Folder = Home/Doctype ONLY
+# ============================================================
 
 @frappe.whitelist()
-def get_pet_with_photos(docname):
+def upload_multiple_files():
+    try:
+        if not frappe.request.files:
+            frappe.throw("No files provided")
 
-    if not docname:
-        frappe.throw("❌ docname required")
-    
-    if not frappe.db.exists("Pet", docname):
-        frappe.throw(f"❌ Pet {docname} not found")
-    
-    pet = frappe.get_doc("Pet", docname)
-    pet_dict = pet.as_dict()
-    
-    photos = pet.get("photos") or []
-    base_url = frappe.utils.get_url()
-    photo_list = []
-    
-    for p in photos:
-        photo_url = getattr(p, "pet_photo", None)
-        if not photo_url:
-            continue
-        
-        file_doc = frappe.db.get_value(
+        files = frappe.request.files.getlist("files")
+        doctype = frappe.form_dict.get("doctype")
+        docname = frappe.form_dict.get("docname")
+        custom_is_default_flag = frappe.form_dict.get("custom_is_default")  # "1" or "0"
+
+        if not doctype or not docname:
+            frappe.throw("Missing doctype or docname")
+
+        if not frappe.db.exists(doctype, docname):
+            frappe.throw("Document does not exist")
+
+        MAX_SIZE = 500 * 1024   # 500 KB
+
+        uploaded, skipped, errors = [], [], []
+
+        folder_path = f"Home/{doctype}"
+
+        # Create folder if not exists
+        if not frappe.db.exists("File", {"name": folder_path, "is_folder": 1}):
+            frappe.get_doc({
+                "doctype": "File",
+                "file_name": doctype,
+                "folder": "Home",
+                "is_folder": 1
+            }).insert(ignore_permissions=True)
+
+        # check existing default
+        existing_default = frappe.db.exists(
             "File",
-            {
-                "file_url": photo_url,
-                "attached_to_doctype": "Pet",
-                "attached_to_name": docname
-            },
-            ["name", "file_name", "file_size"],
-            as_dict=True
+            {"attached_to_doctype": doctype, "attached_to_name": docname, "custom_is_default": 1}
         )
-        
-        photo_list.append({
-            "photo": photo_url,
-            "full_url": f"{base_url}{photo_url}",
-            "is_default": bool(getattr(p, "is_default", 0)),
-            "file_name": file_doc.get("name") if file_doc else None,
-            "original_file_name": file_doc.get("file_name") if file_doc else None,
-            "file_size": file_doc.get("file_size") if file_doc else 0,
-            "file_size_kb": round((file_doc.get("file_size") or 0) / 1024, 2) if file_doc else 0
-        })
-    
-    pet_dict.pop("photos", None)
-    
-    return {
-        "success": True,
-        "pet": pet_dict,
-        "photos": photo_list,
-        "total_photos": len(photo_list),
-        "folder": f"Home/Pet/{docname}"
-    }
 
+        # ---------------------------------------------
+        # Upload Loop
+        # ---------------------------------------------
+        for file in files:
+            safe_filename = re.sub(r"[^\w\s.-]", "", file.filename or "file")
+            content = file.stream.read()
 
-# ═══════════════════════════════════════════════════════════════════
-# SECTION 3: Delete Multiple Photos
-# ═══════════════════════════════════════════════════════════════════
-
-@frappe.whitelist()
-def delete_multiple_photos(docname, photo_rows):
-
-    if not docname:
-        frappe.throw("❌ docname required")
-    
-    if not photo_rows:
-        frappe.throw("❌ photo_rows required (array)")
-    
-    if isinstance(photo_rows, str):
-        photo_rows = json.loads(photo_rows)
-    
-    if not isinstance(photo_rows, list):
-        frappe.throw("❌ photo_rows must be an array")
-    
-    if not frappe.db.exists("Pet", docname):
-        frappe.throw(f"❌ Pet {docname} not found")
-    
-    pet = frappe.get_doc("Pet", docname)
-    deleted = []
-    failed = []
-    
-    for row_name in photo_rows:
-        try:
-            photo_row = None
-            for row in pet.get("photos") or []:
-                if row.name == row_name:
-                    photo_row = row
-                    break
-            
-            if not photo_row:
-                failed.append({
-                    "row_name": row_name,
-                    "reason": "Photo row not found in Pet"
-                })
+            if not content:
+                errors.append({"file": safe_filename, "error": "Empty file"})
                 continue
-            
-            photo_url = getattr(photo_row, "pet_photo", None)
-            if not photo_url:
-                failed.append({
-                    "row_name": row_name,
-                    "reason": "No photo URL in this row"
-                })
+
+            if len(content) > MAX_SIZE:
+                errors.append({"file": safe_filename, "error": "File too large"})
                 continue
-            
-            file_doc = frappe.db.get_value(
+
+            sha1 = hashlib.sha1(content).hexdigest()
+
+            # Duplicate?
+            duplicate = frappe.db.get_value(
                 "File",
-                {
-                    "file_url": photo_url,
-                    "attached_to_doctype": "Pet",
-                    "attached_to_name": docname
-                },
+                {"attached_to_doctype": doctype, "attached_to_name": docname, "custom_sha1": sha1},
                 "name"
             )
-            
-            if file_doc:
-                frappe.delete_doc("File", file_doc, ignore_permissions=True)
-            
-            pet.remove(photo_row)
-            deleted.append(row_name)
-        
-        except Exception as e:
-            failed.append({
-                "row_name": row_name,
-                "reason": str(e)
-            })
-    
-    remaining_photos = pet.get("photos") or []
-    if remaining_photos:
-        has_default = any(getattr(p, "is_default", 0) for p in remaining_photos)
-        if not has_default:
-            remaining_photos[0].is_default = 1
-            pet.custom_image = remaining_photos[0].pet_photo
-    else:
-        pet.custom_image = None
-    
-    pet.save(ignore_permissions=True)
-    frappe.db.commit()
-    
-    return {
-        "success": True,
-        "message": f"{len(deleted)} photo(s) deleted successfully",
-        "deleted": deleted,
-        "failed": failed,
-        "total_deleted": len(deleted),
-        "total_failed": len(failed)
-    }
 
-# ═══════════════════════════════════════════════════════════════════
-# SECTION 4: Set Default Photo
-# ═══════════════════════════════════════════════════════════════════
+            if duplicate:
+                skipped.append({
+                    "file_name": safe_filename,
+                    "reason": "Duplicate file",
+                    "existing": duplicate
+                })
+                continue
+
+            # Create file
+            file_doc = frappe.get_doc({
+                "doctype": "File",
+                "file_name": safe_filename,
+                "content": content,
+                "attached_to_doctype": doctype,
+                "attached_to_name": docname,
+                "is_private": 0,
+                "folder": folder_path,     # IMPORTANT
+                "custom_sha1": sha1,
+                "custom_is_default": 0
+            })
+
+            file_doc.insert(ignore_permissions=True)
+
+            # --------------------------
+            # Default logic
+            # --------------------------
+            should_default = False
+
+            if custom_is_default_flag == "1":
+                should_default = True
+            elif not existing_default:
+                should_default = True
+
+            if should_default:
+                frappe.db.sql("""
+                    UPDATE `tabFile`
+                    SET custom_is_default = 0
+                    WHERE attached_to_doctype=%s AND attached_to_name=%s AND name!=%s
+                """, (doctype, docname, file_doc.name))
+
+                frappe.db.set_value("File", file_doc.name, "custom_is_default", 1)
+                file_doc.reload()
+                existing_default = True
+
+            uploaded.append({
+                "name": file_doc.name,
+                "file_url": file_doc.file_url,
+                "file_name": safe_filename,
+                "custom_is_default": file_doc.custom_is_default
+            })
+
+        frappe.db.commit()
+
+        return {
+            "uploaded": uploaded,
+            "skipped": skipped,
+            "errors": errors
+        }
+
+    except Exception as e:
+        frappe.log_error("UPLOAD ERROR", str(e))
+        frappe.throw(f"Upload failed: {str(e)}")
+
+
+# ============================================================
+# 2) Delete Files
+# ============================================================
 
 @frappe.whitelist()
-def set_default_photo(docname, photo_row):
-    if not docname or not photo_row:
-        frappe.throw("❌ docname and photo_row required")
-    
-    if not frappe.db.exists("Pet", docname):
-        frappe.throw(f"❌ Pet {docname} not found")
-    
-    pet = frappe.get_doc("Pet", docname)
-    
-    target_row = None
-    for row in pet.get("photos") or []:
-        if row.name == photo_row:
-            target_row = row
-            break
-    
-    if not target_row:
-        frappe.throw(f"❌ Photo row {photo_row} not found in Pet")
-    
-    photo_url = getattr(target_row, "pet_photo", None)
-    if not photo_url:
-        frappe.throw(f"❌ No photo URL in this row")
-    
-    for row in pet.get("photos") or []:
-        row.is_default = 0
-    
-    target_row.is_default = 1
-    
-    pet.custom_image = photo_url
-    
-    pet.save(ignore_permissions=True)
+def delete_multiple_files(file_names):
+    import json
+    if isinstance(file_names, str):
+        file_names = json.loads(file_names)
+
+    result = []
+    for f in file_names:
+        try:
+            if frappe.db.exists("File", f):
+                frappe.delete_doc("File", f, force=1)
+                result.append({"file": f, "status": "deleted"})
+            else:
+                result.append({"file": f, "status": "not_found"})
+        except Exception as e:
+            result.append({"file": f, "status": "error", "error": str(e)})
+
+    frappe.db.commit()
+    return result
+
+
+# ============================================================
+# 3) Set Default - مصلّح
+# ============================================================
+
+@frappe.whitelist()
+def set_default_file(file_id, doctype, docname):
+    if not frappe.db.exists("File", file_id):
+        frappe.throw("File does not exist")
+
+    # تأكد إن الملف فعلاً تابع لهذا الـ document
+    file_doc = frappe.get_doc("File", file_id)
+    if file_doc.attached_to_doctype != doctype or file_doc.attached_to_name != docname:
+        frappe.throw("File does not belong to this document")
+
+    # 1) احذف كل الـ defaults القديمة (ما عدا هذا الملف)
+    frappe.db.sql("""
+        UPDATE `tabFile`
+        SET custom_is_default = 0
+        WHERE attached_to_doctype = %s 
+        AND attached_to_name = %s
+        AND name != %s
+    """, (doctype, docname, file_id))
+
+    # 2) عيّن هذا الملف كـ default
+    frappe.db.set_value("File", file_id, "custom_is_default", 1)
+
     frappe.db.commit()
     
-    return {
-        "success": True,
-        "message": "Default photo updated successfully",
-        "custom_image": photo_url,
-        "photo_row": photo_row
-    }
-    
-    
-    
-    # pet_app.api.pet.py
+    return {"message": "Default updated successfully", "file": file_id}
+
+
+# ============================================================
+# 4) GET FILES
+# ============================================================
+
 @frappe.whitelist(allow_guest=True)
-def login_and_get_session(usr, pwd):
-    from frappe.auth import LoginManager
+def get_pet_images(doctype, docname):
+    if not frappe.db.exists(doctype, docname):
+        frappe.throw("Document not found")
 
-    login_manager = LoginManager()
+    files = frappe.get_all("File",
+        filters={
+            "attached_to_doctype": doctype,
+            "attached_to_name": docname
+        },
+        fields=["name", "file_name", "file_url", "custom_is_default", "creation", "folder"],
+        order_by="custom_is_default desc, creation asc"
+    )
 
-    try:
-        login_manager.authenticate(user=usr, pwd=pwd)
-        login_manager.post_login()
-    except Exception:
-        frappe.throw(_("Invalid login"), frappe.AuthenticationError)
-
-    return {
-        "sid": frappe.session.sid,
-        "user": frappe.session.user,
-        "full_name": frappe.db.get_value("User", frappe.session.user, "full_name"),
-    }
+    return {"total": len(files), "images": files}
 
 
 @frappe.whitelist(allow_guest=True)
-def login_and_get_api_keys(usr, pwd):
-    """Login with username/password and return api_key + api_secret
-       so the client can use 'token api_key:api_secret' auth.
+def list_pets(page=1, page_size=10, search=None):
+    """
+    Get paginated pets list with optional search by pet_name
+    and default image for each pet.
+    """
+    page = cint(page) or 1
+    page_size = cint(page_size) or 10
+
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 10
+
+    filters = {}
+    if search:
+        filters["pet_name"] = ["like", f"%{search}%"]
+
+    total = frappe.db.count("Pet", filters=filters)
+    start = (page - 1) * page_size
+
+    pets = frappe.get_all(
+        "Pet",
+        filters=filters,
+        fields=["*"],
+        order_by="creation desc",
+        start=start,
+        page_length=page_size
+    )
+    remove_keys = [
+        "creation","modified","modified_by","owner","docstatus","idx",
+        "_comments","_assign","_liked_by","_user_tags"
+    ]
+    for pet in pets:
+        for key in remove_keys:
+            pet.pop(key, None)
+
+        images = frappe.get_all(
+            "File",
+            filters={
+                "attached_to_doctype": "Pet",
+                "attached_to_name": pet["name"]
+            },
+            fields=["name", "file_url", "file_name", "custom_is_default"],
+            order_by="custom_is_default desc, creation asc"
+        )
+
+        pet["images"] = images
+        
+        # Set the default image
+        default_image = next((img["file_url"] for img in images if img["custom_is_default"]), None)
+        pet["image"] = default_image
+
+    total_pages = math.ceil(total / page_size) if page_size else 1
+
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+        "data": pets,
+    }
+# ============================================================
+# 5) Get Single Pet (same format as list_pets)
+# ============================================================
+
+@frappe.whitelist(allow_guest=True)
+def get_pet(pet_id):
+    """
+    Return single Pet with images exactly like list_pets
+    URL: /api/method/pet_app.api.pet.get_pet?pet_id=PET-00005
     """
 
+    if not frappe.db.exists("Pet", pet_id):
+        frappe.throw("Pet not found")
 
-    # 1) Authenticate user (نفس /api/method/login)
-    login_manager = LoginManager()
+    # نفس منطق list_pets بالضبط
+    pet = frappe.get_doc("Pet", pet_id).as_dict()
+    
+    remove_keys = [
+        "creation","modified","modified_by","owner","docstatus","idx",
+        "_comments","_assign","_liked_by","_user_tags"
+    ]
+    for key in remove_keys:
+        pet.pop(key, None)
+
+    # fetch images
+    images = frappe.get_all(
+        "File",
+        filters={"attached_to_doctype": "Pet", "attached_to_name": pet_id},
+        fields=["name", "file_url", "file_name", "custom_is_default"],
+        order_by="custom_is_default desc, creation asc"
+    )
+    pet["image"] = next((img["file_url"] for img in images if img["custom_is_default"]), None)
+    pet["images"] = images
+
+    return {"data": pet}
+# ============================================================
+@frappe.whitelist()
+def upload_single_image():
+    """
+    Works with Attach Image UI, updates DocType field, updates right panel,
+    deletes old files, prevents duplicates, and forces UI refresh.
+    """
     try:
-        login_manager.authenticate(user=usr, pwd=pwd)
-        login_manager.post_login()
-    except Exception:
-        frappe.throw(_("Invalid login"), frappe.AuthenticationError)
+        # 1) Validate
+        if not frappe.request.files:
+            frappe.throw("No file provided")
 
-    user = frappe.session.user
+        file = list(frappe.request.files.values())[0]
+        doctype = frappe.form_dict.get("doctype")
+        docname = frappe.form_dict.get("docname")
 
-    # 2) نجيب دوك اليوزر
-    user_doc = frappe.get_doc("User", user)
+        if not doctype or not docname:
+            frappe.throw("Missing doctype or docname")
 
-    # 3) إذا ما عنده api_key نولد واحد
-    if not user_doc.api_key:
-        user_doc.api_key = random_string(15)
-        user_doc.save(ignore_permissions=True)
+        if not frappe.db.exists(doctype, docname):
+            frappe.throw("Document does not exist")
 
-    # 4) نقرأ api_secret (هو مخزون مشفر)
-    api_secret = get_decrypted_password("User", user_doc.name, "api_secret", raise_exception=False)
+        # 2) Read content BEFORE frappe processes
+        content = file.stream.read()
+        if not content:
+            frappe.throw("Empty file")
 
-    # إذا ما عنده api_secret نولد واحد جديد
-    if not api_secret:
-        api_secret = random_string(30)
-        # نخزنه مشفر في الـ User.api_secret
-        frappe.utils.password.update_password(api_secret, "User", user_doc.name, "api_secret")
+        # Compute SHA1
+        sha1 = hashlib.sha1(content).hexdigest()
 
-    return {
-        "api_key": user_doc.api_key,
-        "api_secret": api_secret,
-        "user": user_doc.name,
-        "full_name": user_doc.full_name,
-    }
+        # DUPLICATE check
+        duplicate = frappe.db.get_value(
+            "File",
+            {
+                "attached_to_doctype": doctype,
+                "attached_to_name": docname,
+                "custom_sha1": sha1
+            },
+            ["name", "file_url"],
+            as_dict=True
+        )
+
+        if duplicate:
+            # Update field to duplicate (UI consistency)
+            doc = frappe.get_doc(doctype, docname)
+            frappe.db.set_value(doctype, docname, "brand_photo", duplicate.file_url)
+
+            # Force UI attachment linking
+            dup_file = frappe.get_doc("File", duplicate.name)
+            dup_file.attached_to_field = "brand_photo"
+            dup_file.save(ignore_permissions=True)
+
+            frappe.db.commit()
+            return {"message": "duplicate", "file": duplicate}
+
+        # 3) DELETE OLD FILES
+        old_files = frappe.get_all(
+            "File",
+            filters={"attached_to_doctype": doctype, "attached_to_name": docname},
+            fields=["name"]
+        )
+        for f in old_files:
+            frappe.delete_doc("File", f.name, force=1)
+
+        # 4) Prepare folder
+        folder_path = f"Home/{doctype}"
+
+        if not frappe.db.exists("File", {"name": folder_path, "is_folder": 1}):
+            frappe.get_doc({
+                "doctype": "File",
+                "file_name": doctype,
+                "folder": "Home",
+                "is_folder": 1
+            }).insert(ignore_permissions=True)
+
+        # 5) Unique filename
+        import time
+        safe_filename = re.sub(r"[^\w\s.-]", "", file.filename or "image")
+        safe_filename = f"{int(time.time())}-{safe_filename}"
+
+        # 6) Insert new file
+        file_doc = frappe.get_doc({
+            "doctype": "File",
+            "file_name": safe_filename,
+            "content": content,
+            "attached_to_doctype": doctype,
+            "attached_to_name": docname,
+            "attached_to_field": "brand_photo",  # <-- VERY IMPORTANT
+            "folder": folder_path,
+            "is_private": 0,
+            "custom_sha1": sha1,
+            "custom_is_default": 1
+        })
+
+        file_doc.insert(ignore_permissions=True)
+
+        # 7) UPDATE FIELD (Attach Image) properly
+        frappe.db.set_value(doctype, docname, "brand_photo", file_doc.file_url)
+
+        # 8) SECOND SAVE forces UI to attach image properly
+        file_doc.attached_to_field = "brand_photo"
+        file_doc.save(ignore_permissions=True)
+
+        frappe.db.commit()
+
+        return {
+            "message": "uploaded",
+            "file": {
+                "name": file_doc.name,
+                "file_url": file_doc.file_url,
+                "file_name": safe_filename
+            }
+        }
+
+    except Exception as e:
+        frappe.log_error("UPLOAD_SINGLE_IMAGE_ATTACH_FIX", str(e))
+        frappe.throw(f"Upload failed: {str(e)}")

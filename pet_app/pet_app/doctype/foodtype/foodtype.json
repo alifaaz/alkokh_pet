@@ -24,10 +24,10 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-07 05:14:23.817286",
+ "modified": "2025-12-02 00:28:02.046071",
  "modified_by": "Administrator",
  "module": "Pet App",
- "name": "Food Type",
+ "name": "FoodType",
  "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [

@@ -134,17 +134,7 @@ app_license = "mit"
 # ═══════════════════════════════════════════════════════════════════
 # Document Events - Auto Folder Creation
 # ═══════════════════════════════════════════════════════════════════
-doc_events = {
-    "Pet": {
-        "on_insert": "pet_app.api.file_utils.create_document_folder_hook"
-    },
-    "Product": {
-        "on_insert": "pet_app.api.file_utils.create_document_folder_hook"
-    },
-    "Guardian": {
-        "on_insert": "pet_app.api.file_utils.create_document_folder_hook"
-    }
-}
+
 # doc_events = {
 # 	"*": {
 # 		"on_update": "method",
@@ -257,9 +247,3 @@ doc_events = {
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-
-fixtures = [
-    {"doctype": "DocType", "filters": [
-        ["name", "in", ["Pet Photo"]]
-    ]}
-]
