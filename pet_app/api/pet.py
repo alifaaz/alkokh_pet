@@ -312,13 +312,8 @@ def get_pet(pet_id):
     return {"data": pet}
 # ============================================================
 @frappe.whitelist()
-def upload_single_image():
-    """
-    Works with Attach Image UI, updates DocType field, updates right panel,
-    deletes old files, prevents duplicates, and forces UI refresh.
-    """
+def upload_single_file():
     try:
-        # 1) Validate
         if not frappe.request.files:
             frappe.throw("No file provided")
 
@@ -332,15 +327,16 @@ def upload_single_image():
         if not frappe.db.exists(doctype, docname):
             frappe.throw("Document does not exist")
 
-        # 2) Read content BEFORE frappe processes
         content = file.stream.read()
         if not content:
             frappe.throw("Empty file")
 
-        # Compute SHA1
+        MAX_SIZE = 500 * 1024
+        if len(content) > MAX_SIZE:
+            frappe.throw("File too large")
+
         sha1 = hashlib.sha1(content).hexdigest()
 
-        # DUPLICATE check
         duplicate = frappe.db.get_value(
             "File",
             {
@@ -353,28 +349,11 @@ def upload_single_image():
         )
 
         if duplicate:
-            # Update field to duplicate (UI consistency)
-            doc = frappe.get_doc(doctype, docname)
+            # RETURN IMAGE + UPDATE FIELD
             frappe.db.set_value(doctype, docname, "brand_photo", duplicate.file_url)
-
-            # Force UI attachment linking
-            dup_file = frappe.get_doc("File", duplicate.name)
-            dup_file.attached_to_field = "brand_photo"
-            dup_file.save(ignore_permissions=True)
-
-            frappe.db.commit()
             return {"message": "duplicate", "file": duplicate}
 
-        # 3) DELETE OLD FILES
-        old_files = frappe.get_all(
-            "File",
-            filters={"attached_to_doctype": doctype, "attached_to_name": docname},
-            fields=["name"]
-        )
-        for f in old_files:
-            frappe.delete_doc("File", f.name, force=1)
-
-        # 4) Prepare folder
+        # Folder
         folder_path = f"Home/{doctype}"
 
         if not frappe.db.exists("File", {"name": folder_path, "is_folder": 1}):
@@ -385,19 +364,27 @@ def upload_single_image():
                 "is_folder": 1
             }).insert(ignore_permissions=True)
 
-        # 5) Unique filename
-        import time
-        safe_filename = re.sub(r"[^\w\s.-]", "", file.filename or "image")
+        # Delete old images
+        old_files = frappe.get_all(
+            "File",
+            filters={"attached_to_doctype": doctype, "attached_to_name": docname},
+            fields=["name"]
+        )
+        for f in old_files:
+            frappe.delete_doc("File", f.name, force=1)
+
+        # Generate file name
+        import time, re
+        safe_filename = re.sub(r"[^\w\s.-]", "", file.filename or "file")
         safe_filename = f"{int(time.time())}-{safe_filename}"
 
-        # 6) Insert new file
+        # Create File
         file_doc = frappe.get_doc({
             "doctype": "File",
             "file_name": safe_filename,
             "content": content,
             "attached_to_doctype": doctype,
             "attached_to_name": docname,
-            "attached_to_field": "brand_photo",  # <-- VERY IMPORTANT
             "folder": folder_path,
             "is_private": 0,
             "custom_sha1": sha1,
@@ -406,10 +393,10 @@ def upload_single_image():
 
         file_doc.insert(ignore_permissions=True)
 
-        # 7) UPDATE FIELD (Attach Image) properly
+        # 🔥 IMPORTANT: Update DocType field
         frappe.db.set_value(doctype, docname, "brand_photo", file_doc.file_url)
 
-        # 8) SECOND SAVE forces UI to attach image properly
+        # 🔥 Link file to that field so UI sees it
         file_doc.attached_to_field = "brand_photo"
         file_doc.save(ignore_permissions=True)
 
@@ -425,5 +412,5 @@ def upload_single_image():
         }
 
     except Exception as e:
-        frappe.log_error("UPLOAD_SINGLE_IMAGE_ATTACH_FIX", str(e))
+        frappe.log_error("UPLOAD_SINGLE_FILE_ERROR", str(e))
         frappe.throw(f"Upload failed: {str(e)}")
