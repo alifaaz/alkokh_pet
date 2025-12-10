@@ -1,0 +1,111 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "CareServiceSchedule-.#####",
+ "creation": "2025-12-10 12:21:00.812096",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "service_info_section",
+  "pet",
+  "care_service",
+  "service_title",
+  "status",
+  "column_break_adis",
+  "due_date",
+  "provider",
+  "description",
+  "send_reminder"
+ ],
+ "fields": [
+  {
+   "fieldname": "service_info_section",
+   "fieldtype": "Section Break",
+   "label": "Service Info"
+  },
+  {
+   "fieldname": "care_service",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "CareService",
+   "options": "CareService",
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "pending\ncompleted\noverdue"
+  },
+  {
+   "default": "0",
+   "fieldname": "send_reminder",
+   "fieldtype": "Check",
+   "label": "Send Reminder"
+  },
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "service_title",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Title",
+   "reqd": 1
+  },
+  {
+   "fieldname": "provider",
+   "fieldtype": "Link",
+   "label": "Provider",
+   "options": "User"
+  },
+  {
+   "fieldname": "column_break_adis",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "description"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Due Date",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-12-10 17:20:37.929041",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "CareServiceSchedule",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

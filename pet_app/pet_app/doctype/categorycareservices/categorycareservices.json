@@ -1,37 +1,34 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "CategoryCS-.####",
+ "autoname": "CategoryCareServices-.####",
  "creation": "2025-12-04 20:35:03.004252",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "category_name",
-  "column_break_mvnp",
   "description"
  ],
  "fields": [
   {
    "fieldname": "description",
    "fieldtype": "Small Text",
+   "in_list_view": 1,
    "label": "Description"
-  },
-  {
-   "fieldname": "column_break_mvnp",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "category_name",
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Name",
-   "reqd": 1
+   "reqd": 1,
+   "unique": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-05 13:06:19.026470",
+ "modified": "2025-12-10 16:49:38.414104",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CategoryCareServices",
