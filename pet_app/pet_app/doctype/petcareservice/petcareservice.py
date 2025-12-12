@@ -5,5 +5,5 @@
 from frappe.model.document import Document
 
 
-class CareServiceSchedule(Document):
+class PetCareService(Document):
 	pass

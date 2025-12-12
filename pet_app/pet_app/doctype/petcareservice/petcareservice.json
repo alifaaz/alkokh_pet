@@ -1,15 +1,15 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "CareServiceSchedule-.#####",
+ "autoname": "PetCareService-.#####",
  "creation": "2025-12-10 12:21:00.812096",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "service_info_section",
-  "pet",
-  "care_service",
-  "service_title",
+  "pet_service_name",
+  "pet_id",
+  "care_service_id",
   "status",
   "column_break_adis",
   "due_date",
@@ -24,14 +24,6 @@
    "label": "Service Info"
   },
   {
-   "fieldname": "care_service",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "CareService",
-   "options": "CareService",
-   "reqd": 1
-  },
-  {
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
@@ -42,20 +34,6 @@
    "fieldname": "send_reminder",
    "fieldtype": "Check",
    "label": "Send Reminder"
-  },
-  {
-   "fieldname": "pet",
-   "fieldtype": "Link",
-   "label": "Pet",
-   "options": "Pet",
-   "reqd": 1
-  },
-  {
-   "fieldname": "service_title",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Title",
-   "reqd": 1
   },
   {
    "fieldname": "provider",
@@ -78,15 +56,37 @@
    "in_list_view": 1,
    "label": "Due Date",
    "reqd": 1
+  },
+  {
+   "fieldname": "pet_service_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Pet Service Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "pet_id",
+   "fieldtype": "Link",
+   "label": "Pet ID",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "care_service_id",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Care Service ID",
+   "options": "CareService",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-10 17:20:37.929041",
+ "modified": "2025-12-12 01:37:44.660581",
  "modified_by": "Administrator",
  "module": "Pet App",
- "name": "CareServiceSchedule",
+ "name": "PetCareService",
  "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [

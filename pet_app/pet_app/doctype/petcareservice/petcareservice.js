@@ -1,7 +1,7 @@
 // Copyright (c) 2025, solvers and contributors
 // For license information, please see license.txt
 
-// frappe.ui.form.on("CareServiceSchedule", {
+// frappe.ui.form.on("PetCareService", {
 // 	refresh(frm) {
 
 // 	},

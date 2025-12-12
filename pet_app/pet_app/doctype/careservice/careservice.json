@@ -7,29 +7,15 @@
  "engine": "InnoDB",
  "field_order": [
   "basic_info_section",
-  "service_title",
+  "service_name",
   "frequency",
   "column_break_thsf",
   "animal_species",
-  "category",
+  "category_id",
   "section_break_couy",
   "description"
  ],
  "fields": [
-  {
-   "fieldname": "service_title",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Service Title",
-   "reqd": 1
-  },
-  {
-   "fieldname": "category",
-   "fieldtype": "Link",
-   "label": "Category",
-   "options": "CategoryCareServices",
-   "reqd": 1
-  },
   {
    "fieldname": "basic_info_section",
    "fieldtype": "Section Break",
@@ -61,12 +47,26 @@
    "label": "Frequency",
    "options": "onetime\nmonthly\nquarterly\nbiannual\nannual",
    "reqd": 1
+  },
+  {
+   "fieldname": "category_id",
+   "fieldtype": "Link",
+   "label": "Category",
+   "options": "CategoryCareServices",
+   "reqd": 1
+  },
+  {
+   "fieldname": "service_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Service name",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-10 16:20:46.173215",
+ "modified": "2025-12-12 01:10:52.035464",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CareService",
