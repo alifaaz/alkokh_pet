@@ -210,7 +210,9 @@ def get_pet_images(doctype, docname):
 
     return {"total": len(files), "images": files}
 
-
+# ============================================================
+# 5) List Pets with Pagination and Search
+# ============================================================
 @frappe.whitelist(allow_guest=True)
 def list_pets(page=1, page_size=10, search=None):
     """
@@ -235,8 +237,10 @@ def list_pets(page=1, page_size=10, search=None):
     pets = frappe.get_all(
         "Pet",
         filters=filters,
-        fields=["*"],
-        order_by="creation desc",
+        fields=[ "name", "pet_name", "animal_species", "animal_type", "breed", "status", "birth_date",
+         "registration_date", "owner_customer", "owner_customer.customer_name", "color", "gender", "weight", "hight",
+          "blood_type", "play", "activity_exercise","food_brand", "food_brand.brand_name", "food_type",
+           "food_type.type_name", "description", "note" ],
         start=start,
         page_length=page_size
     )
@@ -259,7 +263,6 @@ def list_pets(page=1, page_size=10, search=None):
         )
 
         pet["images"] = images
-        
         # Set the default image
         default_image = next((img["file_url"] for img in images if img["custom_is_default"]), None)
         pet["image"] = default_image
@@ -276,41 +279,60 @@ def list_pets(page=1, page_size=10, search=None):
         "data": pets,
     }
 # ============================================================
-# 5) Get Single Pet (same format as list_pets)
+# 6) Get Single Pet (same format as list_pets)
 # ============================================================
 
 @frappe.whitelist(allow_guest=True)
 def get_pet(pet_id):
-    """
-    Return single Pet with images exactly like list_pets
-    URL: /api/method/pet_app.api.pet.get_pet?pet_id=PET-00005
-    """
 
     if not frappe.db.exists("Pet", pet_id):
         frappe.throw("Pet not found")
 
-    # نفس منطق list_pets بالضبط
-    pet = frappe.get_doc("Pet", pet_id).as_dict()
-    
-    remove_keys = [
-        "creation","modified","modified_by","owner","docstatus","idx",
-        "_comments","_assign","_liked_by","_user_tags"
+    fields = [
+        "name", "pet_name", "animal_species", "animal_type", "breed", "status",
+        "birth_date", "registration_date",
+        "owner_customer", "owner_customer.customer_name",
+        "color", "gender", "weight", "hight",
+        "blood_type", "play", "activity_exercise",
+        "food_brand", "food_brand.brand_name",
+        "food_type", "food_type.type_name",
+        "description", "note"
     ]
-    for key in remove_keys:
-        pet.pop(key, None)
+
+    pet_list = frappe.get_all(
+        "Pet",
+        filters={"name": pet_id},
+        fields=fields,
+        limit_page_length=1
+    )
+
+    if not pet_list:
+        frappe.throw("Pet not found")
+
+    pet = pet_list[0]
 
     # fetch images
     images = frappe.get_all(
         "File",
-        filters={"attached_to_doctype": "Pet", "attached_to_name": pet_id},
+        filters={
+            "attached_to_doctype": "Pet",
+            "attached_to_name": pet_id
+        },
         fields=["name", "file_url", "file_name", "custom_is_default"],
         order_by="custom_is_default desc, creation asc"
     )
-    pet["image"] = next((img["file_url"] for img in images if img["custom_is_default"]), None)
+
     pet["images"] = images
+
+    # default image
+    pet["image"] = next(
+        (img["file_url"] for img in images if img.get("custom_is_default")), None
+    )
 
     return {"data": pet}
 # ============================================================
+# 7) Upload Single File with Duplicate Check and Field Update
+# ============================================================ 
 @frappe.whitelist()
 def upload_single_file():
     try:
