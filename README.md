@@ -1,68 +1,36 @@
-## 📁 Dynamic File Management System
+# pet_app — Pet & Guardian Flow (feature/pet-guardian)
 
-### 🎯 Overview
-Implements a production-ready file management system with dynamic per-document folders, smart validation, and comprehensive photo management for Frappe applications.
+This branch contains the core **Pet / Guardian** data model and linking flow used by the clinic/admin system.
 
-### ✨ Key Features
-- 🗂️ **Dynamic Folders**: Each document gets isolated folder (`Home/Pet/PET-00001/`)
-- 🛡️ **Security**: Path traversal prevention, ownership verification
-- ✅ **Validation**: Size, type, and image integrity checks
-- 🔍 **Duplicate Detection**: SHA256 hash-based
-- 🪝 **Auto Folders**: Hooks create folders on document creation
-- 📸 **Photo Management**: Upload, delete (bulk), set default
+## What changed in this branch
+- Updated **Pet** DocType (including linkage readiness for clinic operations).
+- Updated **Guardian** DocType.
+- Added/updated relationship DocTypes:
+  - **PetGuardian**: links a Guardian to one or more Pets.
+  - **PetAddRequest**: request + approval flow to register a pet under a guardian.
+- API / business logic updates related to Pet & Guardian flows:
+  - `pet_app/api/auth_mobile.py`
+  - `pet_app/api/pet.py`
 
-### 📊 Changes
-| File | Changes | Lines |
-|------|---------|-------|
-| `file_utils.py` | Core file management system | +450 |
-| `pet.py` | Pet photo APIs | +200 |
-| `hooks.py` | Document event hooks | +15 |
-| `README.md` | Comprehensive documentation | +800 |
+## Why this exists
+- Keep **Pet** as the primary entity for identity (name, image, status, etc.).
+- Keep **Guardian** as the owner/customer-side entity.
+- Provide a reliable relationship layer (**PetGuardian**) for fetching pets by guardian and enforcing ownership rules.
 
-### 🧪 Testing Completed
-- [x] Upload validation (size, type, integrity)
-- [x] Duplicate detection
-- [x] Folder auto-creation via hooks
-- [x] Delete multiple photos
-- [x] Set default photo
-- [x] Path traversal attack prevention
-- [x] Image corruption detection
+## Quick verification checklist
+1. Create a **Guardian**.
+2. Create a **PetAddRequest** and approve it (based on your current approval workflow).
+3. Confirm:
+   - A **Pet** record exists and is linked properly to the Guardian via **PetGuardian**.
+4. Fetch pets for a guardian using Resource API on **PetGuardian** (filters by guardian_id) and verify results.
 
-### 📝 API Endpoints Added
-```http
-POST   /api/method/pet_app.api.pet.upload_pet_photos
-DELETE /api/method/pet_app.api.pet.delete_multiple_photos
-PUT    /api/method/pet_app.api.pet.set_default_photo
-GET    /api/method/pet_app.api.file_utils.get_config
-POST   /api/method/pet_app.api.file_utils.create_base_folders
-```
+## Notes
+- Do not commit site files (`sites/`), configs (`site_config.json`), logs, or private files.
+- If you created Custom Fields via UI, export them (see below) and commit the generated files.
 
-### 🔗 Documentation
-Full documentation available in README.md including:
-- Installation guide
-- API reference with examples
-- Configuration options
-- Security features
-- Troubleshooting guide
-
-### ⚠️ Breaking Changes
-None - Purely additive features
-
-### 📋 Pre-merge Checklist
-- [x] Code follows Frappe conventions
-- [x] Self-review completed
-- [x] Documentation comprehensive
-- [x] All tests passing
-- [x] No merge conflicts
-- [x] Hooks registered in hooks.py
-```
-
----
-## 📚 **Added/Modified Files:**```
-pet_app/
-├── README.md                    (NEW - Documentation)
-├── pet_app/
-│   ├── api/
-│   │   ├── file_utils.py       (NEW - Core system)
-│   │   └── pet.py              (NEW - Pet APIs)
-│   └── hooks.py                (MODIFIED - Added doc_events)
+## Export UI Customizations (recommended)
+From bench:
+```bash
+cd ~/frappe-bench
+bench --site YOUR_SITE export-customizations
+bench --site YOUR_SITE export-fixtures
