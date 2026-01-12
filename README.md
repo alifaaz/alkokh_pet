@@ -1,68 +1,37 @@
-## 📁 Dynamic File Management System
+# pet_app — Care Services & Pricing Sync (feature/care-services)
 
-### 🎯 Overview
-Implements a production-ready file management system with dynamic per-document folders, smart validation, and comprehensive photo management for Frappe applications.
+This branch contains the **CareService** catalog and per-pet service tracking, with pricing aligned to ERPNext accounting concepts.
 
-### ✨ Key Features
-- 🗂️ **Dynamic Folders**: Each document gets isolated folder (`Home/Pet/PET-00001/`)
-- 🛡️ **Security**: Path traversal prevention, ownership verification
-- ✅ **Validation**: Size, type, and image integrity checks
-- 🔍 **Duplicate Detection**: SHA256 hash-based
-- 🪝 **Auto Folders**: Hooks create folders on document creation
-- 📸 **Photo Management**: Upload, delete (bulk), set default
+## What changed in this branch
+- Updated **CareService** DocType:
+  - Stores service metadata (category/species/frequency, etc.).
+  - Stores **default_price** and price list selection (as configured in your system).
+- Updated **PetCareService** DocType:
+  - Tracks services assigned to a specific pet.
+  - Supports statuses such as: `Pending`, `Completed`, `Overdue`.
+- Pricing integration direction:
+  - **CareService default price** is the source used to set pricing for accounting/invoicing (via Item/Item Price workflow in your implementation).
 
-### 📊 Changes
-| File | Changes | Lines |
-|------|---------|-------|
-| `file_utils.py` | Core file management system | +450 |
-| `pet.py` | Pet photo APIs | +200 |
-| `hooks.py` | Document event hooks | +15 |
-| `README.md` | Comprehensive documentation | +800 |
+## Why this exists
+- Keep **CareService** as the clinic’s “service catalog” (easy to manage).
+- Keep **PetCareService** as the per-pet operational tracker (what is due / completed).
+- Enable clean billing later (invoice rate can be overridden per visit without changing the default catalog price).
 
-### 🧪 Testing Completed
-- [x] Upload validation (size, type, integrity)
-- [x] Duplicate detection
-- [x] Folder auto-creation via hooks
-- [x] Delete multiple photos
-- [x] Set default photo
-- [x] Path traversal attack prevention
-- [x] Image corruption detection
+## Quick verification checklist
+1. Create a **CareService** (e.g., “General Examination”) with a default price.
+2. Assign it to a pet via **PetCareService**.
+3. Confirm:
+   - Service appears under the pet with correct status and due date behavior.
+4. Verify that the default price is available for the UI to prefill rates during visit/invoice creation.
 
-### 📝 API Endpoints Added
-```http
-POST   /api/method/pet_app.api.pet.upload_pet_photos
-DELETE /api/method/pet_app.api.pet.delete_multiple_photos
-PUT    /api/method/pet_app.api.pet.set_default_photo
-GET    /api/method/pet_app.api.file_utils.get_config
-POST   /api/method/pet_app.api.file_utils.create_base_folders
-```
+## Notes
+- If you depend on Server Scripts for automation (e.g., syncing Item/Item Price),
+  ensure your bench allows server scripts (v15+ disables them by default).
+- Prefer implementing core automation inside the app code when possible for stability.
 
-### 🔗 Documentation
-Full documentation available in README.md including:
-- Installation guide
-- API reference with examples
-- Configuration options
-- Security features
-- Troubleshooting guide
-
-### ⚠️ Breaking Changes
-None - Purely additive features
-
-### 📋 Pre-merge Checklist
-- [x] Code follows Frappe conventions
-- [x] Self-review completed
-- [x] Documentation comprehensive
-- [x] All tests passing
-- [x] No merge conflicts
-- [x] Hooks registered in hooks.py
-```
-
----
-## 📚 **Added/Modified Files:**```
-pet_app/
-├── README.md                    (NEW - Documentation)
-├── pet_app/
-│   ├── api/
-│   │   ├── file_utils.py       (NEW - Core system)
-│   │   └── pet.py              (NEW - Pet APIs)
-│   └── hooks.py                (MODIFIED - Added doc_events)
+## Export UI Customizations (recommended)
+From bench:
+```bash
+cd ~/frappe-bench
+bench --site YOUR_SITE export-customizations
+bench --site YOUR_SITE export-fixtures
