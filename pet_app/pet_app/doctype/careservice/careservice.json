@@ -9,9 +9,12 @@
   "basic_info_section",
   "service_name",
   "frequency",
-  "column_break_thsf",
+  "item_code",
+  "price_list",
+  "column_break_wbjw",
   "animal_species",
   "category_id",
+  "default_price",
   "section_break_couy",
   "description"
  ],
@@ -25,10 +28,6 @@
    "fieldname": "description",
    "fieldtype": "Small Text",
    "label": "Description"
-  },
-  {
-   "fieldname": "column_break_thsf",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "animal_species",
@@ -61,12 +60,35 @@
    "in_list_view": 1,
    "label": "Service name",
    "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item code",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_wbjw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "default_price",
+   "fieldtype": "Currency",
+   "label": "Default Price"
+  },
+  {
+   "default": "Clinic",
+   "fieldname": "price_list",
+   "fieldtype": "Link",
+   "label": "price list",
+   "options": "Price List"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-12 01:10:52.035464",
+ "modified": "2026-01-10 18:58:01.058372",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CareService",
