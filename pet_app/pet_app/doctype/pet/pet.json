@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "PET-.#####",
- "creation": "2025-11-06 01:17:33.360004",
+ "creation": "2025-12-29 02:11:33.935630",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -10,12 +10,14 @@
   "animal_species",
   "animal_type",
   "breed",
-  "image",
+  "pet_image",
   "column_break_pnvc",
   "status",
   "birth_date",
   "registration_date",
-  "owner_customer",
+  "pet_status",
+  "requested_by",
+  "patient_id",
   "section_break_amnw",
   "color",
   "gender",
@@ -144,12 +146,6 @@
    "label": "Note"
   },
   {
-   "fieldname": "owner_customer",
-   "fieldtype": "Link",
-   "label": "Owner",
-   "options": "Customer"
-  },
-  {
    "fieldname": "food_brand",
    "fieldtype": "Link",
    "label": "Food Brand",
@@ -162,15 +158,38 @@
    "options": "FoodType"
   },
   {
-   "fieldname": "image",
-   "fieldtype": "Image",
-   "label": "Image"
+   "default": "Pending",
+   "fieldname": "pet_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Pet Status",
+   "options": "Pending\nApproved\nRejected\nArchived",
+   "reqd": 1
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Requested By",
+   "options": "Guardian",
+   "read_only": 1
+  },
+  {
+   "fieldname": "patient_id",
+   "fieldtype": "Link",
+   "label": "Patient ID",
+   "options": "Patient"
+  },
+  {
+   "fieldname": "pet_image",
+   "fieldtype": "Attach Image",
+   "label": "Pet Image"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-02 00:27:58.988855",
+ "modified": "2026-01-11 02:10:49.640964",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet",
@@ -188,10 +207,22 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Guardian",
+   "share": 1,
+   "write": 1
   }
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
+ "show_name_in_global_search": 1,
  "sort_field": "creation",
  "sort_order": "DESC",
  "states": []

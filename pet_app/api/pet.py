@@ -8,30 +8,45 @@ from frappe.utils import cint
 # 1) Upload Multiple Files  — Folder = Home/Doctype ONLY
 # ============================================================
 
+
 @frappe.whitelist()
 def upload_multiple_files():
     try:
+        # ----------------------------------------------------
+        # 1) Validate request
+        # ----------------------------------------------------
         if not frappe.request.files:
             frappe.throw("No files provided")
 
         files = frappe.request.files.getlist("files")
         doctype = frappe.form_dict.get("doctype")
         docname = frappe.form_dict.get("docname")
+        fieldname = frappe.form_dict.get("fieldname")   # ⭐ نفس السنكل
         custom_is_default_flag = frappe.form_dict.get("custom_is_default")  # "1" or "0"
 
         if not doctype or not docname:
             frappe.throw("Missing doctype or docname")
 
+        if not fieldname:
+            frappe.throw("Missing fieldname")
+
         if not frappe.db.exists(doctype, docname):
             frappe.throw("Document does not exist")
 
-        MAX_SIZE = 500 * 1024   # 500 KB
+        # ----------------------------------------------------
+        # 2) Validate field exists
+        # ----------------------------------------------------
+        meta = frappe.get_meta(doctype)
+        if not meta.has_field(fieldname):
+            frappe.throw(f"Field '{fieldname}' does not exist in {doctype}")
 
+        MAX_SIZE = 500 * 1024  # 500 KB
         uploaded, skipped, errors = [], [], []
 
+        # ----------------------------------------------------
+        # 3) Ensure folder exists
+        # ----------------------------------------------------
         folder_path = f"Home/{doctype}"
-
-        # Create folder if not exists
         if not frappe.db.exists("File", {"name": folder_path, "is_folder": 1}):
             frappe.get_doc({
                 "doctype": "File",
@@ -40,15 +55,21 @@ def upload_multiple_files():
                 "is_folder": 1
             }).insert(ignore_permissions=True)
 
-        # check existing default
-        existing_default = frappe.db.exists(
+        # ----------------------------------------------------
+        # 4) Check existing default
+        # ----------------------------------------------------
+        existing_default = bool(frappe.db.exists(
             "File",
-            {"attached_to_doctype": doctype, "attached_to_name": docname, "custom_is_default": 1}
-        )
+            {
+                "attached_to_doctype": doctype,
+                "attached_to_name": docname,
+                "custom_is_default": 1
+            }
+        ))
 
-        # ---------------------------------------------
-        # Upload Loop
-        # ---------------------------------------------
+        # ----------------------------------------------------
+        # 5) Upload loop
+        # ----------------------------------------------------
         for file in files:
             safe_filename = re.sub(r"[^\w\s.-]", "", file.filename or "file")
             content = file.stream.read()
@@ -63,10 +84,14 @@ def upload_multiple_files():
 
             sha1 = hashlib.sha1(content).hexdigest()
 
-            # Duplicate?
+            # Duplicate check
             duplicate = frappe.db.get_value(
                 "File",
-                {"attached_to_doctype": doctype, "attached_to_name": docname, "custom_sha1": sha1},
+                {
+                    "attached_to_doctype": doctype,
+                    "attached_to_name": docname,
+                    "custom_sha1_hash": sha1
+                },
                 "name"
             )
 
@@ -78,24 +103,27 @@ def upload_multiple_files():
                 })
                 continue
 
-            # Create file
+            # ------------------------------------------------
+            # Create File
+            # ------------------------------------------------
             file_doc = frappe.get_doc({
                 "doctype": "File",
                 "file_name": safe_filename,
                 "content": content,
                 "attached_to_doctype": doctype,
                 "attached_to_name": docname,
+                "attached_to_field": fieldname,   # ⭐ نفس السنكل
+                "folder": folder_path,
                 "is_private": 0,
-                "folder": folder_path,     # IMPORTANT
-                "custom_sha1": sha1,
+                "custom_sha1_hash": sha1,
                 "custom_is_default": 0
             })
 
             file_doc.insert(ignore_permissions=True)
 
-            # --------------------------
+            # ------------------------------------------------
             # Default logic
-            # --------------------------
+            # ------------------------------------------------
             should_default = False
 
             if custom_is_default_flag == "1":
@@ -104,15 +132,28 @@ def upload_multiple_files():
                 should_default = True
 
             if should_default:
+                # Reset other defaults
                 frappe.db.sql("""
                     UPDATE `tabFile`
                     SET custom_is_default = 0
-                    WHERE attached_to_doctype=%s AND attached_to_name=%s AND name!=%s
+                    WHERE attached_to_doctype=%s
+                      AND attached_to_name=%s
+                      AND name!=%s
                 """, (doctype, docname, file_doc.name))
 
+                # Set this as default
                 frappe.db.set_value("File", file_doc.name, "custom_is_default", 1)
-                file_doc.reload()
+
+                # ⭐ Update target field (Attach / Attach Image)
+                frappe.db.set_value(
+                    doctype,
+                    docname,
+                    fieldname,
+                    file_doc.file_url
+                )
+
                 existing_default = True
+                file_doc.reload()
 
             uploaded.append({
                 "name": file_doc.name,
@@ -129,10 +170,9 @@ def upload_multiple_files():
             "errors": errors
         }
 
-    except Exception as e:
-        frappe.log_error("UPLOAD ERROR", str(e))
-        frappe.throw(f"Upload failed: {str(e)}")
-
+    except Exception:
+        frappe.log_error("UPLOAD_MULTIPLE_FILES_ERROR", frappe.get_traceback())
+        frappe.throw("Upload failed")
 
 # ============================================================
 # 2) Delete Files
@@ -238,7 +278,7 @@ def list_pets(page=1, page_size=10, search=None):
         "Pet",
         filters=filters,
         fields=[ "name", "pet_name", "animal_species", "animal_type", "breed", "status", "birth_date",
-         "registration_date", "owner_customer", "owner_customer.customer_name", "color", "gender", "weight", "hight",
+         "registration_date", "color", "gender", "weight", "hight",
           "blood_type", "play", "activity_exercise","food_brand", "food_brand.brand_name", "food_type",
            "food_type.type_name", "description", "note" ],
         start=start,
@@ -291,7 +331,6 @@ def get_pet(pet_id):
     fields = [
         "name", "pet_name", "animal_species", "animal_type", "breed", "status",
         "birth_date", "registration_date",
-        "owner_customer", "owner_customer.customer_name",
         "color", "gender", "weight", "hight",
         "blood_type", "play", "activity_exercise",
         "food_brand", "food_brand.brand_name",
@@ -336,46 +375,71 @@ def get_pet(pet_id):
 @frappe.whitelist()
 def upload_single_file():
     try:
+        # ----------------------------------------------------
+        # 1) Validate request
+        # ----------------------------------------------------
         if not frappe.request.files:
             frappe.throw("No file provided")
 
         file = list(frappe.request.files.values())[0]
+
         doctype = frappe.form_dict.get("doctype")
         docname = frappe.form_dict.get("docname")
+        fieldname = frappe.form_dict.get("fieldname")
 
         if not doctype or not docname:
             frappe.throw("Missing doctype or docname")
 
+        if not fieldname:
+            frappe.throw("Missing fieldname")
+
         if not frappe.db.exists(doctype, docname):
             frappe.throw("Document does not exist")
 
+        # ----------------------------------------------------
+        # 2) Validate field exists in DocType
+        # ----------------------------------------------------
+        meta = frappe.get_meta(doctype)
+        if not meta.has_field(fieldname):
+            frappe.throw(f"Field '{fieldname}' does not exist in {doctype}")
+
+        # ----------------------------------------------------
+        # 3) Read & validate file
+        # ----------------------------------------------------
         content = file.stream.read()
         if not content:
             frappe.throw("Empty file")
 
-        MAX_SIZE = 500 * 1024
+        MAX_SIZE = 500 * 1024  # 500 KB
         if len(content) > MAX_SIZE:
             frappe.throw("File too large")
 
         sha1 = hashlib.sha1(content).hexdigest()
 
+        # ----------------------------------------------------
+        # 4) Check duplicate (same doc + same content)
+        # ----------------------------------------------------
         duplicate = frappe.db.get_value(
             "File",
             {
                 "attached_to_doctype": doctype,
                 "attached_to_name": docname,
-                "custom_sha1": sha1
+                "custom_sha1_hash": sha1
             },
             ["name", "file_url"],
             as_dict=True
         )
 
         if duplicate:
-            # RETURN IMAGE + UPDATE FIELD
-            frappe.db.set_value(doctype, docname, "brand_photo", duplicate.file_url)
-            return {"message": "duplicate", "file": duplicate}
+            frappe.db.set_value(doctype, docname, fieldname, duplicate.file_url)
+            return {
+                "message": "duplicate",
+                "file": duplicate
+            }
 
-        # Folder
+        # ----------------------------------------------------
+        # 5) Ensure folder exists
+        # ----------------------------------------------------
         folder_path = f"Home/{doctype}"
 
         if not frappe.db.exists("File", {"name": folder_path, "is_folder": 1}):
@@ -386,44 +450,57 @@ def upload_single_file():
                 "is_folder": 1
             }).insert(ignore_permissions=True)
 
-        # Delete old images
+        # ----------------------------------------------------
+        # 6) Remove old files linked to this field
+        # ----------------------------------------------------
         old_files = frappe.get_all(
             "File",
-            filters={"attached_to_doctype": doctype, "attached_to_name": docname},
+            filters={
+                "attached_to_doctype": doctype,
+                "attached_to_name": docname,
+                "attached_to_field": fieldname
+            },
             fields=["name"]
         )
+
         for f in old_files:
             frappe.delete_doc("File", f.name, force=1)
 
-        # Generate file name
+        # ----------------------------------------------------
+        # 7) Generate safe filename
+        # ----------------------------------------------------
         import time, re
         safe_filename = re.sub(r"[^\w\s.-]", "", file.filename or "file")
         safe_filename = f"{int(time.time())}-{safe_filename}"
 
-        # Create File
+        # ----------------------------------------------------
+        # 8) Create File document
+        # ----------------------------------------------------
         file_doc = frappe.get_doc({
             "doctype": "File",
             "file_name": safe_filename,
             "content": content,
             "attached_to_doctype": doctype,
             "attached_to_name": docname,
+            "attached_to_field": fieldname,
             "folder": folder_path,
             "is_private": 0,
-            "custom_sha1": sha1,
+            "custom_sha1_hash": sha1,
             "custom_is_default": 1
         })
 
         file_doc.insert(ignore_permissions=True)
 
-        # 🔥 IMPORTANT: Update DocType field
-        frappe.db.set_value(doctype, docname, "brand_photo", file_doc.file_url)
-
-        # 🔥 Link file to that field so UI sees it
-        file_doc.attached_to_field = "brand_photo"
-        file_doc.save(ignore_permissions=True)
+        # ----------------------------------------------------
+        # 9) Update target field
+        # ----------------------------------------------------
+        frappe.db.set_value(doctype, docname, fieldname, file_doc.file_url)
 
         frappe.db.commit()
 
+        # ----------------------------------------------------
+        # 10) Response
+        # ----------------------------------------------------
         return {
             "message": "uploaded",
             "file": {
@@ -434,5 +511,5 @@ def upload_single_file():
         }
 
     except Exception as e:
-        frappe.log_error("UPLOAD_SINGLE_FILE_ERROR", str(e))
+        frappe.log_error("UPLOAD_SINGLE_FILE_ERROR", frappe.get_traceback())
         frappe.throw(f"Upload failed: {str(e)}")

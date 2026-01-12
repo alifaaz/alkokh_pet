@@ -1,23 +1,24 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "Guardian-.#####",
+ "autoname": "GUARDIAN-.#####",
  "creation": "2025-11-20 21:14:56.176532",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "info_section",
-  "full_name",
   "phone",
+  "user_id",
+  "customer_id",
+  "full_name",
+  "pending_password_hash",
   "status_section",
   "is_active",
   "otp_verified",
-  "wrong_attempts",
   "otp_section",
   "otp_code",
   "otp_expires_at",
-  "user_link_section",
-  "user_id"
+  "wrong_attempts"
  ],
  "fields": [
   {
@@ -26,14 +27,9 @@
    "label": "Info"
   },
   {
-   "fieldname": "full_name",
-   "fieldtype": "Data",
-   "label": "Full Name",
-   "reqd": 1
-  },
-  {
    "fieldname": "phone",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Phone Number",
    "reqd": 1,
    "unique": 1
@@ -56,17 +52,6 @@
    "label": "OTP Verified"
   },
   {
-   "fieldname": "user_link_section",
-   "fieldtype": "Section Break",
-   "label": "User Link"
-  },
-  {
-   "fieldname": "user_id",
-   "fieldtype": "Link",
-   "label": "User ID",
-   "options": "User"
-  },
-  {
    "fieldname": "otp_section",
    "fieldtype": "Section Break",
    "label": "OTP"
@@ -87,12 +72,37 @@
    "fieldname": "wrong_attempts",
    "fieldtype": "Int",
    "label": "Wrong Attempts"
+  },
+  {
+   "fieldname": "customer_id",
+   "fieldtype": "Link",
+   "label": "Customer ID",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "user_id",
+   "fieldtype": "Link",
+   "label": "User ID",
+   "options": "User"
+  },
+  {
+   "fieldname": "pending_password_hash",
+   "fieldtype": "Text",
+   "label": "pending password hash",
+   "options": "{\"length\": 500}"
+  },
+  {
+   "fetch_from": "customer_id.customer_name",
+   "fieldname": "full_name",
+   "fieldtype": "Data",
+   "label": "Full Name",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-20 21:23:15.354046",
+ "modified": "2026-01-03 18:42:50.533653",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Guardian",
@@ -108,6 +118,17 @@
    "read": 1,
    "report": 1,
    "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Guardian",
+   "select": 1,
    "share": 1,
    "write": 1
   }
