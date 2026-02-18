@@ -44,7 +44,7 @@
    "fieldname": "frequency",
    "fieldtype": "Select",
    "label": "Frequency",
-   "options": "onetime\nmonthly\nquarterly\nbiannual\nannual",
+   "options": "onetime\nmonthly\nquarterly\nbiannual\nannul",
    "reqd": 1
   },
   {
@@ -88,7 +88,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-10 18:58:01.058372",
+ "modified": "2026-01-13 22:10:38.001970",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CareService",

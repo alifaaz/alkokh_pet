@@ -12,6 +12,7 @@
   "customer_id",
   "full_name",
   "pending_password_hash",
+  "guardian_image",
   "status_section",
   "is_active",
   "otp_verified",
@@ -97,12 +98,17 @@
    "fieldtype": "Data",
    "label": "Full Name",
    "read_only": 1
+  },
+  {
+   "fieldname": "guardian_image",
+   "fieldtype": "Attach Image",
+   "label": "Guardian Image"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-03 18:42:50.533653",
+ "modified": "2026-01-22 23:12:47.459866",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Guardian",
