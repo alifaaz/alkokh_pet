@@ -247,3 +247,10 @@ app_license = "mit"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
+doc_events = {
+    "Patient Encounter": {
+        "before_insert": "pet_app.integrations.patient_encounter.before_insert",
+        "after_insert": "pet_app.integrations.patient_encounter.after_insert",
+    }
+}
+

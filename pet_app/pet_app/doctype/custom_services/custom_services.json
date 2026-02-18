@@ -1,0 +1,41 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-01-19 23:31:53.611921",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "care_service_id",
+  "pet_care_service_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet_care_service_id",
+   "fieldtype": "Link",
+   "label": "pet care service id",
+   "options": "PetCareService"
+  },
+  {
+   "fieldname": "care_service_id",
+   "fieldtype": "Link",
+   "label": "care service id",
+   "options": "CareService"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-19 23:34:08.599153",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "custom services",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
