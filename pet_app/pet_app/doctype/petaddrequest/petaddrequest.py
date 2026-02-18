@@ -3,10 +3,7 @@
 
 from frappe.model.document import Document
 import frappe
-from frappe.utils import now_datetime
-
-import frappe
-from frappe.model.document import Document
+from pet_app.utils.patient_linking import get_or_create_patient_for_pet  # ✅ add this
 
 class PetAddRequest(Document):
 
@@ -15,28 +12,21 @@ class PetAddRequest(Document):
         if self.status != "Approved":
             return
 
-        if self.get_doc_before_save() and self.get_doc_before_save().status == "Approved":
+        before = self.get_doc_before_save()
+        if before and before.status == "Approved":
             return
 
         # 1️⃣ تحديث حالة الحيوان
-        frappe.db.set_value(
-            "Pet",
-            self.pet_id,
-            "pet_status",
-            "Approved"
-        )
+        frappe.db.set_value("Pet", self.pet_id, "pet_status", "Approved")
 
         # 2️⃣ إنشاء PetGuardian إذا مو موجود
-        if not frappe.db.exists(
-            "PetGuardian",
-            {
-                "pet_id": self.pet_id,
-                "guardian_id": self.guardian_id
-            }
-        ):
+        if not frappe.db.exists("PetGuardian", {"pet_id": self.pet_id, "guardian_id": self.guardian_id}):
             frappe.get_doc({
                 "doctype": "PetGuardian",
                 "pet_id": self.pet_id,
                 "guardian_id": self.guardian_id,
                 "role": "primary_owner"
             }).insert(ignore_permissions=True)
+
+        # 3️⃣ ✅ إنشاء/ربط Patient للحيوان (مرة وحدة فقط)
+        get_or_create_patient_for_pet(self.pet_id, self.guardian_id)
