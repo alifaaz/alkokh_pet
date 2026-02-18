@@ -19,7 +19,16 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 
 # ====== CONFIG ======
-DEBUG_MODE = frappe.conf.get("development_mode", False)
+def is_debug_mode() -> bool:
+    conf = getattr(frappe, "conf", None)
+    if not conf:
+        return False
+    try:
+        return bool(conf.get("development_mode"))
+    except Exception:
+        return bool(getattr(conf, "development_mode", False))
+
+
 OTP_EXPIRY_MINUTES = 10
 MAX_OTP_ATTEMPTS = 5
 DEFAULT_COUNTRY = "Iraq"
@@ -79,7 +88,7 @@ def validate_otp(otp: str) -> str:
 # ====== HELPERS ======
 
 def log_security_event(event_type: str, phone: str, message: str = ""):
-    if DEBUG_MODE and message:
+    if is_debug_mode() and message:
         frappe.logger().info(f"[AUTH] [{event_type}] {phone}: {message}")
     else:
         frappe.logger().warning(f"[AUTH] [{event_type}] {phone}")
@@ -250,7 +259,7 @@ def register_guardian(phone, password):
         log_security_event("RESEND_OTP", phone)
 
         resp = {"status": "otp_resent", "guardian_id": guardian.get("name"), "message": "OTP sent"}
-        if DEBUG_MODE:
+        if is_debug_mode():
             resp["otp"] = otp
         return resp
 
@@ -273,10 +282,9 @@ def register_guardian(phone, password):
     log_security_event("NEW_GUARDIAN", phone)
 
     resp = {"status": "otp_sent", "guardian_id": doc.name, "message": "OTP sent"}
-    if DEBUG_MODE:
+    if is_debug_mode():
         resp["otp"] = otp
     return resp
-
 
 @frappe.whitelist(allow_guest=True)
 def resend_otp(phone):
@@ -293,7 +301,7 @@ def resend_otp(phone):
     log_security_event("RESEND_OTP", phone)
 
     resp = {"status": "success", "message": "OTP sent"}
-    if DEBUG_MODE:
+    if is_debug_mode():
         resp["otp"] = otp
     return resp
 
@@ -355,6 +363,23 @@ def verify_otp(phone, otp, password):
         },
         update_modified=False
     )
+
+
+    guardian_image = frappe.db.get_value(
+        "Guardian",
+        guardian.get("name"),
+        "guardian_image"
+    )
+    
+    if guardian_image:
+        frappe.db.set_value(
+            "User",
+            user_id,
+            "user_image",
+            guardian_image,
+            update_modified=False
+        )
+    
 
     api_key, api_secret = create_api_keys(user_id)
     log_security_event("OTP_VERIFIED", phone)
@@ -532,7 +557,7 @@ def forgot_password(phone):
     log_security_event("FORGOT_PASSWORD_OTP", phone)
 
     resp = {"status": "success", "message": "OTP sent for password reset"}
-    if DEBUG_MODE:
+    if is_debug_mode():
         resp["otp"] = otp
     return resp
 
