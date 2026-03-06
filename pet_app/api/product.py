@@ -324,8 +324,13 @@ def publish_product(product_id=None, **kwargs):
         if not product_id:
             doc = frappe.new_doc("Product")
             sku = kwargs.get("sku")
-            if sku and frappe.db.get_value("Product", {"sku": sku}, "name"):
-                frappe.throw(_(f"SKU '{sku}' موجود مسبقاً"))
+            if not sku:
+                last = frappe.db.sql("SELECT MAX(CAST(SUBSTRING(sku, 5) AS UNSIGNED)) FROM `tabProduct` WHERE sku LIKE 'SKU-%'")
+                last_num = int(last[0][0] or 0)
+                sku = f"SKU-{str(last_num + 1).zfill(5)}"
+                kwargs["sku"] = sku
+            elif frappe.db.get_value("Product", {"sku": sku}, "name"):
+                frappe.throw(_(f"SKU '{sku}' already exists"))
             for f in PRODUCT_FIELDS:
                 if f in kwargs:
                     doc.set(f, kwargs[f])
@@ -598,5 +603,15 @@ def get_products(filters=None, fields=None, order_by="creation desc",
     wh = _get_default_warehouse()
     for p in products:
         p["qty"] = _get_bin_qty(p["item"], wh) if p.get("item") else 0
+
+        # get all images from File table
+        p["images"] = frappe.db.get_all("File", 
+            filters={"attached_to_doctype": "Product", "attached_to_name": p["name"], "is_private": 0},
+            fields=["name", "file_url", "file_name", "custom_is_default"],
+            order_by="custom_is_default desc, creation asc"
+        )
+
+        # get category image
+        p["category_image"] = frappe.db.get_value("Item Group", p.get("category"), "image") if p.get("category") else None
 
     frappe.response["data"] = products
