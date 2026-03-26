@@ -19,6 +19,7 @@
   "charge_tax",
   "section_break_wnkk",
   "vendor",
+  "brand",
   "category",
   "status",
   "tags",
@@ -36,13 +37,15 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "product name",
-   "reqd": 1
+   "reqd": 1,
+   "unique": 1
   },
   {
    "fieldname": "sku",
    "fieldtype": "Data",
    "label": "sku",
-   "reqd": 1
+   "reqd": 1,
+   "unique": 1
   },
   {
    "fieldname": "barcode",
@@ -157,12 +160,18 @@
    "fieldtype": "Table",
    "label": "Product Variant",
    "options": "Product Variant"
+  },
+  {
+   "fieldname": "brand",
+   "fieldtype": "Link",
+   "label": "brand",
+   "options": "Brand"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-25 10:16:53.487940",
+ "modified": "2026-03-18 10:02:07.073261",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Product",

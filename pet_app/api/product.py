@@ -300,26 +300,12 @@ PRODUCT_FIELDS = [
 
 @frappe.whitelist(allow_guest=False)
 def publish_product(product_id=None, **kwargs):
-    """
-    إذا product_id موجود → publish منتج موجود
-    إذا ما موجود → خلق Product جديد + publish بـ request واحد
-
-    POST /api/method/pet_app.api.product.publish_product
-    Body (جديد):
-    {
-      "product_name": "Royal Canin",
-      "sku": "RC-001",
-      "category": "All Item Groups",
-      "price": 45000
-    }
-    Body (موجود):
-    {
-      "product_id": "PRODUCT-00001"
-    }
-    """
     _check_permission()
 
     try:
+        # ── capture qty before anything ──
+        _initial_qty = flt(kwargs.pop("qty", 0))
+
         # ── خلق جديد إذا ما في product_id ──
         if not product_id:
             doc = frappe.new_doc("Product")
@@ -334,13 +320,19 @@ def publish_product(product_id=None, **kwargs):
             for f in PRODUCT_FIELDS:
                 if f in kwargs:
                     doc.set(f, kwargs[f])
+
+            # ── Brand ──
+            if kwargs.get("brand"):
+                if not frappe.db.exists("Brand", kwargs["brand"]):
+                    frappe.throw(_(f"Brand '{kwargs['brand']}' does not exist"))
+                doc.set("brand", kwargs["brand"])
+
             if not doc.status:
                 doc.status = "Draft"
             doc.flags.ignore_permissions = True
             doc.insert()
             frappe.db.commit()
             product_id = doc.name
-            _saved_rate = flt(kwargs.get("discounted_price")) or flt(kwargs.get("price")) or 0
 
         doc = frappe.get_doc("Product", product_id)
 
@@ -353,20 +345,39 @@ def publish_product(product_id=None, **kwargs):
             _ensure_item_price(doc, item.name)
             _ensure_website_item(doc, item.name)
 
+            # ── Initial Stock ──
+            if _initial_qty > 0:
+                wh = _get_default_warehouse()
+                if not wh:
+                    frappe.throw(_("Default Warehouse not set in Stock Settings"))
+                se = frappe.new_doc("Stock Entry")
+                se.stock_entry_type = "Material Receipt"
+                se.remarks = f"Initial stock for {doc.name}"
+                se.append("items", {
+                    "item_code":   item.name,
+                    "t_warehouse": wh,
+                    "qty":         _initial_qty,
+                    "basic_rate":  _effective_rate(doc) or 1
+                })
+                se.flags.ignore_permissions = True
+                se.insert()
+                se.submit()
+
         else:
-            # ── Variant Product — Item واحد بس ──
+            # ── Variant Product ──
             exists = frappe.db.exists("Item", doc.sku)
             item   = frappe.get_doc("Item", doc.sku) if exists else frappe.new_doc("Item")
 
             if not exists:
                 item.item_code = doc.sku
 
-            item.item_name     = doc.product_name
-            item.item_group    = doc.category or "All Item Groups"
-            item.stock_uom     = item.stock_uom or "Nos"
-            item.is_stock_item = 1
-            item.description   = doc.description or ""
-            item.image         = doc.image or ""
+            item.item_name      = doc.product_name
+            item.item_group     = doc.category or "All Item Groups"
+            item.brand          = doc.brand or ""
+            item.stock_uom      = item.stock_uom or "Nos"
+            item.is_stock_item  = 1
+            item.description    = doc.description or ""
+            item.image          = doc.image or ""
 
             item.flags.ignore_permissions = True
             item.save() if exists else item.insert()
@@ -375,6 +386,25 @@ def publish_product(product_id=None, **kwargs):
 
             _ensure_item_price(doc, item.name)
             _ensure_website_item(doc, item.name)
+
+            # ── Initial Stock for variant ──
+            if _initial_qty > 0:
+                wh = _get_default_warehouse()
+                if not wh:
+                    frappe.throw(_("Default Warehouse not set in Stock Settings"))
+                se = frappe.new_doc("Stock Entry")
+                se.stock_entry_type = "Material Receipt"
+                se.remarks = f"Initial stock for {doc.name}"
+                se.append("items", {
+                    "item_code":   item.name,
+                    "t_warehouse": wh,
+                    "qty":         _initial_qty,
+                    "basic_rate":  _effective_rate(doc) or 1
+                })
+                se.flags.ignore_permissions = True
+                se.insert()
+                se.submit()
+
             generated = []
 
         # حدّث حالة الـ Product
@@ -386,13 +416,31 @@ def publish_product(product_id=None, **kwargs):
         frappe.db.commit()
         doc.reload()
 
+        # ── Brand details ──
+        if doc.brand:
+            brand_doc = frappe.db.get_value("Brand", doc.brand, ["name", "brand", "image"], as_dict=True)
+            brand_data = {
+                "brand_id":    brand_doc.get("name"),
+                "brand_name":  brand_doc.get("brand"),
+                "brand_image": brand_doc.get("image"),
+            }
+        else:
+            brand_data = {
+                "brand_id":    None,
+                "brand_name":  None,
+                "brand_image": None,
+            }
+
+        wh = _get_default_warehouse()
         frappe.response["data"] = {
             "product":      doc.name,
             "item":         doc.item or doc.sku,
             "website_item": doc.website_item,
             "has_variants": cint(doc.has_variants),
+            "qty":          _get_bin_qty(doc.item or doc.sku, wh),
             "variants":     generated if cint(doc.has_variants) else [],
-            "options":      [{"options": r.options, "value": r.value, "price": flt(r.price) if flt(r.price) > 0 else _effective_rate(doc)} for r in doc.product_variant] if cint(doc.has_variants) else []
+            "options":      [{"options": r.options, "value": r.value, "price": flt(r.price) if flt(r.price) > 0 else _effective_rate(doc)} for r in doc.product_variant] if cint(doc.has_variants) else [],
+            **brand_data
         }
 
     except frappe.ValidationError:
@@ -402,7 +450,7 @@ def publish_product(product_id=None, **kwargs):
         frappe.db.rollback()
         _err(str(e), exc=True)
 
-
+        
 @frappe.whitelist()
 def restock_product(product_id, qty, warehouse=None, item_variant=None):
     """
@@ -570,22 +618,13 @@ def get_stock_info(product_id, warehouse=None):
 def get_products(filters=None, fields=None, order_by="creation desc",
                  limit_start=0, limit_page_length=20,
                  search_term=None):
-    """
-    Exactly like Frappe standard but adds live qty from Bin.
-
-    GET /api/method/pet_app.api.product.get_products
-    GET /api/method/pet_app.api.product.get_products?limit_page_length=10&limit_start=0
-    GET /api/method/pet_app.api.product.get_products?filters=[["status","=","Active"]]
-    GET /api/method/pet_app.api.product.get_products?search_term=Royal
-    GET /api/method/pet_app.api.product.get_products?order_by=product_name asc
-    """
     import json
 
     _filters = json.loads(filters) if isinstance(filters, str) else (filters or [])
     _fields  = json.loads(fields)  if isinstance(fields,  str) else (fields or [
         "name", "product_name", "sku", "image", "description",
         "price", "discounted_price", "status",
-        "in_stock", "category", "vendor", "has_variants", "item"
+        "in_stock", "category", "vendor", "has_variants", "item", "brand"
     ])
 
     if search_term:
@@ -604,14 +643,22 @@ def get_products(filters=None, fields=None, order_by="creation desc",
     for p in products:
         p["qty"] = _get_bin_qty(p["item"], wh) if p.get("item") else 0
 
-        # get all images from File table
         p["images"] = frappe.db.get_all("File", 
             filters={"attached_to_doctype": "Product", "attached_to_name": p["name"], "is_private": 0},
             fields=["name", "file_url", "file_name", "custom_is_default"],
             order_by="custom_is_default desc, creation asc"
         )
 
-        # get category image
         p["category_image"] = frappe.db.get_value("Item Group", p.get("category"), "image") if p.get("category") else None
+
+        if p.get("brand"):
+            brand_doc = frappe.db.get_value("Brand", p.get("brand"), ["name", "brand", "image"], as_dict=True)
+            p["brand_id"]    = brand_doc.get("name")
+            p["brand_name"]  = brand_doc.get("brand")
+            p["brand_image"] = brand_doc.get("image")
+        else:
+            p["brand_id"]    = None
+            p["brand_name"]  = None
+            p["brand_image"] = None
 
     frappe.response["data"] = products
