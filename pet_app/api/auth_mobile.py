@@ -480,65 +480,90 @@ def complete_profile(full_name, city, address_line1, email_id=None):
         "primary_address_id": address_id
     }
 
-
 @frappe.whitelist()
-def get_profile():
-    """
-    Get current user profile
-    Requires: Token auth
-    """
-    user_id = frappe.session.user
-    guardian = get_guardian_by_user(user_id)
-    if not guardian:
-        frappe.throw("Not found")
+def get_guardian_profile(guardian_id):
+    if frappe.session.user == "Guest":
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+    if not frappe.db.exists("Guardian", guardian_id):
+        frappe.throw("Guardian not found")
+
+    guardian = frappe.db.get_value("Guardian", guardian_id, [
+        "name", "phone", "full_name", "guardian_image",
+        "is_active", "otp_verified", "user_id", "customer_id",
+        "creation"
+    ], as_dict=True)
 
     customer = None
-    address = None
+    orders_count = 0
+    total_spent = 0.0
+    addresses = []
 
     if guardian.get("customer_id"):
-        customer = frappe.db.get_value("Customer", guardian.get("customer_id"), "*", as_dict=True)
+        customer = frappe.db.get_value("Customer", guardian["customer_id"], [
+            "name", "customer_name", "mobile_no", "email_id"
+        ], as_dict=True)
 
-        # Fetch primary address
-        addr_rows = frappe.db.sql(
-            """
-            SELECT a.name
+        # Orders count + total spent
+        orders_data = frappe.db.sql("""
+            SELECT COUNT(*) as cnt, COALESCE(SUM(grand_total), 0) as total
+            FROM `tabSales Order`
+            WHERE customer = %s AND docstatus = 1
+        """, (guardian["customer_id"],), as_dict=True)
+
+        if orders_data:
+            orders_count = orders_data[0].get("cnt") or 0
+            total_spent  = orders_data[0].get("total") or 0.0
+
+        # All addresses
+        addr_rows = frappe.db.sql("""
+            SELECT a.name, a.address_title, a.address_type,
+                   a.address_line1, a.address_line2,
+                   a.city, a.country, a.is_primary_address
             FROM `tabAddress` a
             INNER JOIN `tabDynamic Link` dl
               ON dl.parent = a.name
              AND dl.parenttype = 'Address'
              AND dl.link_doctype = 'Customer'
              AND dl.link_name = %s
-            WHERE a.is_primary_address = 1
-            LIMIT 1
-            """,
-            (guardian.get("customer_id"),),
-            as_dict=False
-        )
-        if addr_rows:
-            address = frappe.db.get_value("Address", addr_rows[0][0], "*", as_dict=True)
+            ORDER BY a.is_primary_address DESC, a.creation ASC
+        """, (guardian["customer_id"],), as_dict=True)
 
-    return {
+        addresses = addr_rows or []
+
+    frappe.response["data"] = {
         "guardian": {
-            "id": guardian.get("name"),
-            "phone": guardian.get("phone"),
-            "full_name": guardian.get("full_name"),
-            "is_active": guardian.get("is_active"),
-            "otp_verified": guardian.get("otp_verified"),
-            "user_id": guardian.get("user_id"),
-            "customer_id": guardian.get("customer_id"),
+            "id":             guardian.get("name"),
+            "phone":          guardian.get("phone"),
+            "full_name":      guardian.get("full_name"),
+            "image":          guardian.get("guardian_image"),
+            "is_active":      guardian.get("is_active"),
+            "otp_verified":   guardian.get("otp_verified"),
+            "user_id":        guardian.get("user_id"),
+            "customer_id":    guardian.get("customer_id"),
+            "joined":         str(guardian.get("creation") or ""),
         },
         "customer": {
-            "id": customer.get("name") if customer else None,
+            "id":            customer.get("name") if customer else None,
             "customer_name": customer.get("customer_name") if customer else None,
-            "mobile_no": customer.get("mobile_no") if customer else None,
-            "email_id": customer.get("email_id") if customer else None,
+            "mobile_no":     customer.get("mobile_no") if customer else None,
+            "email_id":      customer.get("email_id") if customer else None,
+            "orders_count":  orders_count,
+            "total_spent":   total_spent,
         } if customer else None,
-        "primary_address": {
-            "id": address.get("name") if address else None,
-            "address_line1": address.get("address_line1") if address else None,
-            "city": address.get("city") if address else None,
-            "country": address.get("country") if address else None,
-        } if address else None
+        "addresses": [
+            {
+                "id":              a.get("name"),
+                "title":           a.get("address_title"),
+                "type":            a.get("address_type"),
+                "address_line1":   a.get("address_line1"),
+                "address_line2":   a.get("address_line2"),
+                "city":            a.get("city"),
+                "country":         a.get("country"),
+                "is_primary":      bool(a.get("is_primary_address")),
+            }
+            for a in addresses
+        ]
     }
 
 
@@ -560,7 +585,6 @@ def forgot_password(phone):
     if is_debug_mode():
         resp["otp"] = otp
     return resp
-
 
 @frappe.whitelist(allow_guest=True)
 def reset_password(phone, otp, new_password):
@@ -601,7 +625,6 @@ def reset_password(phone, otp, new_password):
 
     log_security_event("PASSWORD_RESET", phone)
     return {"status": "success", "message": "Password reset successfully"}
-
 
 @frappe.whitelist()
 def logout():
