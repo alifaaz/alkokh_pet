@@ -307,7 +307,7 @@ def list_pets(page=1, page_size=10, search=None):
             "name", "pet_name", "animal_species", "animal_type", "breed", "status", "birth_date",
             "registration_date", "color", "gender", "weight", "hight",
             "blood_type", "play", "activity_exercise",
-            "food_brand", "food_brand.brand_name",
+            "food_brand",
             "food_type", "food_type.type_name",
             "description", "note"
         ],
@@ -368,7 +368,7 @@ def get_pet(pet_id):
         "birth_date", "registration_date",
         "color", "gender", "weight", "hight",
         "blood_type", "play", "activity_exercise",
-        "food_brand", "food_brand.brand_name",
+        "food_brand",
         "food_type", "food_type.type_name",
         "description", "note"
     ]

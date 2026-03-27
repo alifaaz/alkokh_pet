@@ -182,4 +182,67 @@ def get_encounters(limit_start=0, limit_page_length=20):
             "custom_services": services_by_enc.get(d["name"], []),
         })
 
-    return {"data": out}
+    frappe.response["data"] = out
+
+@frappe.whitelist()
+def get_visit(encounter_id):
+    _admin_only()
+
+    if not frappe.db.exists("Patient Encounter", encounter_id):
+        frappe.throw("Visit not found")
+
+    doc = frappe.get_doc("Patient Encounter", encounter_id)
+
+    # ── Practitioner ──
+    prac = {}
+    if doc.practitioner:
+        prac = frappe.db.get_value("Healthcare Practitioner", doc.practitioner,
+            ["practitioner_name", "image"], as_dict=True) or {}
+
+    # ── Pet ──
+    pet = {}
+    if doc.custom_pet_id:
+        pet = frappe.db.get_value("Pet", doc.custom_pet_id,
+            ["pet_name", "pet_image"], as_dict=True) or {}
+
+    # ── Guardian ──
+    guardian = {}
+    if doc.custom_guardian_id:
+        guardian = frappe.db.get_value("Guardian", doc.custom_guardian_id,
+            ["full_name", "guardian_image"], as_dict=True) or {}
+
+    # ── Services ──
+    services = []
+    for r in doc.custom_services:
+        care_name = frappe.db.get_value("CareService", r.care_service_id, "service_name") if r.care_service_id else None
+        pcs_name  = frappe.db.get_value("PetCareService", r.pet_care_service_id, "pet_service_name") if r.pet_care_service_id else None
+        services.append({
+            "care_service_id":     r.care_service_id,
+            "care_service_name":   care_name,
+            "pet_care_service_id": r.pet_care_service_id,
+            "pet_service_name":    pcs_name,
+        })
+
+    frappe.response["data"] = {
+        "name":                doc.name,
+        "encounter_date":      doc.encounter_date,
+        "encounter_time":      doc.encounter_time,
+        "encounter_comment":   doc.encounter_comment,
+        "status":              doc.status,
+        "custom_total_amount": doc.custom_total_amount,
+        "custom_sales_invoice": doc.custom_sales_invoice,
+
+        "practitioner":        doc.practitioner,
+        "practitioner_name":   prac.get("practitioner_name"),
+        "practitioner_image":  prac.get("image"),
+
+        "custom_pet_id":       doc.custom_pet_id,
+        "pet_name":            pet.get("pet_name"),
+        "pet_image":           pet.get("pet_image"),
+
+        "custom_guardian_id":  doc.custom_guardian_id,
+        "guardian_name":       guardian.get("full_name"),
+        "guardian_image":      guardian.get("guardian_image"),
+
+        "custom_services":     services,
+    }
