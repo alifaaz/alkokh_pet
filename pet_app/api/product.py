@@ -662,3 +662,33 @@ def get_products(filters=None, fields=None, order_by="creation desc",
             p["brand_image"] = None
 
     frappe.response["data"] = products
+
+
+RENAME_FIELD_MAP = {
+    "Brand": "brand",
+    "Item Group": "item_group_name",
+}
+
+
+class DocTypeRenameHandler:
+    """Handles automatic rename when title field changes."""
+
+    def __init__(self, doc, method=None):
+        self.doc = doc
+        self.method = method
+
+    def before_save(self):
+        title_field = RENAME_FIELD_MAP.get(self.doc.doctype)
+        if not title_field:
+            return
+
+        old_name = self.doc.name
+        new_name = self.doc.get(title_field)
+
+        if new_name and new_name != old_name:
+            frappe.rename_doc(self.doc.doctype, old_name, new_name, force=True)
+            self.doc.name = new_name
+
+
+def before_save(doc, method):
+    DocTypeRenameHandler(doc, method).before_save()

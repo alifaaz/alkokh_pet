@@ -250,6 +250,12 @@ app_license = "mit"
 doc_events = {
     "Sales Order": {
         "on_change": "pet_app.api.order.on_sales_order_update",
+    },
+    "Brand": {
+        "before_save": "pet_app.api.product.before_save"
+    },
+    "Item Group": {
+        "before_save": "pet_app.api.product.before_save"
     }
 }
 

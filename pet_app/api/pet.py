@@ -155,26 +155,12 @@ def upload_multiple_files():
 # ============================================================
 # 2) Delete Files (SECURE)
 # ============================================================
-
 @frappe.whitelist()
-def delete_multiple_files(file_names, doctype=None, docname=None):
-    """
-    Secure delete:
-    - Requires doctype + docname to ensure files belong to that document
-    - Requires write permission on the document
-    """
+def delete_multiple_files(file_names):
     import json
 
     if isinstance(file_names, str):
         file_names = json.loads(file_names)
-
-    if not doctype or not docname:
-        frappe.throw("Missing doctype or docname")
-
-    if not frappe.db.exists(doctype, docname):
-        frappe.throw("Document does not exist")
-
-    _require_doc_write(doctype, docname)
 
     result = []
     for fid in file_names:
@@ -185,21 +171,43 @@ def delete_multiple_files(file_names, doctype=None, docname=None):
 
             file_doc = frappe.get_doc("File", fid)
 
-            # Ensure the file belongs to this document
-            if file_doc.attached_to_doctype != doctype or file_doc.attached_to_name != docname:
-                result.append({"file": fid, "status": "forbidden", "error": "File does not belong to this document"})
-                continue
+            # نجيب doctype و docname من الملف نفسه
+            doctype = file_doc.attached_to_doctype
+            docname = file_doc.attached_to_name
+
+            # نتحقق من الصلاحية على الـ document
+            _require_doc_write(doctype, docname)
+
+            deleted_a_default = bool(file_doc.custom_is_default)
 
             frappe.delete_doc("File", fid, force=1)
-            result.append({"file": fid, "status": "deleted"})
+            result.append({"file": fid, "status": "deleted", "doctype": doctype, "docname": docname})
+
+            # إذا كان default نعين غيره
+            if deleted_a_default:
+                fieldname = resolve_image_fieldname(doctype)
+                remaining = frappe.get_all(
+                    "File",
+                    filters={
+                        "attached_to_doctype": doctype,
+                        "attached_to_name": docname,
+                        "attached_to_field": fieldname
+                    },
+                    fields=["name", "file_url"],
+                    order_by="creation asc",
+                    limit=1
+                )
+                new_url = remaining[0]["file_url"] if remaining else None
+                if remaining:
+                    frappe.db.set_value("File", remaining[0]["name"], "custom_is_default", 1)
+                frappe.db.set_value(doctype, docname, fieldname, new_url, update_modified=False)
+                _sync_user_image_from_upload(doctype, docname, new_url)
 
         except Exception as e:
             result.append({"file": fid, "status": "error", "error": str(e)})
 
     frappe.db.commit()
     return result
-
-
 # ============================================================
 # 3) Set Default (SECURE + updates Attach Image field)
 # ============================================================
