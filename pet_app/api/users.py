@@ -1,7 +1,13 @@
 import frappe
+import json
+
+import frappe
+import json
 
 @frappe.whitelist()
-def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_only=0):
+def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_only=0, filters=None):
+
+    # 🔐 permission
     allowed = {"System Manager", "Healthcare Administrator"}
     if set(frappe.get_roles(frappe.session.user) or []).isdisjoint(allowed):
         frappe.throw("Not permitted", frappe.PermissionError)
@@ -10,32 +16,46 @@ def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_onl
     limit_page_length = int(limit_page_length)
     enabled_only = int(enabled_only)
 
-    user_filters = []
-    if enabled_only:
-        user_filters.append(["enabled", "=", 1])
+    # ✅ search filters
+    filters = json.loads(filters) if filters else []
 
-    # ✅ hide @petapp.local users
-    user_filters.append(["name", "not like", "%@petapp.local"])
+    if enabled_only:
+        filters.append(["enabled", "=", 1])
+
+    # hide system users
+    filters.append(["name", "not like", "%@petapp.local"])
 
     users = frappe.get_all(
         "User",
-        filters=user_filters,
-        fields=["name", "full_name", "email", "user_image", "enabled", "last_login"],
+        filters=filters,
+        fields=[
+            "name",
+            "full_name",
+            "email",
+            "username",
+            "user_image",
+            "enabled",
+            "last_login"
+        ],
         limit_start=limit_start,
         limit_page_length=limit_page_length,
         order_by="name asc",
     )
 
     if not users:
-        return {"data": []}
+        frappe.response["data"] = []
+        return
 
     user_ids = [u["name"] for u in users]
 
     rows = frappe.get_all(
         "User Role Profile",
-        filters={"parenttype": "User", "parentfield": "role_profiles", "parent": ["in", user_ids]},
-        fields=["parent", "role_profile"],
-        limit_page_length=999999
+        filters={
+            "parenttype": "User",
+            "parentfield": "role_profiles",
+            "parent": ["in", user_ids]
+        },
+        fields=["parent", "role_profile"]
     )
 
     user_to_profiles = {}
@@ -46,6 +66,7 @@ def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_onl
     for u in users:
         profiles = sorted(set(user_to_profiles.get(u["name"], [])))
 
+        # status
         if u.get("enabled") == 0:
             status = "Inactive"
         elif not u.get("last_login"):
@@ -57,6 +78,7 @@ def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_onl
             "name": u["name"],
             "full_name": u.get("full_name"),
             "email": u.get("email"),
+            "username": u.get("username"),
             "user_image": u.get("user_image"),
             "role_profile": profiles[0] if profiles else None,
             "status": status,

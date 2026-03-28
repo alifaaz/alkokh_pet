@@ -17,7 +17,6 @@
   "registration_date",
   "pet_status",
   "requested_by",
-  "patient_id",
   "section_break_amnw",
   "color",
   "gender",
@@ -176,14 +175,6 @@
    "read_only": 1
   },
   {
-   "fieldname": "patient_id",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Patient id",
-   "options": "Guardian",
-   "read_only": 1
-  },
-  {
    "fieldname": "pet_image",
    "fieldtype": "Attach Image",
    "label": "Pet Image"
@@ -192,7 +183,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-18 05:16:29.419042",
+ "modified": "2026-03-28 02:01:42.087746",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet",

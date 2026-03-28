@@ -1,0 +1,354 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-03-27 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "billed",
+  "column_break_top",
+  "visit_datetime",
+  "sales_invoice",
+  "column_break_top_2",
+  "total_billable_amount",
+  "basic_info_tab",
+  "section_break_basic_info",
+  "case_sheet",
+  "customer",
+  "animal_patient",
+  "column_break_basic_info_1",
+  "doctor",
+  "visit_type",
+  "weight",
+  "examination_tab",
+  "section_break_examination",
+  "temperature",
+  "heart_rate",
+  "respiratory_rate",
+  "column_break_examination_1",
+  "examination_notes",
+  "assessment_tab",
+  "section_break_assessment",
+  "case_summary",
+  "diagnosis",
+  "column_break_assessment_1",
+  "differential_diagnosis",
+  "plan_tab",
+  "section_break_plan",
+  "treatment_plan",
+  "doctor_notes",
+  "orders_actions_tab",
+  "section_break_orders",
+  "prescribed_medications",
+  "requested_services",
+  "lab_requests",
+  "follow_up_tab",
+  "section_break_follow_up",
+  "follow_up_required",
+  "follow_up_date"
+ ],
+ "fields": [
+  {
+   "default": "VVT-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Naming Series",
+   "no_copy": 1,
+   "options": "VVT-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Visit Status",
+   "options": "Draft\nIn Progress\nCompleted\nCancelled\nFollow-up Needed",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "billed",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Billed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_top",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Now",
+   "fieldname": "visit_datetime",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Visit Date / Time",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Sales Invoice",
+   "no_copy": 1,
+   "options": "Sales Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_top_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_billable_amount",
+   "fieldtype": "Currency",
+   "label": "Total Billable Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "basic_info_tab",
+   "fieldtype": "Tab Break",
+   "label": "Basic Info"
+  },
+  {
+   "fieldname": "section_break_basic_info",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "case_sheet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Case Sheet",
+   "options": "Vet Case Sheet",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fetch_from": "case_sheet.customer",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Owner / Guardian",
+   "options": "Customer",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "case_sheet.animal_patient",
+   "fieldname": "animal_patient",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Animal / Pet",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_basic_info_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "label": "Doctor / Practitioner",
+   "options": "Healthcare Practitioner",
+   "reqd": 1
+  },
+  {
+   "default": "Consultation",
+   "fieldname": "visit_type",
+   "fieldtype": "Select",
+   "label": "Visit Type",
+   "options": "Consultation\nFollow-up\nVaccination\nEmergency\nProcedure\nRecheck",
+   "reqd": 1
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight"
+  },
+  {
+   "fieldname": "examination_tab",
+   "fieldtype": "Tab Break",
+   "label": "Examination"
+  },
+  {
+   "fieldname": "section_break_examination",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "temperature",
+   "fieldtype": "Float",
+   "label": "Temperature"
+  },
+  {
+   "fieldname": "heart_rate",
+   "fieldtype": "Int",
+   "label": "Heart Rate"
+  },
+  {
+   "fieldname": "respiratory_rate",
+   "fieldtype": "Int",
+   "label": "Respiratory Rate"
+  },
+  {
+   "fieldname": "column_break_examination_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "examination_notes",
+   "fieldtype": "Text Editor",
+   "label": "Clinical Examination"
+  },
+  {
+   "fieldname": "assessment_tab",
+   "fieldtype": "Tab Break",
+   "label": "Assessment"
+  },
+  {
+   "fieldname": "section_break_assessment",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "case_summary",
+   "fieldtype": "Small Text",
+   "label": "Case Summary",
+   "read_only": 1
+  },
+  {
+   "fieldname": "diagnosis",
+   "fieldtype": "Text Editor",
+   "label": "Diagnosis"
+  },
+  {
+   "fieldname": "column_break_assessment_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "differential_diagnosis",
+   "fieldtype": "Small Text",
+   "label": "Differential Diagnosis"
+  },
+  {
+   "fieldname": "plan_tab",
+   "fieldtype": "Tab Break",
+   "label": "Plan"
+  },
+  {
+   "fieldname": "section_break_plan",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "treatment_plan",
+   "fieldtype": "Text Editor",
+   "label": "Treatment Plan"
+  },
+  {
+   "fieldname": "doctor_notes",
+   "fieldtype": "Text Editor",
+   "label": "Doctor Notes"
+  },
+  {
+   "fieldname": "orders_actions_tab",
+   "fieldtype": "Tab Break",
+   "label": "Orders / Actions"
+  },
+  {
+   "fieldname": "section_break_orders",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "prescribed_medications",
+   "fieldtype": "Table",
+   "label": "Prescribed Medications",
+   "options": "Vet Visit Medication Item"
+  },
+  {
+   "fieldname": "requested_services",
+   "fieldtype": "Table",
+   "label": "Requested Services / Procedures",
+   "options": "Vet Visit Service Item"
+  },
+  {
+   "fieldname": "lab_requests",
+   "fieldtype": "Table",
+   "label": "Lab / Imaging Requests",
+   "options": "Vet Visit Lab Request Item"
+  },
+  {
+   "fieldname": "follow_up_tab",
+   "fieldtype": "Tab Break",
+   "label": "Follow-up"
+  },
+  {
+   "fieldname": "section_break_follow_up",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "follow_up_required",
+   "fieldtype": "Check",
+   "label": "Follow-up Required"
+  },
+  {
+   "depends_on": "eval:doc.follow_up_required === 1",
+   "fieldname": "follow_up_date",
+   "fieldtype": "Date",
+   "label": "Follow-up Date",
+   "mandatory_depends_on": "eval:doc.follow_up_required === 1"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-03-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Vet Visit",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Desk User",
+   "share": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Practitioner",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "case_sheet,customer,animal_patient,doctor",
+ "show_name_in_global_search": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "animal_patient",
+ "track_changes": 1
+}

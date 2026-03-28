@@ -1,0 +1,560 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-03-27 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "status",
+  "priority",
+  "column_break_top",
+  "case_sheet_date",
+  "vet_visit",
+  "basic_info_tab",
+  "section_break_basic_info",
+  "customer",
+  "phone_number",
+  "column_break_basic_info_1",
+  "animal_patient",
+  "species",
+  "column_break_basic_info_2",
+  "breed",
+  "sex",
+  "age_text",
+  "weight",
+  "intake_checklist_tab",
+  "section_break_intake",
+  "chief_complaint",
+  "complaint_other",
+  "column_break_intake",
+  "symptom_duration",
+  "symptoms_tab",
+  "section_break_symptoms",
+  "has_vomiting",
+  "has_diarrhea",
+  "has_cough",
+  "column_break_symptoms_1",
+  "has_sneezing",
+  "has_loss_of_appetite",
+  "has_lethargy",
+  "column_break_symptoms_2",
+  "has_itching",
+  "has_wound",
+  "has_limping",
+  "column_break_symptoms_3",
+  "has_breathing_issue",
+  "has_eye_discharge",
+  "has_ear_discharge",
+  "column_break_symptoms_4",
+  "has_fever_flag",
+  "background_history_tab",
+  "section_break_history",
+  "vaccination_status",
+  "last_vaccine_date",
+  "column_break_history_1",
+  "neutered_spayed",
+  "previous_vet_visit",
+  "previous_vet_details",
+  "section_break_medical_background",
+  "chronic_disease",
+  "chronic_disease_details",
+  "column_break_medical_background_1",
+  "currently_on_medication",
+  "medication_details",
+  "section_break_daily_condition",
+  "appetite_status",
+  "water_intake_status",
+  "urination_status",
+  "column_break_daily_condition_1",
+  "defecation_status",
+  "activity_status",
+  "notes_tab",
+  "section_break_lifestyle",
+  "feeding_type",
+  "feeding_type_other",
+  "column_break_lifestyle_1",
+  "housing_environment",
+  "contact_with_other_animals",
+  "section_break_notes",
+  "intake_notes"
+ ],
+ "fields": [
+  {
+   "default": "VCS-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Naming Series",
+   "no_copy": 1,
+   "options": "VCS-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nWaiting Doctor\nIn Consultation\nConverted to Visit\nClosed",
+   "reqd": 1
+  },
+  {
+   "default": "Normal",
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Priority",
+   "options": "Low\nNormal\nUrgent\nEmergency",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_top",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Now",
+   "fieldname": "case_sheet_date",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Case Sheet Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "vet_visit",
+   "fieldtype": "Link",
+   "label": "Vet Visit",
+   "no_copy": 1,
+   "options": "Vet Visit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "basic_info_tab",
+   "fieldtype": "Tab Break",
+   "label": "Basic Info"
+  },
+  {
+   "fieldname": "section_break_basic_info",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Owner / Guardian",
+   "options": "Guardian",
+   "reqd": 1
+  },
+  {
+   "fieldname": "phone_number",
+   "fieldtype": "Data",
+   "label": "Phone Number"
+  },
+  {
+   "fieldname": "column_break_basic_info_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "animal_patient",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Animal / Pet",
+   "link_filters": "[[\"Pet\",\"patient_id\",\"=\",\"customer\"]]",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "species",
+   "fieldtype": "Data",
+   "label": "Species",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_basic_info_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "breed",
+   "fieldtype": "Data",
+   "label": "Breed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sex",
+   "fieldtype": "Select",
+   "label": "Sex",
+   "options": "Male\nFemale\nUnknown"
+  },
+  {
+   "fieldname": "age_text",
+   "fieldtype": "Data",
+   "label": "Age",
+   "read_only": 1
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight"
+  },
+  {
+   "fieldname": "intake_checklist_tab",
+   "fieldtype": "Tab Break",
+   "label": "Intake Checklist"
+  },
+  {
+   "fieldname": "section_break_intake",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "chief_complaint",
+   "fieldtype": "Select",
+   "label": "Chief Complaint",
+   "options": "Checkup\nVomiting\nDiarrhea\nLoss of Appetite\nVaccination\nInjury\nSkin Problem\nCoughing\nLimping\nEye Problem\nEar Problem\nFollow-up\nOther",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.chief_complaint === 'Other'",
+   "fieldname": "complaint_other",
+   "fieldtype": "Small Text",
+   "label": "Complaint Details",
+   "mandatory_depends_on": "eval:doc.chief_complaint === 'Other'"
+  },
+  {
+   "fieldname": "column_break_intake",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "symptom_duration",
+   "fieldtype": "Select",
+   "label": "Symptom Duration",
+   "options": "Less than 24 hours\n1-3 days\n4-7 days\nMore than 1 week\nUnknown"
+  },
+  {
+   "fieldname": "symptoms_tab",
+   "fieldtype": "Tab Break",
+   "label": "Symptoms"
+  },
+  {
+   "fieldname": "section_break_symptoms",
+   "fieldtype": "Section Break",
+   "label": "Symptom Checklist"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_vomiting",
+   "fieldtype": "Check",
+   "label": "Vomiting"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_diarrhea",
+   "fieldtype": "Check",
+   "label": "Diarrhea"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_cough",
+   "fieldtype": "Check",
+   "label": "Cough"
+  },
+  {
+   "fieldname": "column_break_symptoms_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_sneezing",
+   "fieldtype": "Check",
+   "label": "Sneezing"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_loss_of_appetite",
+   "fieldtype": "Check",
+   "label": "Loss of Appetite"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_lethargy",
+   "fieldtype": "Check",
+   "label": "Lethargy"
+  },
+  {
+   "fieldname": "column_break_symptoms_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_itching",
+   "fieldtype": "Check",
+   "label": "Itching"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_wound",
+   "fieldtype": "Check",
+   "label": "Wound"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_limping",
+   "fieldtype": "Check",
+   "label": "Limping"
+  },
+  {
+   "fieldname": "column_break_symptoms_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_breathing_issue",
+   "fieldtype": "Check",
+   "label": "Breathing Issue"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_eye_discharge",
+   "fieldtype": "Check",
+   "label": "Eye Discharge"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_ear_discharge",
+   "fieldtype": "Check",
+   "label": "Ear Discharge"
+  },
+  {
+   "fieldname": "column_break_symptoms_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_fever_flag",
+   "fieldtype": "Check",
+   "label": "Fever Flag"
+  },
+  {
+   "fieldname": "background_history_tab",
+   "fieldtype": "Tab Break",
+   "label": "Background / History"
+  },
+  {
+   "fieldname": "section_break_history",
+   "fieldtype": "Section Break",
+   "label": "History"
+  },
+  {
+   "fieldname": "vaccination_status",
+   "fieldtype": "Select",
+   "label": "Vaccination Status",
+   "options": "Up to date\nPartially vaccinated\nNot vaccinated\nUnknown"
+  },
+  {
+   "fieldname": "last_vaccine_date",
+   "fieldtype": "Date",
+   "label": "Last Vaccine Date"
+  },
+  {
+   "fieldname": "column_break_history_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "neutered_spayed",
+   "fieldtype": "Select",
+   "label": "Neutered / Spayed",
+   "options": "Yes\nNo\nUnknown"
+  },
+  {
+   "default": "0",
+   "fieldname": "previous_vet_visit",
+   "fieldtype": "Check",
+   "label": "Previous Vet Visit"
+  },
+  {
+   "depends_on": "eval:doc.previous_vet_visit === 1",
+   "fieldname": "previous_vet_details",
+   "fieldtype": "Small Text",
+   "label": "Previous Vet Details",
+   "mandatory_depends_on": "eval:doc.previous_vet_visit === 1"
+  },
+  {
+   "fieldname": "section_break_medical_background",
+   "fieldtype": "Section Break",
+   "label": "Medical Background"
+  },
+  {
+   "default": "0",
+   "fieldname": "chronic_disease",
+   "fieldtype": "Check",
+   "label": "Chronic Disease"
+  },
+  {
+   "depends_on": "eval:doc.chronic_disease === 1",
+   "fieldname": "chronic_disease_details",
+   "fieldtype": "Small Text",
+   "label": "Chronic Disease Details",
+   "mandatory_depends_on": "eval:doc.chronic_disease === 1"
+  },
+  {
+   "fieldname": "column_break_medical_background_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "currently_on_medication",
+   "fieldtype": "Check",
+   "label": "Currently on Medication"
+  },
+  {
+   "depends_on": "eval:doc.currently_on_medication === 1",
+   "fieldname": "medication_details",
+   "fieldtype": "Small Text",
+   "label": "Medication Details",
+   "mandatory_depends_on": "eval:doc.currently_on_medication === 1"
+  },
+  {
+   "fieldname": "section_break_daily_condition",
+   "fieldtype": "Section Break",
+   "label": "Daily Condition"
+  },
+  {
+   "fieldname": "appetite_status",
+   "fieldtype": "Select",
+   "label": "Appetite Status",
+   "options": "Normal\nReduced\nAbsent\nUnknown"
+  },
+  {
+   "fieldname": "water_intake_status",
+   "fieldtype": "Select",
+   "label": "Water Intake Status",
+   "options": "Normal\nReduced\nIncreased\nUnknown"
+  },
+  {
+   "fieldname": "urination_status",
+   "fieldtype": "Select",
+   "label": "Urination Status",
+   "options": "Normal\nReduced\nPainful\nFrequent\nUnknown"
+  },
+  {
+   "fieldname": "column_break_daily_condition_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "defecation_status",
+   "fieldtype": "Select",
+   "label": "Defecation Status",
+   "options": "Normal\nConstipated\nDiarrhea\nBlood Seen\nUnknown"
+  },
+  {
+   "fieldname": "activity_status",
+   "fieldtype": "Select",
+   "label": "Activity Status",
+   "options": "Normal\nLess Active\nVery Weak\nUnknown"
+  },
+  {
+   "fieldname": "notes_tab",
+   "fieldtype": "Tab Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "section_break_lifestyle",
+   "fieldtype": "Section Break",
+   "label": "Lifestyle"
+  },
+  {
+   "fieldname": "feeding_type",
+   "fieldtype": "Select",
+   "label": "Feeding Type",
+   "options": "Dry Food\nWet Food\nHome Food\nMixed\nOther"
+  },
+  {
+   "depends_on": "eval:doc.feeding_type === 'Other'",
+   "fieldname": "feeding_type_other",
+   "fieldtype": "Data",
+   "label": "Feeding Type Other",
+   "mandatory_depends_on": "eval:doc.feeding_type === 'Other'"
+  },
+  {
+   "fieldname": "column_break_lifestyle_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "housing_environment",
+   "fieldtype": "Select",
+   "label": "Housing / Living Environment",
+   "options": "Indoor\nOutdoor\nMixed\nFarm\nUnknown"
+  },
+  {
+   "default": "0",
+   "fieldname": "contact_with_other_animals",
+   "fieldtype": "Check",
+   "label": "Contact with Other Animals"
+  },
+  {
+   "fieldname": "section_break_notes",
+   "fieldtype": "Section Break",
+   "label": "Initial Notes"
+  },
+  {
+   "fieldname": "intake_notes",
+   "fieldtype": "Small Text",
+   "label": "Intake Notes"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-03-28 01:37:45.103820",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Vet Case Sheet",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Desk User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Practitioner",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "customer,animal_patient,phone_number,chief_complaint",
+ "show_name_in_global_search": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "animal_patient",
+ "track_changes": 1
+}

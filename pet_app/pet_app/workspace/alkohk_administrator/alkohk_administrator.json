@@ -1,0 +1,342 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"alkohk_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Alkohk</span>\",\"col\":12}},{\"id\":\"alkohk_para\",\"type\":\"paragraph\",\"data\":{\"text\":\"Mapped workspace for pet operations, veterinary flow, pricing, and settings.\",\"col\":12}},{\"id\":\"alkohk_shortcut_dashboard\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Alkohk Dashboard\",\"col\":3}},{\"id\":\"alkohk_shortcut_case_sheet\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Vet Case Sheet\",\"col\":3}},{\"id\":\"alkohk_shortcut_visit\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Vet Visit\",\"col\":3}},{\"id\":\"alkohk_shortcut_pet\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Pet\",\"col\":3}},{\"id\":\"alkohk_spacer_1\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_shortcut_service\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"CareService\",\"col\":3}},{\"id\":\"alkohk_shortcut_product\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Product\",\"col\":3}},{\"id\":\"alkohk_shortcut_sales_invoice\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Sales Invoice\",\"col\":3}},{\"id\":\"alkohk_shortcut_workspace\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Workspace\",\"col\":3}},{\"id\":\"alkohk_spacer_2\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_card_vet\",\"type\":\"card\",\"data\":{\"card_name\":\"Veterinary Operations\",\"col\":4}},{\"id\":\"alkohk_card_registry\",\"type\":\"card\",\"data\":{\"card_name\":\"Pet Registry\",\"col\":4}},{\"id\":\"alkohk_card_services\",\"type\":\"card\",\"data\":{\"card_name\":\"Services and Pricing\",\"col\":4}},{\"id\":\"alkohk_spacer_3\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_card_sales\",\"type\":\"card\",\"data\":{\"card_name\":\"Catalog and Sales\",\"col\":4}},{\"id\":\"alkohk_card_settings\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings and Control\",\"col\":4}},{\"id\":\"alkohk_card_healthcare\",\"type\":\"card\",\"data\":{\"card_name\":\"Healthcare Bridge\",\"col\":4}}]",
+ "creation": "2026-03-28 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "Administrator",
+ "hide_custom": 0,
+ "icon": "grid",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Alkohk-Administrator",
+ "links": [
+  {
+   "hidden": 0,
+   "label": "Veterinary Operations",
+   "link_count": 4,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "label": "Vet Case Sheet",
+   "link_to": "Vet Case Sheet",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Vet Visit",
+   "link_to": "Vet Visit",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Healthcare Practitioner",
+   "link_to": "Healthcare Practitioner",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Patient Encounter",
+   "link_to": "Patient Encounter",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Pet Registry",
+   "link_count": 5,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "label": "Pet",
+   "link_to": "Pet",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Guardian",
+   "link_to": "Guardian",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "PetGuardian",
+   "link_to": "PetGuardian",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "PetAddRequest",
+   "link_to": "PetAddRequest",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Patient",
+   "link_to": "Patient",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Services and Pricing",
+   "link_count": 5,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "label": "CareService",
+   "link_to": "CareService",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "CategoryCareServices",
+   "link_to": "CategoryCareServices",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "PetCareService",
+   "link_to": "PetCareService",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Pet Boarding",
+   "link_to": "Pet Boarding",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "custom services",
+   "link_to": "custom services",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Catalog and Sales",
+   "link_count": 5,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "label": "Product",
+   "link_to": "Product",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Customer",
+   "link_to": "Customer",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Sales Order",
+   "link_to": "Sales Order",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Sales Invoice",
+   "link_to": "Sales Invoice",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Price List",
+   "link_to": "Price List",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Settings and Control",
+   "link_count": 6,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "label": "Healthcare Settings",
+   "link_to": "Healthcare Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Selling Settings",
+   "link_to": "Selling Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Stock Settings",
+   "link_to": "Stock Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "System Settings",
+   "link_to": "System Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "User",
+   "link_to": "User",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Role Profile",
+   "link_to": "Role Profile",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Healthcare Bridge",
+   "link_count": 3,
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "label": "Alkohk Dashboard",
+   "link_to": "alkohk_dashboard",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Workspace",
+   "link_to": "Workspace",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "label": "Website Settings",
+   "link_to": "Website Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-03-28 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Alkohk-Administrator",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 0,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 1.0,
+ "shortcuts": [
+  {
+   "label": "Alkohk Dashboard",
+   "link_to": "alkohk_dashboard",
+   "type": "Page"
+  },
+  {
+   "label": "Vet Case Sheet",
+   "link_to": "Vet Case Sheet",
+   "type": "DocType"
+  },
+  {
+   "label": "Vet Visit",
+   "link_to": "Vet Visit",
+   "type": "DocType"
+  },
+  {
+   "label": "Pet",
+   "link_to": "Pet",
+   "type": "DocType"
+  },
+  {
+   "label": "CareService",
+   "link_to": "CareService",
+   "type": "DocType"
+  },
+  {
+   "label": "Product",
+   "link_to": "Product",
+   "type": "DocType"
+  },
+  {
+   "label": "Sales Invoice",
+   "link_to": "Sales Invoice",
+   "type": "DocType"
+  },
+  {
+   "label": "Workspace",
+   "link_to": "Workspace",
+   "type": "DocType"
+  }
+ ],
+ "title": "Alkohk"
+}

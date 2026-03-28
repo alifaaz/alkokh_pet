@@ -1,0 +1,317 @@
+.alkohk-dashboard-page {
+	padding: 0;
+	background:
+		radial-gradient(circle at top left, rgba(255, 196, 61, 0.16), transparent 28%),
+		radial-gradient(circle at top right, rgba(20, 184, 166, 0.12), transparent 26%),
+		linear-gradient(180deg, #fffaf1 0%, #f7f1e5 100%);
+	min-height: calc(100vh - 120px);
+}
+
+.alkohk-dashboard {
+	--alkohk-ink: #1f2a2b;
+	--alkohk-muted: #5d6b68;
+	--alkohk-paper: rgba(255, 255, 255, 0.78);
+	--alkohk-border: rgba(31, 42, 43, 0.08);
+	--alkohk-shadow: 0 22px 60px rgba(62, 49, 24, 0.12);
+	font-family: "Palatino Linotype", "Book Antiqua", Georgia, serif;
+	color: var(--alkohk-ink);
+	padding: 28px;
+}
+
+.alkohk-hero {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 320px;
+	gap: 20px;
+	align-items: end;
+	margin-bottom: 20px;
+}
+
+.alkohk-kicker,
+.alkohk-section-kicker {
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	text-transform: uppercase;
+	letter-spacing: 0.18em;
+	font-size: 11px;
+	color: #b15b22;
+	margin: 0 0 8px;
+}
+
+.alkohk-title {
+	font-size: clamp(2.3rem, 4vw, 3.5rem);
+	line-height: 0.95;
+	margin: 0;
+}
+
+.alkohk-subtitle {
+	max-width: 720px;
+	font-size: 1.05rem;
+	line-height: 1.6;
+	color: var(--alkohk-muted);
+	margin: 12px 0 0;
+}
+
+.alkohk-search-wrap {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.alkohk-search {
+	width: 100%;
+	padding: 15px 18px;
+	border-radius: 18px;
+	border: 1px solid rgba(177, 91, 34, 0.18);
+	background: rgba(255, 255, 255, 0.78);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	font-size: 14px;
+}
+
+.alkohk-metrics,
+.alkohk-card-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 16px;
+}
+
+.alkohk-metrics {
+	margin-bottom: 24px;
+}
+
+.alkohk-section {
+	background: linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.58));
+	border: 1px solid var(--alkohk-border);
+	box-shadow: var(--alkohk-shadow);
+	border-radius: 28px;
+	padding: 22px;
+	margin-bottom: 18px;
+	backdrop-filter: blur(8px);
+}
+
+.alkohk-section.is-empty {
+	display: none;
+}
+
+.alkohk-section-head h2 {
+	font-size: 1.05rem;
+	font-weight: normal;
+	line-height: 1.6;
+	color: var(--alkohk-muted);
+	margin: 0 0 16px;
+}
+
+.alkohk-card,
+.alkohk-chip {
+	position: relative;
+	overflow: hidden;
+	border: 1px solid var(--alkohk-border);
+	border-radius: 24px;
+	background: var(--alkohk-paper);
+	box-shadow: 0 16px 36px rgba(53, 44, 23, 0.08);
+	transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+	animation: alkohk-rise 420ms ease both;
+}
+
+.alkohk-card {
+	padding: 18px;
+	text-align: left;
+	min-height: 196px;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.alkohk-card:hover,
+.alkohk-chip:hover {
+	transform: translateY(-4px);
+	box-shadow: 0 24px 42px rgba(53, 44, 23, 0.12);
+}
+
+.alkohk-card.is-pressed,
+.alkohk-chip.is-pressed {
+	transform: scale(0.985);
+}
+
+.alkohk-card.is-hidden {
+	display: none;
+}
+
+.alkohk-card-top,
+.alkohk-card-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.alkohk-card-body h3 {
+	font-size: 1.3rem;
+	margin: 0 0 8px;
+}
+
+.alkohk-card-body p {
+	margin: 0;
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	font-size: 13px;
+	line-height: 1.55;
+	color: var(--alkohk-muted);
+}
+
+.alkohk-icon-shell {
+	width: 44px;
+	height: 44px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 15px;
+	background: rgba(255,255,255,0.7);
+	border: 1px solid rgba(31, 42, 43, 0.08);
+	font-size: 18px;
+}
+
+.alkohk-card-count,
+.alkohk-card-pill {
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	font-size: 12px;
+	padding: 7px 10px;
+	border-radius: 999px;
+	background: rgba(31, 42, 43, 0.05);
+}
+
+.alkohk-card-foot {
+	margin-top: auto;
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 0.14em;
+	color: var(--alkohk-muted);
+}
+
+.alkohk-arrow {
+	font-size: 22px;
+	line-height: 1;
+}
+
+.alkohk-metric-card {
+	min-height: 116px;
+	justify-content: center;
+}
+
+.alkohk-metric-label {
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 0.14em;
+	color: var(--alkohk-muted);
+}
+
+.alkohk-metric-value {
+	font-size: clamp(2rem, 4vw, 3rem);
+	line-height: 1;
+	margin-top: 8px;
+}
+
+.alkohk-chip-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-top: 12px;
+}
+
+.alkohk-chip {
+	padding: 10px 14px;
+	font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+	font-size: 12px;
+}
+
+.alkohk-embedded-box {
+	padding: 22px;
+	border-radius: 28px;
+	background: rgba(255,255,255,0.6);
+	border: 1px solid var(--alkohk-border);
+}
+
+.alkohk-skeleton-line {
+	height: 14px;
+	background: linear-gradient(90deg, rgba(217, 206, 186, 0.4), rgba(255,255,255,0.9), rgba(217, 206, 186, 0.4));
+	background-size: 200% 100%;
+	border-radius: 999px;
+	animation: alkohk-shimmer 1.2s linear infinite;
+	margin-bottom: 10px;
+}
+
+.alkohk-skeleton-line.short {
+	width: 34%;
+}
+
+.alkohk-skeleton-line.wide {
+	width: 86%;
+}
+
+.alkohk-ripple {
+	position: absolute;
+	border-radius: 999px;
+	background: rgba(255,255,255,0.58);
+	transform: scale(0);
+	animation: alkohk-ripple 420ms ease-out forwards;
+	pointer-events: none;
+}
+
+.accent-sun {
+	background:
+		radial-gradient(circle at top right, rgba(255, 196, 61, 0.28), transparent 42%),
+		var(--alkohk-paper);
+}
+
+.accent-lagoon {
+	background:
+		radial-gradient(circle at top right, rgba(20, 184, 166, 0.22), transparent 42%),
+		var(--alkohk-paper);
+}
+
+.accent-leaf {
+	background:
+		radial-gradient(circle at top right, rgba(34, 197, 94, 0.2), transparent 42%),
+		var(--alkohk-paper);
+}
+
+.accent-berry {
+	background:
+		radial-gradient(circle at top right, rgba(244, 114, 182, 0.18), transparent 42%),
+		var(--alkohk-paper);
+}
+
+@keyframes alkohk-rise {
+	from {
+		opacity: 0;
+		transform: translateY(16px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes alkohk-shimmer {
+	0% {
+		background-position: 200% 0;
+	}
+	100% {
+		background-position: -200% 0;
+	}
+}
+
+@keyframes alkohk-ripple {
+	to {
+		transform: scale(3);
+		opacity: 0;
+	}
+}
+
+@media (max-width: 991px) {
+	.alkohk-hero {
+		grid-template-columns: 1fr;
+	}
+
+	.alkohk-dashboard {
+		padding: 18px;
+	}
+}
