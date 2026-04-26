@@ -16,7 +16,8 @@
   "category_id",
   "default_price",
   "section_break_couy",
-  "description"
+  "description",
+  "disabled"
  ],
  "fields": [
   {
@@ -66,7 +67,8 @@
    "fieldtype": "Link",
    "label": "Item code",
    "options": "Item",
-   "read_only": 1
+   "read_only": 1,
+   "reqd": 1
   },
   {
    "fieldname": "column_break_wbjw",
@@ -75,7 +77,8 @@
   {
    "fieldname": "default_price",
    "fieldtype": "Currency",
-   "label": "Default Price"
+   "label": "Default Price",
+   "reqd": 1
   },
   {
    "default": "Clinic",
@@ -83,15 +86,21 @@
    "fieldtype": "Link",
    "label": "price list",
    "options": "Price List"
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "label": "disabled"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-13 22:10:38.001970",
+ "modified": "2026-04-26 10:19:49.602407",
  "modified_by": "Administrator",
  "module": "Pet App",
- "name": "CareService",
+ "name": "CareService template",
  "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [

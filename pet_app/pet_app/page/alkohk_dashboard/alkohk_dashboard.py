@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
+from pet_app.api.dashboard import _require_analytics_access
 
 
 HERO_METRICS = (
@@ -305,14 +306,12 @@ SECTION_CONFIG = (
 EMBEDDED_MODELS = (
 	"Product Variant",
 	"Vet Visit Medication Item",
-	"Vet Visit Service Item",
-	"Vet Visit Lab Request Item",
 )
 
 
 @frappe.whitelist()
 def get_dashboard_payload() -> dict:
-	frappe.only_for(("Administrator", "System Manager", "Healthcare Administrator"))
+	_require_analytics_access()
 
 	return {
 		"title": _("Alkohk"),
@@ -435,4 +434,7 @@ def _doctype_exists(doctype: str) -> bool:
 
 
 def _can_read(doctype: str) -> bool:
-	return frappe.has_permission(doctype, ptype="read")
+	try:
+		return bool(frappe.has_permission(doctype, ptype="read"))
+	except frappe.PermissionError:
+		return False

@@ -11,6 +11,8 @@
   "pet_id",
   "care_service_id",
   "status",
+  "doctor",
+  "visit",
   "column_break_adis",
   "due_date",
   "provider",
@@ -75,14 +77,26 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Care Service ID",
-   "options": "CareService",
+   "options": "CareService template",
    "reqd": 1
+  },
+  {
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "label": "doctor",
+   "options": "Doctor"
+  },
+  {
+   "fieldname": "visit",
+   "fieldtype": "Link",
+   "label": "visit",
+   "options": "Vet Visit"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-13 01:54:13.086463",
+ "modified": "2026-04-25 22:20:38.619547",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "PetCareService",

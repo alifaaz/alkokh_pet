@@ -1,10 +1,27 @@
 import json
 import frappe
 
+CARE_SERVICE_ROLES = ("System Manager", "Doctor", "Guardian", "Healthcare", "Guardians")
+
+
+def _require_care_service_access(pet_id: str):
+    if frappe.session.user == "Administrator":
+        return
+    if not frappe.has_permission("Pet", doc=pet_id, ptype="read"):
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+    user_roles = set(frappe.get_roles(frappe.session.user) or [])
+    if user_roles.intersection(CARE_SERVICE_ROLES):
+        return
+
+    frappe.throw("Not permitted", frappe.PermissionError)
+
+
 @frappe.whitelist()
 def get_pet_and_services(pet_id, filters=None, limit_start=0, limit_page_length=20):
     limit_start = int(limit_start or 0)
     limit_page_length = int(limit_page_length or 20)
+    _require_care_service_access(pet_id)
 
     # 1) derive species
     pet = frappe.get_value("Pet", pet_id, ["animal_species"], as_dict=True)

@@ -1,8 +1,9 @@
 # Copyright (c) 2026, solvers and contributors
 # For license information, please see license.txt
 
-from frappe.model.document import Document
+import frappe
+from frappe.tests.utils import FrappeTestCase
 
 
-class VetVisitServiceItem(Document):
+class TestDoctor(FrappeTestCase):
 	pass

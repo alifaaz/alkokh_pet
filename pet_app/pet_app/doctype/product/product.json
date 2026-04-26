@@ -43,6 +43,8 @@
   {
    "fieldname": "sku",
    "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "sku",
    "reqd": 1,
    "unique": 1
@@ -171,7 +173,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-18 10:02:07.073261",
+ "modified": "2026-04-07 16:31:38.941486",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Product",

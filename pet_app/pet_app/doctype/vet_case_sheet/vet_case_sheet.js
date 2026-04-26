@@ -24,6 +24,23 @@ frappe.ui.form.on("Vet Case Sheet", {
 		}
 	},
 
+	guardian(frm) {
+		if (!frm.doc.guardian) {
+			return;
+		}
+
+		frappe.db.get_value("Guardian", frm.doc.guardian, ["customer_id", "phone"]).then(({ message }) => {
+			if (!message) {
+				return;
+			}
+
+			frm.set_value({
+				customer: message.customer_id || null,
+				phone_number: message.phone || frm.doc.phone_number,
+			});
+		});
+	},
+
 	animal_patient(frm) {
 		if (!frm.doc.animal_patient) {
 			return;
@@ -40,6 +57,7 @@ frappe.ui.form.on("Vet Case Sheet", {
 				}
 
 				frm.set_value({
+					guardian: frm.doc.guardian || message.guardian,
 					customer: frm.doc.customer || message.customer,
 					phone_number: frm.doc.phone_number || message.phone_number,
 					species: message.species,

@@ -1,158 +1,246 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "BRD-.####",
+ "autoname": "BRD-.#####",
  "creation": "2025-11-06 05:12:44.668054",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "room_section",
+  "service_room",
   "pet",
-  "owner_name",
-  "mobile",
-  "status",
-  "column_break_qyhy",
-  "check_in_date",
-  "check_out_date",
-  "number_of_days",
-  "column_break_omqg",
-  "check_in_time",
-  "check_out_time",
-  "section_break_icbq",
+  "guardian",
+  "customer",
+  "gurdian_name",
+  "pet_name",
+  "column_break_room",
   "boarding_type",
-  "cage_number",
-  "food_provided",
-  "column_break_zkui",
-  "deposit_amount",
-  "daily_rate",
+  "record_status",
+  "status",
+  "workflow_state",
+  "timing_section",
+  "reserved_at",
+  "check_in",
+  "check_out",
+  "stay_days",
+  "billing_section",
   "total_cost",
-  "balance_due",
-  "section_break_yrkw",
-  "feeding_schedule",
-  "special_instructions"
+  "deposit",
+  "balance",
+  "column_break_billing",
+  "billing_status",
+  "sales_invoice",
+  "billable_items",
+  "notes_section",
+  "note",
+  "checkout_notes",
+  "amended_from",
+  "notes"
  ],
  "fields": [
   {
+   "fieldname": "room_section",
+   "fieldtype": "Section Break",
+   "label": "Room"
+  },
+  {
+   "fieldname": "service_room",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Service Room",
+   "options": "Service Room",
+   "reqd": 1
+  },
+  {
    "fieldname": "pet",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Pet",
-   "options": "Pet"
+   "options": "Pet",
+   "reqd": 1
   },
   {
-   "fetch_from": "pet.owner_customer",
-   "fieldname": "owner_name",
+   "fieldname": "guardian",
    "fieldtype": "Link",
-   "label": "Owner",
-   "options": "Customer"
+   "in_list_view": 1,
+   "label": "Guardian",
+   "options": "Guardian",
+   "reqd": 1
   },
   {
-   "fetch_from": "owner_name.mobile",
-   "fieldname": "mobile",
-   "fieldtype": "Data",
-   "label": "Mobile"
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
   },
   {
-   "fieldname": "check_in_date",
-   "fieldtype": "Date",
-   "label": "Check In Date"
+   "fieldname": "column_break_room",
+   "fieldtype": "Column Break"
   },
   {
-   "fieldname": "check_in_time",
-   "fieldtype": "Time",
-   "label": "Check In Time"
-  },
-  {
-   "fieldname": "check_out_date",
-   "fieldtype": "Date",
-   "label": "Check Out Date"
-  },
-  {
-   "fieldname": "check_out_time",
-   "fieldtype": "Time",
-   "label": "Check Out Time"
-  },
-  {
-   "fieldname": "number_of_days",
-   "fieldtype": "Int",
-   "label": "Number of Days"
-  },
-  {
+   "default": "Travel",
    "fieldname": "boarding_type",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Boarding Type",
-   "options": "Standard\nDeluxe\nVIP"
+   "options": "Travel\nTreatment",
+   "reqd": 1
   },
   {
-   "fieldname": "daily_rate",
-   "fieldtype": "Currency",
-   "label": "Daily Rate"
+   "default": "Reserved",
+   "fieldname": "record_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Record Status",
+   "options": "Reserved\nChecked In\nChecked Out\nCancelled",
+   "reqd": 1
+  },
+  {
+   "default": "Open",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Open\nClosed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "default": "Reserved",
+   "fieldname": "workflow_state",
+   "fieldtype": "Data",
+   "label": "Workflow State",
+   "read_only": 1
+  },
+  {
+   "fieldname": "timing_section",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "fieldname": "reserved_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Reserved At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "check_in",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Check In"
+  },
+  {
+   "fieldname": "check_out",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Check Out"
+  },
+  {
+   "fieldname": "stay_days",
+   "fieldtype": "Float",
+   "label": "Stay Days",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billing_section",
+   "fieldtype": "Section Break",
+   "label": "Billing"
   },
   {
    "fieldname": "total_cost",
    "fieldtype": "Currency",
-   "label": "Total Cost"
-  },
-  {
-   "fieldname": "deposit_amount",
-   "fieldtype": "Currency",
-   "label": "Deposit Amount"
-  },
-  {
-   "fieldname": "balance_due",
-   "fieldtype": "Currency",
-   "label": "Balance Due"
-  },
-  {
-   "fieldname": "status",
-   "fieldtype": "Select",
-   "label": "Status",
-   "options": "Reserved\nChecked In\nChecked Out\nCancelled"
-  },
-  {
-   "fieldname": "cage_number",
-   "fieldtype": "Data",
-   "label": "Cage Number"
-  },
-  {
-   "fieldname": "special_instructions",
-   "fieldtype": "Text",
-   "label": "Special Instructions"
+   "in_list_view": 1,
+   "label": "Total Cost",
+   "read_only": 1
   },
   {
    "default": "0",
-   "fieldname": "food_provided",
-   "fieldtype": "Check",
-   "label": "Food Provided"
+   "fieldname": "deposit",
+   "fieldtype": "Currency",
+   "label": "Deposit"
   },
   {
-   "fieldname": "feeding_schedule",
+   "fieldname": "balance",
+   "fieldtype": "Currency",
+   "label": "Balance",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_billing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Unbilled",
+   "fieldname": "billing_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Billing Status",
+   "options": "Unbilled\nInvoiced",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Sales Invoice",
+   "no_copy": 1,
+   "options": "Sales Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "billable_items",
+   "fieldtype": "Table",
+   "label": "Billable Items",
+   "options": "Pet Billable Item"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "note",
    "fieldtype": "Small Text",
-   "label": "Feeding Schedule"
+   "label": "Note"
   },
   {
-   "fieldname": "column_break_qyhy",
-   "fieldtype": "Column Break"
+   "fetch_from": "guardian.full_name",
+   "fieldname": "gurdian_name",
+   "fieldtype": "Data",
+   "read_only": 1
   },
   {
-   "fieldname": "column_break_omqg",
-   "fieldtype": "Column Break"
+   "fetch_from": "pet.pet_name",
+   "fieldname": "pet_name",
+   "fieldtype": "Data"
   },
   {
-   "fieldname": "section_break_icbq",
-   "fieldtype": "Section Break"
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Pet Boarding",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
   },
   {
-   "fieldname": "column_break_zkui",
-   "fieldtype": "Column Break"
+   "fieldname": "checkout_notes",
+   "fieldtype": "Text",
+   "label": "Notes"
   },
   {
-   "fieldname": "section_break_yrkw",
-   "fieldtype": "Section Break"
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "s"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
+ "is_submittable": 1,
  "links": [],
- "modified": "2025-11-06 05:28:53.942241",
+ "modified": "2026-04-21 01:09:35.388016",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Boarding",
@@ -160,6 +248,7 @@
  "owner": "Administrator",
  "permissions": [
   {
+   "cancel": 1,
    "create": 1,
    "delete": 1,
    "email": 1,
@@ -169,12 +258,38 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Desk User",
+   "share": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Practitioner",
+   "share": 1,
+   "submit": 1,
    "write": 1
   }
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
+ "search_fields": "service_room,pet,guardian,customer,record_status",
+ "show_name_in_global_search": 1,
  "sort_field": "creation",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "pet",
+ "track_changes": 1
 }

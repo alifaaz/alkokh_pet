@@ -1,108 +1,96 @@
+from __future__ import annotations
+
 import frappe
+from frappe import _
+from frappe.utils import cstr
 
 
-def _pick_patient_sex(pet_gender: str | None) -> str:
-    """
-    يرجّع قيمة Sex صحيحة حسب خيارات Patient.sex الفعلية في نظامك.
-    يدعم: Male/Female/Other/Unknown (حسب الموجود).
-    """
-    pet_gender = (pet_gender or "").strip()
+def get_or_create_patient_for_pet(pet_id: str, guardian_id: str | None = None) -> str | None:
+	"""Create or return a Healthcare Patient for a Pet when Healthcare is installed.
 
-    meta = frappe.get_meta("Patient")
-    sex_field = meta.get_field("sex")
-    opts = []
-    if sex_field and sex_field.options:
-        opts = [o.strip() for o in sex_field.options.split("\n") if o.strip()]
+	This module is intentionally defensive: pet approval should not fail on sites
+	that do not have the Healthcare Patient DocType installed.
+	"""
+	if not pet_id:
+		frappe.throw(_("Pet is required."))
+	if not frappe.db.exists("Pet", pet_id):
+		frappe.throw(_("Pet {0} does not exist.").format(frappe.bold(pet_id)))
+	if not frappe.db.exists("DocType", "Patient"):
+		return None
 
-    # أولاً حاول Male/Female
-    if pet_gender in ("Male", "Female") and pet_gender in opts:
-        return pet_gender
+	patient = _find_existing_patient(pet_id, guardian_id)
+	if patient:
+		return patient
 
-    # Unknown/Other حسب الموجود
-    for fallback in ("Other", "Unknown", "Male", "Female"):
-        if fallback in opts:
-            return fallback
+	pet = frappe.db.get_value(
+		"Pet",
+		pet_id,
+		["name", "pet_name", "gender", "birth_date", "requested_by"],
+		as_dict=True,
+	)
+	guardian_id = guardian_id or pet.get("requested_by")
+	guardian = (
+		frappe.db.get_value(
+			"Guardian",
+			guardian_id,
+			["name", "full_name", "phone", "email_id", "customer_id"],
+			as_dict=True,
+		)
+		if guardian_id and frappe.db.exists("Guardian", guardian_id)
+		else frappe._dict()
+	)
 
-    # إذا ماكو خيارات واضحة (نادر جداً)
-    return pet_gender or "Other"
+	patient_doc = frappe.new_doc("Patient")
+	_set_if_field(patient_doc, "patient_name", pet.get("pet_name") or pet_id)
+	_set_if_field(patient_doc, "sex", _normalize_patient_sex(pet.get("gender")))
+	_set_if_field(patient_doc, "dob", pet.get("birth_date"))
+	_set_if_field(patient_doc, "mobile", guardian.get("phone"))
+	_set_if_field(patient_doc, "email", guardian.get("email_id"))
+	_set_if_field(patient_doc, "customer", guardian.get("customer_id"))
+	_set_if_field(patient_doc, "custom_pet", pet_id)
+	_set_if_field(patient_doc, "custom_pet_id", pet_id)
+	_set_if_field(patient_doc, "pet", pet_id)
+	_set_if_field(patient_doc, "custom_guardian", guardian_id)
+	_set_if_field(patient_doc, "custom_guardian_id", guardian_id)
+	_set_if_field(patient_doc, "guardian", guardian_id)
+
+	patient_doc.insert(ignore_permissions=True)
+	return patient_doc.name
 
 
-def _get_default_naming_series(doctype: str, fieldname: str = "naming_series") -> str | None:
-    """
-    يرجع default naming_series إذا الحقل موجود.
-    """
-    meta = frappe.get_meta(doctype)
-    f = meta.get_field(fieldname)
-    if not f:
-        return None
+def _find_existing_patient(pet_id: str, guardian_id: str | None = None) -> str | None:
+	meta = frappe.get_meta("Patient")
+	for fieldname in ("custom_pet", "custom_pet_id", "pet"):
+		if meta.has_field(fieldname):
+			patient = frappe.db.get_value("Patient", {fieldname: pet_id}, "name")
+			if patient:
+				return patient
 
-    # default بالدوكتايب
-    if f.default:
-        return f.default
+	pet_name = frappe.db.get_value("Pet", pet_id, "pet_name")
+	if pet_name:
+		patient = frappe.db.get_value("Patient", {"patient_name": pet_name}, "name")
+		if patient:
+			return patient
 
-    # أول خيار من options
-    if f.options:
-        options = [o.strip() for o in f.options.split("\n") if o.strip()]
-        return options[0] if options else None
+	if guardian_id:
+		guardian = frappe.db.get_value("Guardian", guardian_id, ["phone", "customer_id"], as_dict=True)
+		if guardian:
+			for fieldname, value in (("mobile", guardian.phone), ("customer", guardian.customer_id)):
+				if value and meta.has_field(fieldname):
+					patient = frappe.db.get_value("Patient", {fieldname: value}, "name")
+					if patient:
+						return patient
+	return None
 
-    return None
+
+def _set_if_field(doc, fieldname: str, value):
+	if value is not None and doc.meta.has_field(fieldname):
+		doc.set(fieldname, value)
 
 
-def get_or_create_patient_for_pet(pet_name: str, guardian_id: str | None = None) -> str:
-    pet = frappe.get_doc("Pet", pet_name)
+def _normalize_patient_sex(gender: str | None) -> str | None:
+	gender = cstr(gender).strip()
+	if gender in {"Male", "Female"}:
+		return gender
+	return None
 
-    # 0) إذا patient_id موجود بس مو Patient فعلي (مثل z3tr) نكسره
-    if getattr(pet, "patient_id", None) and not frappe.db.exists("Patient", pet.patient_id):
-        pet.db_set("patient_id", None)
-
-    # 1) إذا مرتبط صح، رجّع
-    if getattr(pet, "patient_id", None) and frappe.db.exists("Patient", pet.patient_id):
-        return pet.patient_id
-
-    # 2) جيب Guardian
-    if not guardian_id:
-        guardian_id = (
-            frappe.db.get_value("PetGuardian", {"pet_id": pet.name, "role": "primary_owner"}, "guardian_id")
-            or frappe.db.get_value("PetGuardian", {"pet_id": pet.name}, "guardian_id")
-        )
-
-    if not guardian_id:
-        frappe.throw("Cannot create Patient: no Guardian linked to this Pet.")
-
-    guardian = frappe.get_doc("Guardian", guardian_id)
-
-    if not getattr(guardian, "customer_id", None):
-        frappe.throw("Guardian missing customer_id. Complete OTP/Profile first.")
-
-    # 3) إذا Patient موجود مسبقاً عبر custom_pet_id
-    existing = frappe.db.get_value("Patient", {"custom_pet_id": pet.name}, "name")
-    if existing:
-        pet.db_set("patient_id", existing)
-        return existing
-
-    # 4) Mandatory fields
-    first_name = (pet.pet_name or pet.name or "Pet").strip()
-    sex = _pick_patient_sex(getattr(pet, "gender", None))
-
-    patient_data = {
-        "doctype": "Patient",
-        "first_name": first_name,
-        "sex": sex,
-        # بعض نسخ Healthcare تعتمد patient_name أيضاً
-        "patient_name": first_name,
-        "customer": guardian.customer_id,
-        "custom_pet_id": pet.name,
-        "custom_guardian_id": guardian.name,
-    }
-
-    # 5) naming_series إذا موجود
-    ns = _get_default_naming_series("Patient", "naming_series")
-    if ns:
-        patient_data["naming_series"] = ns
-
-    patient = frappe.get_doc(patient_data)
-    patient.insert(ignore_permissions=True)
-
-    # 6) اربط Pet
-    pet.db_set("patient_id", patient.name)
-    return patient.name

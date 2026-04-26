@@ -1,34 +1,42 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2026-03-27 00:00:00.000000",
+ "creation": "2026-04-20 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "lab_service",
+  "item_name",
   "item_code",
+  "item_type",
   "qty",
   "rate",
   "amount",
-  "notes"
+  "status",
+  "note",
+  "linked_service_id"
  ],
  "fields": [
   {
-   "fieldname": "lab_service",
-   "fieldtype": "Link",
+   "fieldname": "item_name",
+   "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Lab / Imaging Service",
-   "options": "CareService",
-   "reqd": 1
+   "label": "Item Name"
   },
   {
    "fieldname": "item_code",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Item Code",
-   "options": "Item",
-   "read_only": 1
+   "options": "Item"
+  },
+  {
+   "default": "Service",
+   "fieldname": "item_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Item Type",
+   "options": "Room Stay\nService\nMedication\nLab\nImaging\nProduct\nOther"
   },
   {
    "default": "1",
@@ -52,19 +60,32 @@
    "read_only": 1
   },
   {
-   "fieldname": "notes",
+   "default": "Billable",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nBillable\nBilled\nCancelled"
+  },
+  {
+   "fieldname": "note",
    "fieldtype": "Small Text",
-   "label": "Notes"
+   "label": "Note"
+  },
+  {
+   "fieldname": "linked_service_id",
+   "fieldtype": "Data",
+   "label": "Linked Service ID"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-03-27 00:00:00.000000",
+ "modified": "2026-04-20 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
- "name": "Vet Visit Lab Request Item",
+ "name": "Pet Billable Item",
  "owner": "Administrator",
  "permissions": [
   {

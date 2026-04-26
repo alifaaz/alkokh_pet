@@ -5,6 +5,7 @@
  "creation": "2026-03-27 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
+ "track_changes": 1,
  "field_order": [
   "naming_series",
   "status",
@@ -17,6 +18,7 @@
   "basic_info_tab",
   "section_break_basic_info",
   "case_sheet",
+  "guardian",
   "customer",
   "animal_patient",
   "column_break_basic_info_1",
@@ -33,9 +35,11 @@
   "assessment_tab",
   "section_break_assessment",
   "case_summary",
+  "illness",
   "diagnosis",
   "column_break_assessment_1",
   "differential_diagnosis",
+  "care_services",
   "plan_tab",
   "section_break_plan",
   "treatment_plan",
@@ -43,8 +47,7 @@
   "orders_actions_tab",
   "section_break_orders",
   "prescribed_medications",
-  "requested_services",
-  "lab_requests",
+  "billable_items",
   "follow_up_tab",
   "section_break_follow_up",
   "follow_up_required",
@@ -122,17 +125,26 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Case Sheet",
+   "read_only_depends_on": "eval:!doc.__islocal",
    "options": "Vet Case Sheet",
    "reqd": 1,
    "unique": 1
   },
   {
-   "fetch_from": "case_sheet.customer",
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Guardian",
+   "read_only_depends_on": "eval:!doc.__islocal",
+   "options": "Guardian"
+  },
+  {
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Owner / Guardian",
+   "label": "Customer",
    "options": "Customer",
+   "read_only_depends_on": "eval:!doc.__islocal",
    "reqd": 1
   },
   {
@@ -142,6 +154,7 @@
    "in_list_view": 1,
    "label": "Animal / Pet",
    "options": "Pet",
+   "read_only_depends_on": "eval:!doc.__islocal",
    "reqd": 1
   },
   {
@@ -151,8 +164,8 @@
   {
    "fieldname": "doctor",
    "fieldtype": "Link",
-   "label": "Doctor / Practitioner",
-   "options": "Healthcare Practitioner",
+   "label": "Doctor",
+   "options": "Doctor",
    "reqd": 1
   },
   {
@@ -217,6 +230,12 @@
    "read_only": 1
   },
   {
+   "fieldname": "illness",
+   "fieldtype": "Select",
+   "label": "Illness / Condition",
+   "options": "Gastrointestinal\nDermatological\nRespiratory\nMusculoskeletal\nDental\nOphthalmic\nOtic\nParasitic\nInfectious\nNutritional\nEndocrine\nUrinary\nReproductive\nNeurological\nBehavioral\nPreventive Care\nPost-Surgical\nOther"
+  },
+  {
    "fieldname": "diagnosis",
    "fieldtype": "Text Editor",
    "label": "Diagnosis"
@@ -229,6 +248,12 @@
    "fieldname": "differential_diagnosis",
    "fieldtype": "Small Text",
    "label": "Differential Diagnosis"
+  },
+  {
+   "fieldname": "care_services",
+   "fieldtype": "Table",
+   "label": "Selected Care Services",
+   "options": "custom services"
   },
   {
    "fieldname": "plan_tab",
@@ -265,16 +290,10 @@
    "options": "Vet Visit Medication Item"
   },
   {
-   "fieldname": "requested_services",
+   "fieldname": "billable_items",
    "fieldtype": "Table",
-   "label": "Requested Services / Procedures",
-   "options": "Vet Visit Service Item"
-  },
-  {
-   "fieldname": "lab_requests",
-   "fieldtype": "Table",
-   "label": "Lab / Imaging Requests",
-   "options": "Vet Visit Lab Request Item"
+   "label": "Billable Items",
+   "options": "Pet Billable Item"
   },
   {
    "fieldname": "follow_up_tab",

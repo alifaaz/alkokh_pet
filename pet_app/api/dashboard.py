@@ -1,6 +1,65 @@
 import frappe
 from frappe import _
 
+DASHBOARD_ALLOWED_ROLES = {
+    "System Manager",
+    "Accounts Manager",
+    "Accounts User",
+    "Accounting",
+    "Doctor",
+    "Healthcare",
+    "Pet",
+    "E-commerce",
+    "Order",
+    "POS",
+    "Warehouse",
+    "Audit",
+    "Users",
+    "Guardian",
+    "Guardians",
+    "Setting",
+}
+
+DASHBOARD_ALLOWED_ROLE_PROFILES = {
+    "Healthcare Profile",
+    "Pet Profile",
+    "Ecommerce Profile",
+    "Order Profile",
+    "POS Profile",
+    "Accounting Profile",
+    "Warehouse Profile",
+    "Audit Profile",
+    "Users Profile",
+    "Guardians Profile",
+    "Settings Profile",
+}
+
+
+def _require_analytics_access():
+    if frappe.session.user == "Administrator":
+        return
+
+    user_roles = set(frappe.get_roles(frappe.session.user) or [])
+    if user_roles.intersection(DASHBOARD_ALLOWED_ROLES):
+        return
+
+    role_profiles = set(
+        frappe.get_all(
+            "User Role Profile",
+            filters={
+                "parent": frappe.session.user,
+                "parenttype": "User",
+                "parentfield": "role_profiles",
+            },
+            pluck="role_profile",
+        )
+        or []
+    )
+    if role_profiles.intersection(DASHBOARD_ALLOWED_ROLE_PROFILES):
+        return
+
+    frappe.throw(_("Not authorized."), frappe.PermissionError)
+
 
 # ─────────────────────────────────────────
 # 1. Order Status Counts
@@ -11,6 +70,7 @@ def get_order_status_counts():
     """
     GET /api/method/pet_app.api.dashboard.get_order_status_counts
     """
+    _require_analytics_access()
     statuses = [
         "Draft",
         "Preparing",
@@ -42,6 +102,7 @@ def get_statistics():
     """
     GET /api/method/pet_app.api.dashboard.get_statistics
     """
+    _require_analytics_access()
     revenue = frappe.db.sql(
         "SELECT SUM(grand_total) FROM `tabSales Order` WHERE docstatus=1"
     )[0][0] or 0
@@ -64,6 +125,7 @@ def get_revenue_report(fiscal_year="2026"):
     GET /api/method/pet_app.api.dashboard.get_revenue_report
     GET /api/method/pet_app.api.dashboard.get_revenue_report?fiscal_year=2026
     """
+    _require_analytics_access()
     months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
@@ -114,6 +176,7 @@ def get_best_seller():
     """
     GET /api/method/pet_app.api.dashboard.get_best_seller
     """
+    _require_analytics_access()
     import datetime
     today = datetime.date.today()
     first_day = today.replace(day=1)
@@ -142,6 +205,7 @@ def get_profit_and_expenses():
     """
     GET /api/method/pet_app.api.dashboard.get_profit_and_expenses
     """
+    _require_analytics_access()
 
     import datetime
 
@@ -210,6 +274,7 @@ def get_orders_by_item_group():
     """
     GET /api/method/pet_app.api.dashboard.get_orders_by_item_group
     """
+    _require_analytics_access()
     result = frappe.db.sql("""
         SELECT i.item_group, COUNT(soi.name) as count, SUM(soi.amount) as total
         FROM `tabSales Order Item` soi

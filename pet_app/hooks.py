@@ -247,15 +247,78 @@ app_license = "mit"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
+
+
 doc_events = {
     "Sales Order": {
-        "on_change": "pet_app.api.order.on_sales_order_update",
+        "before_update_after_submit": "pet_app.api.order.before_sales_order_update",
+        "on_update_after_submit": "pet_app.api.order.on_sales_order_update",
+    },
+    "Sales Invoice": {
+        "before_insert": "pet_app.utils.sales_invoice_guard.before_insert",
+        "on_cancel": "pet_app.utils.visit_billing.on_sales_invoice_cancel",
+    },
+    "Product": {
+        "after_insert": "pet_app.api.product.sync_product_item",
+        "on_update": "pet_app.api.product.sync_product_item",
+    },
+    "Item": {
+        "on_update": "pet_app.api.product.sync_item_from_product_projection",
+    },
+    "Item Price": {
+        "after_insert": "pet_app.api.product.sync_item_price_from_product_projection",
+        "on_update": "pet_app.api.product.sync_item_price_from_product_projection",
     },
     "Brand": {
         "before_save": "pet_app.api.product.before_save"
     },
     "Item Group": {
         "before_save": "pet_app.api.product.before_save"
-    }
+    },
+    "Supplier": {
+        "before_save": [
+            "pet_app.utils.auto_update_links.before_save",
+            "pet_app.api.product.before_save",
+        ],
+        "on_update":    "pet_app.utils.auto_update_links.on_update",
+        "after_rename": "pet_app.utils.auto_update_links.after_rename",
+    },
+    "Driver": {
+        "before_save": "pet_app.api.driver.before_driver_save",
+        "after_insert": "pet_app.api.driver.after_driver_insert",
+        "on_update": "pet_app.api.driver.on_driver_update",
+    },
+    "Customer": {
+        "validate": "pet_app.utils.guardian_customer.validate_customer_identity_projection",
+    },
+    "Coupon Code": {                                        # ← add this
+        "validate":     "pet_app.api.coupons.validate",
+        "after_insert": "pet_app.api.coupons.after_insert",
+        "on_update":    "pet_app.api.coupons.on_update",
+        "on_trash":     "pet_app.api.coupons.on_delete",
+    },
 }
 
+
+scheduler_events = {
+    "hourly": [
+        "pet_app.api.product.repair_active_product_item_projections",
+    ],
+    "daily": [
+        "pet_app.api.product.repair_all_product_item_projections",
+    ],
+}
+
+    
+# ملاحظة مهمة:
+# الـ before_save للـ sync (auto_update_links.before_save) لازم يشتغل.
+# إذا عندك before_save وحدة بس في hooks — حوّله لـ list:
+#
+# "Supplier": {
+#     "before_save": [
+#         "pet_app.api.product.before_save",           # rename
+#         "pet_app.utils.auto_update_links.before_save", # sync
+#     ],
+#     "on_update":    "pet_app.utils.auto_update_links.on_update",
+#     "after_rename": "pet_app.utils.auto_update_links.after_rename",
+# },

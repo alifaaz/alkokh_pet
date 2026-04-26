@@ -8,7 +8,7 @@ from itertools import product as iterproduct
 # Allowed Roles
 # ─────────────────────────────────────────
 
-PRODUCT_ROLES = ("System Manager", "Item Manager", "Stock Manager", "Administrator")
+PRODUCT_ROLES = ("System Manager", "Item Manager", "Stock Manager", "Administrator", "E-commerce")
 
 
 def _check_permission():
@@ -16,7 +16,21 @@ def _check_permission():
         return
     user_roles = frappe.get_roles(frappe.session.user)
     if not any(r in user_roles for r in PRODUCT_ROLES):
-        frappe.throw(_("غير مصرح — تحتاج صلاحية Item Manager أو Stock Manager"), frappe.PermissionError)
+        frappe.throw(_("Not authorized"), frappe.PermissionError)
+
+
+def _sanitize_order_by(order_by: str) -> str:
+    allowed_fields = {"creation", "modified", "product_name", "sku", "price", "discounted_price", "status"}
+    value = (order_by or "creation desc").strip()
+    parts = value.split()
+    fieldname = parts[0] if parts else "creation"
+    direction = parts[1].lower() if len(parts) > 1 else "desc"
+
+    if fieldname not in allowed_fields:
+        fieldname = "creation"
+    if direction not in {"asc", "desc"}:
+        direction = "desc"
+    return f"{fieldname} {direction}"
 
 
 # ─────────────────────────────────────────
@@ -57,6 +71,46 @@ def _get_bin_qty(item_code, warehouse=None):
     return flt(result[0][0]) if result else 0.0
 
 
+def _log_product_projection_event(event, product=None, item=None, details=None):
+    try:
+        payload = {
+            "event": event,
+            "product": getattr(product, "name", None) if product else None,
+            "sku": getattr(product, "sku", None) if product else None,
+            "item": item,
+            "details": details or {},
+            "action_taken": (details or {}).get("action_taken", "none"),
+        }
+        frappe.log_error(title=event, message=frappe.as_json(payload, indent=2))
+    except Exception:
+        frappe.logger().warning(f"{event}: unable to write product projection log")
+
+
+def _products_linked_to_item(item_code, exclude_product=None):
+    if not item_code:
+        return []
+
+    filters = [["Product", "item", "=", item_code]]
+    if exclude_product:
+        filters.append(["Product", "name", "!=", exclude_product])
+
+    return frappe.get_all("Product", filters=filters, pluck="name")
+
+
+def _set_product_item_link(doc, item_name, event):
+    if doc.item == item_name:
+        return
+
+    frappe.db.set_value("Product", doc.name, "item", item_name, update_modified=False)
+    doc.item = item_name
+    _log_product_projection_event(
+        event,
+        product=doc,
+        item=item_name,
+        details={"action_taken": "linked_product_to_item"},
+    )
+
+
 def _validate_publish(doc):
     """تحقق من البيانات المطلوبة قبل النشر"""
     errors = []
@@ -78,27 +132,288 @@ def _validate_publish(doc):
 # Item
 # ─────────────────────────────────────────
 
-def _ensure_item(doc):
-    """خلق أو تحديث Item"""
-    item_code = doc.item or doc.sku
-    exists    = frappe.db.exists("Item", item_code)
-    item      = frappe.get_doc("Item", item_code) if exists else frappe.new_doc("Item")
+def _apply_item_projection(item, doc):
+    changed = _sync_item_fields(item, _get_item_sync_payload(doc))
 
-    if not exists:
-        item.item_code = item_code
+    if not item.stock_uom:
+        item.stock_uom = "Nos"
+        changed = True
 
-    item.item_name     = doc.product_name
-    item.item_group    = doc.category or "All Item Groups"
-    item.description   = doc.description or ""
-    item.stock_uom     = item.stock_uom or "Nos"
+    if not cint(item.is_stock_item):
+        item.is_stock_item = 1
+        changed = True
+
+    return changed
+
+
+def _create_item_from_product(doc):
+    if not doc.sku:
+        _log_product_projection_event(
+            "PRODUCT_ITEM_MISSING_SKU",
+            product=doc,
+            details={"reason": "cannot_create_item_without_sku"},
+        )
+        return None
+
+    if frappe.db.exists("Item", doc.sku):
+        _log_product_projection_event(
+            "PRODUCT_ITEM_SKU_CONFLICT",
+            product=doc,
+            item=doc.sku,
+            details={"reason": "item_appeared_before_create", "action_taken": "skipped"},
+        )
+        return None
+
+    item = frappe.new_doc("Item")
+    item.item_code = doc.sku
+    item.item_name = doc.product_name
+    item.item_group = doc.category or "All Item Groups"
+    item.brand = doc.brand or ""
+    item.description = doc.description or ""
+    item.stock_uom = "Nos"
     item.is_stock_item = 1
-    item.image         = doc.image or ""
+    item.image = doc.image or ""
 
     item.flags.ignore_permissions = True
-    item.save() if exists else item.insert()
+    item.flags.from_product_projection = True
+    item.insert()
 
-    frappe.db.set_value("Product", doc.name, "item", item.name, update_modified=False)
+    _set_product_item_link(doc, item.name, "PRODUCT_ITEM_CREATED_FROM_PRODUCT")
     return item
+
+
+def _resolve_item_for_product(doc):
+    current_item = doc.item
+    sku = doc.sku
+
+    if current_item and frappe.db.exists("Item", current_item):
+        if sku and current_item != sku and frappe.db.exists("Item", sku):
+            _log_product_projection_event(
+                "PRODUCT_ITEM_SKU_CONFLICT",
+                product=doc,
+                item=current_item,
+                details={
+                    "reason": "linked_item_differs_from_existing_sku_item",
+                    "linked_item": current_item,
+                    "sku_item": sku,
+                    "action_taken": "kept_existing_link",
+                },
+            )
+        return frappe.get_doc("Item", current_item)
+
+    if current_item:
+        _log_product_projection_event(
+            "PRODUCT_ITEM_BROKEN_LINK",
+            product=doc,
+            item=current_item,
+            details={"reason": "linked_item_not_found"},
+        )
+
+    if sku and frappe.db.exists("Item", sku):
+        linked_products = _products_linked_to_item(sku, exclude_product=doc.name)
+        if linked_products:
+            _log_product_projection_event(
+                "PRODUCT_ITEM_SKU_CONFLICT",
+                product=doc,
+                item=sku,
+                details={
+                    "reason": "sku_item_linked_to_other_products",
+                    "linked_products": linked_products,
+                    "action_taken": "skipped",
+                },
+            )
+            return None
+
+        item = frappe.get_doc("Item", sku)
+        if item.item_name and doc.product_name and item.item_name != doc.product_name:
+            _log_product_projection_event(
+                "PRODUCT_ITEM_SKU_CONFLICT",
+                product=doc,
+                item=sku,
+                details={
+                    "reason": "sku_item_name_mismatch",
+                    "product_name": doc.product_name,
+                    "item_name": item.item_name,
+                    "action_taken": "skipped",
+                },
+            )
+            return None
+
+        _set_product_item_link(doc, item.name, "PRODUCT_ITEM_LINKED_BY_SKU")
+        return item
+
+    return _create_item_from_product(doc)
+
+
+def _ensure_item(doc):
+    """خلق أو تحديث Item"""
+    item = _resolve_item_for_product(doc)
+    if not item:
+        return None
+
+    changed = _apply_item_projection(item, doc)
+    if changed:
+        item.flags.ignore_permissions = True
+        item.flags.from_product_projection = True
+        try:
+            item.save()
+        except Exception:
+            payload = _get_item_sync_payload(doc)
+            frappe.db.set_value("Item", item.name, payload, update_modified=False)
+            _log_product_projection_event(
+                "PRODUCT_ITEM_DIRECT_FIELD_SYNC",
+                product=doc,
+                item=item.name,
+                details={
+                    "reason": "item_save_failed_for_unrelated_validation",
+                    "fields": sorted(payload.keys()),
+                    "traceback": frappe.get_traceback(),
+                    "action_taken": "synced_projection_fields_with_db_set_value",
+                },
+            )
+
+    return item
+
+
+def _get_item_sync_payload(doc):
+    return {
+        "item_name": doc.product_name,
+        "item_group": doc.category or "All Item Groups",
+        "brand": doc.brand or "",
+        "description": doc.description or "",
+        "image": doc.image or "",
+    }
+
+
+def _sync_item_fields(item, payload):
+    changed = False
+
+    for fieldname, value in payload.items():
+        if item.get(fieldname) != value:
+            item.set(fieldname, value)
+            changed = True
+
+    return changed
+
+
+def sync_product_item(doc, method=None):
+    """Keep the linked ERPNext Item in sync with Product changes."""
+    item = _ensure_item(doc)
+    if not item:
+        return
+
+    if _effective_rate(doc) > 0:
+        _ensure_item_price(doc, item.name)
+
+    if doc.website_item or doc.status == "Active":
+        _ensure_website_item(doc, item.name, published=1 if doc.status == "Active" else 0)
+
+
+def _get_product_for_item(item_code):
+    products = _products_linked_to_item(item_code)
+    if not products:
+        return None
+
+    if len(products) > 1:
+        _log_product_projection_event(
+            "PRODUCT_ITEM_LINK_CONFLICT",
+            item=item_code,
+            details={
+                "reason": "multiple_products_link_same_item",
+                "products": products,
+                "action_taken": "skipped",
+            },
+        )
+        return None
+
+    return frappe.get_doc("Product", products[0])
+
+
+def sync_item_from_product_projection(doc, method=None):
+    """Repair manual drift on Product-backed Items without blocking the Item save."""
+    if getattr(doc.flags, "from_product_projection", False):
+        return
+
+    product = _get_product_for_item(doc.name)
+    if not product:
+        return
+
+    _log_product_projection_event(
+        "PRODUCT_BACKED_ITEM_DRIFT",
+        product=product,
+        item=doc.name,
+        details={"source": method or "Item.on_update", "action_taken": "resync_from_product"},
+    )
+    sync_product_item(product, method="item_drift_repair")
+
+
+def sync_item_price_from_product_projection(doc, method=None):
+    """Repair Product-backed Standard Selling Item Price drift without blocking saves."""
+    if getattr(doc.flags, "from_product_projection", False):
+        return
+
+    if doc.price_list != "Standard Selling" or not cint(doc.selling):
+        return
+
+    product = _get_product_for_item(doc.item_code)
+    if not product:
+        return
+
+    _log_product_projection_event(
+        "PRODUCT_BACKED_ITEM_PRICE_DRIFT",
+        product=product,
+        item=doc.item_code,
+        details={
+            "source": method or "Item Price.on_update",
+            "item_price": doc.name,
+            "action_taken": "resync_from_product",
+        },
+    )
+    sync_product_item(product, method="item_price_drift_repair")
+
+
+def repair_product_item_projections(active_only=False, limit=None):
+    """Scheduled/bench-safe repair for unambiguous Product -> Item projection drift."""
+    filters = {}
+    if active_only:
+        filters["status"] = "Active"
+
+    query = {
+        "filters": filters,
+        "fields": ["name"],
+        "order_by": "modified desc",
+    }
+    if limit:
+        query["limit_page_length"] = cint(limit)
+
+    products = frappe.get_all("Product", **query)
+
+    repaired = 0
+    skipped = 0
+    for row in products:
+        try:
+            product = frappe.get_doc("Product", row.name)
+            before_item = product.item
+            sync_product_item(product, method="scheduled_repair")
+            repaired += 1
+            if before_item != product.item:
+                frappe.db.commit()
+        except Exception:
+            skipped += 1
+            frappe.log_error(
+                title="PRODUCT_PROJECTION_REPAIR_FAILED",
+                message=frappe.get_traceback(),
+            )
+
+    return {"checked": len(products), "repaired_attempts": repaired, "failed": skipped}
+
+
+def repair_active_product_item_projections():
+    return repair_product_item_projections(active_only=True)
+
+
+def repair_all_product_item_projections():
+    return repair_product_item_projections(active_only=False)
 
 
 # ─────────────────────────────────────────
@@ -112,14 +427,35 @@ def _ensure_item_price(doc, item_code, rate=None):
     currency   = frappe.defaults.get_global_default("currency") or "IQD"
 
     if rate <= 0:
+        _log_product_projection_event(
+            "PRODUCT_ITEM_PRICE_SKIPPED",
+            product=doc,
+            item=item_code,
+            details={"reason": "effective_rate_not_positive", "rate": rate},
+        )
         return None
 
-    existing = frappe.db.get_value("Item Price", {
+    filters = {
         "item_code":  item_code,
         "price_list": price_list,
         "selling":    1
-    }, "name")
+    }
+    existing_prices = frappe.get_all("Item Price", filters=filters, pluck="name")
 
+    if len(existing_prices) > 1:
+        _log_product_projection_event(
+            "PRODUCT_ITEM_PRICE_DUPLICATE",
+            product=doc,
+            item=item_code,
+            details={
+                "price_list": price_list,
+                "item_prices": existing_prices,
+                "action_taken": "skipped",
+            },
+        )
+        return None
+
+    existing = existing_prices[0] if existing_prices else None
     ip = frappe.get_doc("Item Price", existing) if existing else frappe.new_doc("Item Price")
 
     if not existing:
@@ -127,11 +463,34 @@ def _ensure_item_price(doc, item_code, rate=None):
         ip.price_list = price_list
         ip.selling    = 1
 
+    old_rate = flt(ip.price_list_rate or 0)
     ip.price_list_rate = rate
     ip.currency        = currency
 
     ip.flags.ignore_permissions = True
+    ip.flags.from_product_projection = True
     ip.save() if existing else ip.insert()
+
+    if not existing:
+        event = "PRODUCT_ITEM_PRICE_CREATED"
+    elif old_rate != rate:
+        event = "PRODUCT_ITEM_PRICE_UPDATED"
+    else:
+        event = None
+
+    if event:
+        _log_product_projection_event(
+            event,
+            product=doc,
+            item=item_code,
+            details={
+                "price_list": price_list,
+                "old_rate": old_rate if existing else None,
+                "new_rate": rate,
+                "item_price": ip.name,
+                "action_taken": "synced_item_price",
+            },
+        )
 
     frappe.db.set_value("Product", doc.name, "item_price", ip.name, update_modified=False)
     return ip
@@ -342,6 +701,8 @@ def publish_product(product_id=None, **kwargs):
         if not cint(doc.has_variants):
             # ── Simple Product ──
             item = _ensure_item(doc)
+            if not item:
+                frappe.throw(_("Cannot safely resolve Item for this Product. Check Product projection logs."))
             _ensure_item_price(doc, item.name)
             _ensure_website_item(doc, item.name)
 
@@ -365,24 +726,9 @@ def publish_product(product_id=None, **kwargs):
 
         else:
             # ── Variant Product ──
-            exists = frappe.db.exists("Item", doc.sku)
-            item   = frappe.get_doc("Item", doc.sku) if exists else frappe.new_doc("Item")
-
-            if not exists:
-                item.item_code = doc.sku
-
-            item.item_name      = doc.product_name
-            item.item_group     = doc.category or "All Item Groups"
-            item.brand          = doc.brand or ""
-            item.stock_uom      = item.stock_uom or "Nos"
-            item.is_stock_item  = 1
-            item.description    = doc.description or ""
-            item.image          = doc.image or ""
-
-            item.flags.ignore_permissions = True
-            item.save() if exists else item.insert()
-
-            frappe.db.set_value("Product", doc.name, "item", item.name, update_modified=False)
+            item = _ensure_item(doc)
+            if not item:
+                frappe.throw(_("Cannot safely resolve Item for this Product. Check Product projection logs."))
 
             _ensure_item_price(doc, item.name)
             _ensure_website_item(doc, item.name)
@@ -619,6 +965,7 @@ def get_products(filters=None, fields=None, order_by="creation desc",
                  limit_start=0, limit_page_length=20,
                  search_term=None):
     import json
+    _check_permission()
 
     _filters = json.loads(filters) if isinstance(filters, str) else (filters or [])
     _fields  = json.loads(fields)  if isinstance(fields,  str) else (fields or [
@@ -634,7 +981,7 @@ def get_products(filters=None, fields=None, order_by="creation desc",
         "Product",
         filters=_filters,
         fields=_fields,
-        order_by=order_by,
+        order_by=_sanitize_order_by(order_by),
         limit_start=cint(limit_start),
         limit_page_length=cint(limit_page_length)
     )
@@ -667,7 +1014,15 @@ def get_products(filters=None, fields=None, order_by="creation desc",
 RENAME_FIELD_MAP = {
     "Brand": "brand",
     "Item Group": "item_group_name",
+    "Supplier": "supplier_name",
 }
+
+
+from pet_app.utils.auto_update_links import (
+    LinkedDocSyncer,
+    SYNC_CONFIG,
+    _refresh_primary_address,
+)
 
 
 class DocTypeRenameHandler:
@@ -688,6 +1043,12 @@ class DocTypeRenameHandler:
         if new_name and new_name != old_name:
             frappe.rename_doc(self.doc.doctype, old_name, new_name, force=True)
             self.doc.name = new_name
+
+            payload = getattr(frappe.local, "_pending_sync", None)
+            if payload and self.doc.doctype in SYNC_CONFIG:
+                new_doc = frappe.get_doc(self.doc.doctype, self.doc.name)
+                LinkedDocSyncer(new_doc, payload=payload).run()
+                _refresh_primary_address(new_doc, payload)
 
 
 def before_save(doc, method):

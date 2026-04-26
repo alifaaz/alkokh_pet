@@ -14,6 +14,7 @@
   "vet_visit",
   "basic_info_tab",
   "section_break_basic_info",
+  "guardian",
   "customer",
   "phone_number",
   "column_break_basic_info_1",
@@ -139,12 +140,20 @@
    "fieldtype": "Section Break"
   },
   {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Guardian",
+   "options": "Guardian",
+   "reqd": 1
+  },
+  {
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Owner / Guardian",
-   "options": "Guardian",
-   "reqd": 1
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
   },
   {
    "fieldname": "phone_number",
@@ -160,7 +169,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Animal / Pet",
-   "link_filters": "[[\"Pet\",\"patient_id\",\"=\",\"customer\"]]",
+   "link_filters": "[]",
    "options": "Pet",
    "reqd": 1
   },
@@ -505,7 +514,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-28 01:37:45.103820",
+ "modified": "2026-03-28 18:43:54.596601",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Vet Case Sheet",
@@ -550,7 +559,7 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
- "search_fields": "customer,animal_patient,phone_number,chief_complaint",
+ "search_fields": "guardian,customer,animal_patient,phone_number,chief_complaint",
  "show_name_in_global_search": 1,
  "sort_field": "creation",
  "sort_order": "DESC",

@@ -1,9 +1,9 @@
-# Copyright (c) 2025, solvers and contributors
+# Copyright (c) 2026, solvers and contributors
 # For license information, please see license.txt
 
-# import frappe
 from frappe.model.document import Document
 
 
-class CareService(Document):
+class PetBillableItem(Document):
 	pass
+

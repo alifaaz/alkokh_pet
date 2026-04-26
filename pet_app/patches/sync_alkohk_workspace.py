@@ -81,6 +81,8 @@ def _sync_children(parent_name: str, parentfield: str, child_doctype: str, rows:
 	)
 
 	for idx, row in enumerate(rows, start=1):
+		if _references_missing_link(row):
+			continue
 		payload = {
 			"doctype": child_doctype,
 			"parent": parent_name,
@@ -90,3 +92,19 @@ def _sync_children(parent_name: str, parentfield: str, child_doctype: str, rows:
 		}
 		payload.update(row)
 		frappe.get_doc(payload).insert(ignore_permissions=True)
+
+
+def _references_missing_link(row: dict) -> bool:
+	link_to = row.get("link_to")
+	link_type = row.get("link_type")
+
+	if not link_to or row.get("type") == "Card Break":
+		return False
+
+	if link_type == "DocType":
+		return not frappe.db.exists("DocType", link_to)
+
+	if link_type == "Page":
+		return not frappe.db.exists("Page", link_to)
+
+	return False

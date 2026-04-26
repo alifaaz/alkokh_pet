@@ -1,16 +1,31 @@
-import frappe
 import json
 
 import frappe
-import json
+from frappe import _
+from frappe.utils.password import update_password
+
+
+ALLOWED_USER_ADMIN_ROLES = {"System Manager", "Healthcare Administrator", "Users"}
+
+
+def _require_user_admin_access():
+    if frappe.session.user == "Administrator":
+        return
+
+    if set(frappe.get_roles(frappe.session.user) or []).isdisjoint(ALLOWED_USER_ADMIN_ROLES):
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+
+def _log_user_admin_error(message, **context):
+    details = ", ".join(f"{key}={value}" for key, value in context.items() if value is not None)
+    frappe.log_error(
+        title="pet_app.api.users.change_user_password",
+        message=f"{message}{': ' + details if details else ''}",
+    )
 
 @frappe.whitelist()
 def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_only=0, filters=None):
-
-    # 🔐 permission
-    allowed = {"System Manager", "Healthcare Administrator"}
-    if set(frappe.get_roles(frappe.session.user) or []).isdisjoint(allowed):
-        frappe.throw("Not permitted", frappe.PermissionError)
+    _require_user_admin_access()
 
     limit_start = int(limit_start)
     limit_page_length = int(limit_page_length)
@@ -90,11 +105,7 @@ def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_onl
 
 @frappe.whitelist()
 def get_all_role_profiles_with_roles(limit_page_length=999):
-    # 🔐 permission gate
-    allowed = {"System Manager", "Healthcare Administrator"}
-    user_roles = set(frappe.get_roles(frappe.session.user) or [])
-    if user_roles.isdisjoint(allowed):
-        frappe.throw("Not permitted", frappe.PermissionError)
+    _require_user_admin_access()
 
     limit_page_length = int(limit_page_length)
     aws_id = frappe.session.user
@@ -152,80 +163,44 @@ def get_all_role_profiles_with_roles(limit_page_length=999):
 
     out.sort(key=lambda x: x["role_profile"])
     frappe.response["data"] = out
-    return {"data": out}
-
-
-@frappe.whitelist()
-def get_all_role_profiles_with_roles(limit_page_length=999):
-    # 🔐 permission gate
-    allowed = {"System Manager", "Healthcare Administrator"}
-    user_roles = set(frappe.get_roles(frappe.session.user) or [])
-    if user_roles.isdisjoint(allowed):
-        frappe.throw("Not permitted", frappe.PermissionError)
-
-    limit_page_length = int(limit_page_length)
-    aws_id = frappe.session.user
-
-    # ✅ 1) fetch all role profiles
-    profiles = frappe.get_all(
-        "Role Profile",
-        fields=["name", "creation"],
-        limit_page_length=limit_page_length
-    )
-
-    if not profiles:
-        frappe.response["data"] = []
-        return
-
-    profile_names = [p["name"] for p in profiles]
-
-    # ✅ 2) fetch roles from child table
-    rows = frappe.get_all(
-        "Has Role",
-        filters={
-            "parenttype": "Role Profile",
-            "parentfield": "roles",
-            "parent": ["in", profile_names],
-        },
-        fields=["parent", "role"],
-        limit_page_length=999999
-    )
-
-    # ✅ 3) group roles by profile
-    roles_map = {}
-    for r in rows:
-        roles_map.setdefault(r["parent"], []).append(r["role"])
-
-    # ✅ 4) hide rules (عدلها مثل ما تريد)
-    STANDARD_PROFILES = {"Accounts", "Inventory", "Manufacturing", "Purchase", "Sales"}
-    HIDDEN_PROFILES = {
-        # مثال: إذا تريد تخفي هاي أيضاً
-        # "ManagementTT",
-    }
-    HIDE_EMPTY_ROLES = True          # يخفي اللي roles=[]
-    HIDE_STANDARD = True             # يخفي الستاندرد
-
-    # ✅ 5) build response with filtering
-    out = []
-    for p in profiles:
-        profile_name = p["name"]
-        roles = sorted(set(roles_map.get(profile_name, [])))
-
-        # --- filtering (الإخفاء) ---
-        if HIDE_STANDARD and profile_name in STANDARD_PROFILES:
-            continue
-        if profile_name in HIDDEN_PROFILES:
-            continue
-        if HIDE_EMPTY_ROLES and len(roles) == 0:
-            continue
-
-        out.append({
-            "name": aws_id,
-            "role_profile": profile_name,
-            "creation": p["creation"],
-            "roles": roles
-        })
-
-    out.sort(key=lambda x: x["role_profile"])
-    frappe.response["data"] = out
     return
+
+
+@frappe.whitelist(methods=["POST"])
+def change_user_password(user: str, new_password: str):
+    """Change another user's password.
+
+    Example:
+        curl -X POST https://SITE/api/method/pet_app.api.users.change_user_password \
+          -H "Authorization: token KEY:SECRET" \
+          -H "Content-Type: application/json" \
+          -d '{"user":"doctor@example.com","new_password":"NewStrongPass123!"}'
+    """
+    user = (user or "").strip()
+    new_password = new_password or ""
+    current_user = frappe.session.user
+
+    if not user:
+        _log_user_admin_error("Missing user parameter", current_user=current_user)
+        frappe.throw(_("User is required"))
+
+    if not new_password:
+        _log_user_admin_error("Missing new_password parameter", current_user=current_user, target_user=user)
+        frappe.throw(_("Password is required"))
+
+    try:
+        _require_user_admin_access()
+    except frappe.PermissionError:
+        _log_user_admin_error("Permission denied", current_user=current_user, target_user=user)
+        frappe.throw(
+            _("You are not permitted to change another user's password."),
+            frappe.PermissionError,
+        )
+
+    if not frappe.db.exists("User", user):
+        _log_user_admin_error("Target user does not exist", current_user=current_user, target_user=user)
+        frappe.throw(_("User {0} does not exist").format(user))
+
+    update_password(user, new_password)
+
+    return {"message": _("Password updated successfully")}

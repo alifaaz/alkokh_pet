@@ -12,6 +12,27 @@ from frappe.utils import cint
 MAX_SIZE = 500 * 1024  # 500 KB
 
 
+def _guardian_for_current_user() -> str | None:
+    if frappe.session.user in ("Guest", "Administrator"):
+        return None
+    return frappe.db.get_value("Guardian", {"user_id": frappe.session.user}, "name")
+
+
+def _require_pet_read_access(docname: str | None = None):
+    if frappe.session.user == "Guest":
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+    guardian = _guardian_for_current_user()
+    if guardian:
+        if docname and not frappe.db.exists("PetGuardian", {"guardian_id": guardian, "pet_id": docname}):
+            frappe.throw("Not permitted", frappe.PermissionError)
+        return guardian
+
+    if not frappe.has_permission("Pet", doc=docname, ptype="read") if docname else not frappe.has_permission("Pet", ptype="read"):
+        frappe.throw("Not permitted", frappe.PermissionError)
+    return None
+
+
 def resolve_image_fieldname(doctype: str) -> str:
     """Return the first 'Attach Image' field in the doctype."""
     meta = frappe.get_meta(doctype)
@@ -29,16 +50,22 @@ def _require_doc_write(doctype: str, docname: str):
     return doc
 
 
+def _require_file_create():
+    if not frappe.has_permission("File", ptype="create"):
+        frappe.throw("No permission to create files", frappe.PermissionError)
+
+
 def _ensure_folder(doctype: str) -> str:
     """Ensure folder Home/{doctype} exists and return folder path."""
     folder_path = f"Home/{doctype}"
     if not frappe.db.exists("File", {"name": folder_path, "is_folder": 1}):
+        _require_file_create()
         frappe.get_doc({
             "doctype": "File",
             "file_name": doctype,
             "folder": "Home",
             "is_folder": 1
-        }).insert(ignore_permissions=True)
+        }).insert()
     return folder_path
 
 
@@ -69,6 +96,7 @@ def upload_multiple_files():
 
         # Permission
         _require_doc_write(doctype, docname)
+        _require_file_create()
 
         # Auto-resolve Attach Image field
         fieldname = resolve_image_fieldname(doctype)
@@ -117,7 +145,7 @@ def upload_multiple_files():
                 "custom_sha1_hash": sha1,
                 "custom_is_default": 0
             })
-            file_doc.insert(ignore_permissions=True)
+            file_doc.insert()
 
             # Set default logic:
             # - if custom_is_default=1 => make it default
@@ -292,8 +320,9 @@ def get_pet_images(doctype, docname):
 # 5) List Pets with Pagination and Search (images filtered by attached_to_field)
 # ============================================================
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def list_pets(page=1, page_size=10, search=None):
+    guardian = _require_pet_read_access()
     page = cint(page) or 1
     page_size = cint(page_size) or 10
     if page < 1:
@@ -302,6 +331,19 @@ def list_pets(page=1, page_size=10, search=None):
         page_size = 10
 
     filters = {}
+    if guardian:
+        linked_pets = frappe.get_all("PetGuardian", filters={"guardian_id": guardian}, pluck="pet_id")
+        if not linked_pets:
+            return {
+                "page": page,
+                "page_size": page_size,
+                "total": 0,
+                "total_pages": 0,
+                "has_next": False,
+                "has_prev": page > 1,
+                "data": [],
+            }
+        filters["name"] = ["in", linked_pets]
     if search:
         filters["pet_name"] = ["like", f"%{search}%"]
 
@@ -366,8 +408,9 @@ def list_pets(page=1, page_size=10, search=None):
 # 6) Get Single Pet (same format as list_pets) - images filtered by attached_to_field
 # ============================================================
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist()
 def get_pet(pet_id):
+    _require_pet_read_access(pet_id)
     if not frappe.db.exists("Pet", pet_id):
         frappe.throw("Pet not found")
 
@@ -463,6 +506,7 @@ def upload_single_file():
             frappe.throw("Document does not exist")
 
         _require_doc_write(doctype, docname)
+        _require_file_create()
 
         fieldname = resolve_image_fieldname(doctype)
 
@@ -520,7 +564,7 @@ def upload_single_file():
             "custom_sha1_hash": sha1,
             "custom_is_default": 1
         })
-        file_doc.insert(ignore_permissions=True)
+        file_doc.insert()
 
         # set image url on the main doc
         frappe.db.set_value(doctype, docname, fieldname, file_doc.file_url, update_modified=False)

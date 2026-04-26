@@ -1,359 +1,602 @@
+# =========================================
+# IMPORTS
+# =========================================
 import frappe
 from frappe import _
-from frappe.utils import nowdate
-
-# ─────────────────────────────────────────────
-#  PERMISSION GATE
-# ─────────────────────────────────────────────
-ALLOWED_ROLES = {"System Manager", "Sales Manager", "Sales User"}
-
-def _check_permission():
-    if set(frappe.get_roles(frappe.session.user)).isdisjoint(ALLOWED_ROLES):
-        frappe.throw(_("Not permitted"), frappe.PermissionError)
+from frappe.utils import nowdate, getdate
 
 
-# ─────────────────────────────────────────────
-#  HELPERS
-# ─────────────────────────────────────────────
-def _build_pricing_rule_name(coupon_code: str) -> str:
-    """Deterministic name so we can always find the linked rule."""
-    return f"COUPON-{coupon_code}"
+def _parse_apply_on_values(raw_value):
+    import json
+
+    if not raw_value:
+        return []
+
+    values = []
+    if isinstance(raw_value, str):
+        try:
+            parsed_value = json.loads(raw_value)
+            if isinstance(parsed_value, list):
+                values = parsed_value
+            else:
+                values = [raw_value]
+        except Exception:
+            values = [raw_value]
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        values = [raw_value]
+
+    cleaned_values = []
+    seen_values = set()
+    for value in values:
+        value = (value or "").strip() if isinstance(value, str) else value
+        if not value or value in seen_values:
+            continue
+        seen_values.add(value)
+        cleaned_values.append(value)
+
+    return cleaned_values
 
 
-def _make_pricing_rule_doc(data: dict) -> "frappe.Document":
-    """
-    Build (but do NOT insert) a Pricing Rule document from coupon payload.
-    data keys:
-        coupon_code, coupon_name,
-        discount_type          : "Percentage" | "Fixed Amount" | "Free Shipping" | "Free Item"
-        discount_percentage    : float  (only for Percentage)
-        discount_amount        : float  (only for Fixed Amount, in IQD)
-        free_item              : str    (only for Free Item)
-        apply_on               : "All Items" | "Item Group" | "Item" | "Transaction"
-        apply_on_value         : str    (item group name or item code — ignored for All/Transaction)
-        price_list             : str    (optional, default Standard Selling)
-        min_order_amount       : float  (optional)
-        valid_upto             : date   (optional)
-        customer               : str    (optional)
-    """
-    discount_type = data.get("discount_type", "Percentage")
-    apply_on      = data.get("apply_on", "All Items")
+def _get_request_payload():
+    import json
 
-    # Map our apply_on to Frappe's "Apply On" field values
-    frappe_apply_on_map = {
-        "All Items":   "All Items",
-        "Item Group":  "Item Group",
-        "Item":        "Item Code",
-        "Transaction": "Transaction",
-    }
-    frappe_apply_on = frappe_apply_on_map.get(apply_on, "All Items")
+    request = getattr(frappe.local, "request", None)
+    if not request:
+        return {}
 
-    pr = frappe.new_doc("Pricing Rule")
-    pr.name             = _build_pricing_rule_name(data["coupon_code"])
-    pr.title            = data.get("coupon_name") or data["coupon_code"]
-    pr.apply_on         = frappe_apply_on
-    pr.price_or_product_discount = "Price" if discount_type != "Free Item" else "Product"
-    pr.selling          = 1
-    pr.buying           = 0
-    pr.currency         = "IQD"
-    pr.price_list       = data.get("price_list") or "Standard Selling"
-    pr.disable          = 0
-    pr.coupon_code_based = 1   # ties the rule to a coupon
+    payload = None
 
-    # ── apply_on detail ──────────────────────────────
-    if frappe_apply_on == "Item Group" and data.get("apply_on_value"):
-        pr.append("items", {"item_group": data["apply_on_value"]})
-    elif frappe_apply_on == "Item Code" and data.get("apply_on_value"):
-        pr.append("items", {"item_code": data["apply_on_value"]})
-    # "All Items" and "Transaction" need no items child table rows
+    try:
+        payload = request.get_json(force=False, silent=True)
+    except Exception:
+        payload = None
 
-    # ── discount type ────────────────────────────────
-    if discount_type == "Percentage":
-        pr.rate_or_discount = "Discount Percentage"
-        pr.discount_percentage = float(data.get("discount_percentage") or 0)
+    if not isinstance(payload, dict):
+        try:
+            raw_data = request.get_data(as_text=True)
+        except Exception:
+            raw_data = None
 
-    elif discount_type == "Fixed Amount":
-        pr.rate_or_discount = "Discount Amount"
-        pr.discount_amount  = float(data.get("discount_amount") or 0)
+        if raw_data:
+            try:
+                payload = json.loads(raw_data)
+            except Exception:
+                payload = None
 
-    elif discount_type == "Free Shipping":
-        # Frappe doesn't have a native "free shipping" flag on Pricing Rule.
-        # Best practice: 100% discount on the Shipping item code if you have one,
-        # OR store it as a note and handle in your cart logic.
-        pr.rate_or_discount = "Discount Percentage"
-        pr.discount_percentage = 100
-        # tag it so cart logic can recognise it
-        pr.remarks = "FREE_SHIPPING"
+    if not isinstance(payload, dict):
+        form_dict = getattr(frappe.local, "form_dict", None) or {}
+        raw_data = form_dict.get("data")
+        if raw_data:
+            try:
+                payload = json.loads(raw_data)
+            except Exception:
+                payload = None
 
-    elif discount_type == "Free Item":
-        pr.price_or_product_discount = "Product"
-        pr.free_item                  = data.get("free_item") or ""
-        pr.free_qty                   = 1
-        pr.free_item_rate             = 0
-
-    # ── constraints ──────────────────────────────────
-    if data.get("min_order_amount"):
-        pr.min_amount = float(data["min_order_amount"])
-
-    if data.get("valid_upto"):
-        pr.valid_upto = data["valid_upto"]
-
-    if data.get("customer"):
-        pr.applicable_for = "Customer"
-        pr.customer        = data["customer"]
-
-    return pr
+    return payload if isinstance(payload, dict) else {}
 
 
-# ─────────────────────────────────────────────
-#  CREATE
-# ─────────────────────────────────────────────
-@frappe.whitelist()
-def create_coupon(
-    coupon_code,
-    coupon_name=None,
-    discount_type="Percentage",
-    discount_percentage=10,
-    discount_amount=0,
-    free_item=None,
-    apply_on="All Items",
-    apply_on_value=None,
-    price_list="Standard Selling",
-    min_order_amount=None,
-    valid_upto=None,
-    customer=None,
-    max_redemption=None,
-):
-    _check_permission()
+def _item_group_matches_targets(item_group, target_groups):
+    if not item_group or not target_groups:
+        return False
 
-    coupon_code = coupon_code.strip().upper()
+    item_group_bounds = frappe.get_cached_value("Item Group", item_group, ["lft", "rgt"])
+    if not item_group_bounds:
+        return False
 
-    if frappe.db.exists("Coupon Code", coupon_code):
-        frappe.throw(_(f"Coupon '{coupon_code}' already exists."))
+    item_lft, item_rgt = item_group_bounds
+    for target_group in target_groups:
+        target_group_bounds = frappe.get_cached_value("Item Group", target_group, ["lft", "rgt"])
+        if not target_group_bounds:
+            continue
 
-    data = {
-        "coupon_code":        coupon_code,
-        "coupon_name":        coupon_name or coupon_code,
-        "discount_type":      discount_type,
-        "discount_percentage": discount_percentage,
-        "discount_amount":    discount_amount,
-        "free_item":          free_item,
-        "apply_on":           apply_on,
-        "apply_on_value":     apply_on_value,
-        "price_list":         price_list,
-        "min_order_amount":   min_order_amount,
-        "valid_upto":         valid_upto,
-        "customer":           customer,
-    }
+        target_lft, target_rgt = target_group_bounds
+        if target_lft <= item_lft <= item_rgt <= target_rgt:
+            return True
 
-    # 1) Create Pricing Rule first so we can link its name to the coupon
-    pr = _make_pricing_rule_doc(data)
-    pr.insert(ignore_permissions=True)
-    frappe.db.commit()
-
-    # 2) Create Coupon Code and point it at the Pricing Rule
-    coupon = frappe.new_doc("Coupon Code")
-    coupon.coupon_code      = coupon_code
-    coupon.coupon_name      = data["coupon_name"]
-    coupon.coupon_type      = "Promotional"
-    coupon.pricing_rule     = pr.name
-    coupon.maximum_use      = int(max_redemption) if max_redemption else 0
-    coupon.valid_from       = nowdate()
-    coupon.valid_upto       = valid_upto or None
-    coupon.insert(ignore_permissions=True)
-    frappe.db.commit()
-
-    frappe.response["data"] = {
-        "coupon_code":  coupon.coupon_code,
-        "pricing_rule": pr.name,
-        "status":       "created",
-    }
+    return False
 
 
-# ─────────────────────────────────────────────
-#  READ (single)
-# ─────────────────────────────────────────────
-@frappe.whitelist()
-def get_coupon(coupon_code):
-    _check_permission()
-
-    coupon_code = coupon_code.strip().upper()
-
-    if not frappe.db.exists("Coupon Code", coupon_code):
-        frappe.throw(_(f"Coupon '{coupon_code}' not found."), frappe.DoesNotExistError)
-
-    coupon = frappe.get_doc("Coupon Code", coupon_code)
-    pr     = frappe.get_doc("Pricing Rule", coupon.pricing_rule) if coupon.pricing_rule else None
-
-    frappe.response["data"] = {
-        "coupon_code":         coupon.coupon_code,
-        "coupon_name":         coupon.coupon_name,
-        "coupon_type":         coupon.coupon_type,
-        "pricing_rule":        coupon.pricing_rule,
-        "valid_from":          str(coupon.valid_from or ""),
-        "valid_upto":          str(coupon.valid_upto or ""),
-        "maximum_use":         coupon.maximum_use,
-        "used":                coupon.used,
-        "pricing_rule_detail": {
-            "apply_on":            pr.apply_on            if pr else None,
-            "rate_or_discount":    pr.rate_or_discount    if pr else None,
-            "discount_percentage": pr.discount_percentage if pr else None,
-            "discount_amount":     pr.discount_amount     if pr else None,
-            "min_amount":          pr.min_amount          if pr else None,
-            "valid_upto":          str(pr.valid_upto or "") if pr else None,
-            "disable":             pr.disable             if pr else None,
-            "remarks":             pr.remarks             if pr else None,
-        } if pr else None,
-    }
+def _pricing_rule_scope_signature(pr):
+    if pr.apply_on == "Item Code":
+        return tuple(sorted(row.item_code for row in pr.items if row.item_code))
+    if pr.apply_on == "Item Group":
+        return tuple(sorted(row.item_group for row in pr.item_groups if row.item_group))
+    if pr.apply_on == "Brand":
+        return tuple(sorted(row.brand for row in pr.brands if row.brand))
+    return ("Transaction",)
 
 
-# ─────────────────────────────────────────────
-#  READ (list)
-# ─────────────────────────────────────────────
-@frappe.whitelist()
-def list_coupons(limit_start=0, limit_page_length=20, search=None, active_only=0):
-    _check_permission()
+def _log_pricing_rule_conflict_review(pr):
+    if not pr or pr.disable or not pr.selling:
+        return
 
-    limit_start       = int(limit_start)
-    limit_page_length = int(limit_page_length)
-    active_only       = int(active_only)
-
-    filters = {}
-    if active_only:
-        filters["valid_upto"] = [">=", nowdate()]
-
-    if search:
-        filters["coupon_code"] = ["like", f"%{search.upper()}%"]
-
-    coupons = frappe.get_all(
-        "Coupon Code",
-        filters=filters,
-        fields=[
-            "coupon_code", "coupon_name", "pricing_rule",
-            "valid_from", "valid_upto", "maximum_use", "used",
-        ],
-        limit_start=limit_start,
-        limit_page_length=limit_page_length,
-        order_by="creation desc",
+    signature = _pricing_rule_scope_signature(pr)
+    candidates = frappe.get_all(
+        "Pricing Rule",
+        filters={
+            "selling": 1,
+            "disable": 0,
+            "coupon_code_based": 1,
+            "for_price_list": pr.for_price_list or "Standard Selling",
+            "apply_on": pr.apply_on,
+            "name": ["!=", pr.name],
+        },
+        fields=["name"],
+        limit_page_length=50,
     )
 
-    frappe.response["data"] = coupons
+    overlaps = []
+    for row in candidates:
+        try:
+            candidate = frappe.get_doc("Pricing Rule", row.name)
+            if _pricing_rule_scope_signature(candidate) == signature:
+                overlaps.append(candidate.name)
+        except Exception:
+            continue
+
+    if overlaps:
+        frappe.log_error(
+            title="PRICING_RULE_CONFLICT_REVIEW",
+            message=frappe.as_json(
+                {
+                    "event": "PRICING_RULE_CONFLICT_REVIEW",
+                    "pricing_rule": pr.name,
+                    "apply_on": pr.apply_on,
+                    "for_price_list": pr.for_price_list,
+                    "scope": signature,
+                    "overlapping_rules": overlaps,
+                    "action_taken": "logged_only",
+                },
+                indent=2,
+            ),
+        )
 
 
-# ─────────────────────────────────────────────
-#  UPDATE
-# ─────────────────────────────────────────────
-@frappe.whitelist()
-def update_coupon(
-    coupon_code,
-    coupon_name=None,
-    discount_type=None,
-    discount_percentage=None,
-    discount_amount=None,
-    free_item=None,
-    apply_on=None,
-    apply_on_value=None,
-    price_list=None,
-    min_order_amount=None,
-    valid_upto=None,
-    customer=None,
-    max_redemption=None,
-):
-    _check_permission()
+def review_active_pricing_rule_conflicts(limit=None):
+    query = {
+        "filters": {"selling": 1, "disable": 0, "coupon_code_based": 1},
+        "fields": ["name"],
+        "order_by": "modified desc",
+    }
+    if limit:
+        query["limit_page_length"] = int(limit)
 
-    coupon_code = coupon_code.strip().upper()
+    rules = frappe.get_all("Pricing Rule", **query)
 
-    if not frappe.db.exists("Coupon Code", coupon_code):
-        frappe.throw(_(f"Coupon '{coupon_code}' not found."), frappe.DoesNotExistError)
+    checked = 0
+    for row in rules:
+        try:
+            _log_pricing_rule_conflict_review(frappe.get_doc("Pricing Rule", row.name))
+            checked += 1
+        except Exception:
+            frappe.log_error(
+                title="PRICING_RULE_CONFLICT_SCAN_FAILED",
+                message=frappe.get_traceback(),
+            )
 
-    coupon = frappe.get_doc("Coupon Code", coupon_code)
+    return {"checked": checked}
 
-    # ── update Coupon Code doc ────────────────
-    if coupon_name:
-        coupon.coupon_name = coupon_name
-    if max_redemption is not None:
-        coupon.maximum_use = int(max_redemption)
-    if valid_upto:
-        coupon.valid_upto = valid_upto
-    coupon.save(ignore_permissions=True)
 
-    # ── update linked Pricing Rule ────────────
-    if coupon.pricing_rule and frappe.db.exists("Pricing Rule", coupon.pricing_rule):
-        pr = frappe.get_doc("Pricing Rule", coupon.pricing_rule)
+# =========================================
+# REPOSITORY
+# =========================================
+class CouponRepository:
 
-        if coupon_name:
-            pr.title = coupon_name
-        if price_list:
-            pr.price_list = price_list
-        if min_order_amount is not None:
-            pr.min_amount = float(min_order_amount)
-        if valid_upto:
-            pr.valid_upto = valid_upto
-        if customer:
-            pr.applicable_for = "Customer"
-            pr.customer        = customer
+    @staticmethod
+    def get_coupon(code):
+        """Lookup by coupon_code field, not name."""
+        name = frappe.db.get_value("Coupon Code", {"coupon_code": code}, "name")
+        if not name:
+            frappe.throw(f"Coupon '{code}' not found")
+        return frappe.get_doc("Coupon Code", name)
 
-        # discount changes
-        if discount_type == "Percentage" and discount_percentage is not None:
+    @staticmethod
+    def exists(code):
+        return frappe.db.exists("Coupon Code", {"coupon_code": code})
+
+    @staticmethod
+    def get_pricing_rule(name):
+        return frappe.get_doc("Pricing Rule", name)
+
+    @staticmethod
+    def pricing_rule_exists(name):
+        return frappe.db.exists("Pricing Rule", name)
+
+    @staticmethod
+    def disable_pricing_rule(name):
+        frappe.db.set_value("Pricing Rule", name, "disable", 1)
+
+    @staticmethod
+    def increment_usage(coupon):
+        previous_used = frappe.db.get_value("Coupon Code", coupon.name, "used") or 0
+        updated = frappe.db.sql(
+            """
+            UPDATE `tabCoupon Code`
+            SET used = COALESCE(used, 0) + 1
+            WHERE name = %s
+              AND (maximum_use IS NULL OR maximum_use = 0 OR COALESCE(used, 0) < maximum_use)
+            """,
+            (coupon.name,),
+        )
+        current_used = frappe.db.get_value("Coupon Code", coupon.name, "used") or 0
+        if current_used <= previous_used:
+            frappe.throw(_("Usage limit reached"))
+
+
+# =========================================
+# SERVICE — creates / updates Pricing Rule
+# =========================================
+class CouponService:
+
+    def __init__(self, doc):
+        self.doc = doc
+
+    def _get(self, field, default=None):
+        return getattr(self.doc, field, default)
+
+    # ---------- CREATE ----------
+    def create_pricing_rule(self):
+        if self.doc.pricing_rule:
+            return CouponRepository.get_pricing_rule(self.doc.pricing_rule)
+
+        pr = frappe.new_doc("Pricing Rule")
+        pr.naming_series = "COUPON-.####"
+        pr.title = self._get("coupon_name") or self._get("coupon_code")
+
+        # Apply On
+        apply_map = {
+            "All":         "Transaction",
+            "Item":        "Item Code",
+            "Group":       "Item Group",
+            "Brand":       "Brand",
+            "Transaction": "Transaction",
+        }
+        pr.apply_on = apply_map.get(self._get("apply_on"), "Transaction")
+
+        if pr.apply_on == "Item Code" and self._get("apply_on_value"):
+            for item_code in _parse_apply_on_values(self._get("apply_on_value")):
+                if item_code:
+                    pr.append("items", {"item_code": item_code})
+
+        elif pr.apply_on == "Item Group" and self._get("apply_on_value"):
+            for item_group in _parse_apply_on_values(self._get("apply_on_value")):
+                if item_group:
+                    pr.append("item_groups", {"item_group": item_group})
+
+        elif pr.apply_on == "Brand" and self._get("apply_on_value"):
+            for brand in _parse_apply_on_values(self._get("apply_on_value")):
+                if brand:
+                    pr.append("brands", {"brand": brand})
+
+        # Discount
+        discount_type = self._get("discount_type")
+        if discount_type in ("Percentage", "Fixed", "Free Shipping"):
+            pr.price_or_product_discount = "Price"
+        elif discount_type == "Free Item":
+            pr.price_or_product_discount = "Product"
+
+        if discount_type == "Percentage":
             pr.rate_or_discount    = "Discount Percentage"
-            pr.discount_percentage = float(discount_percentage)
-        elif discount_type == "Fixed Amount" and discount_amount is not None:
-            pr.rate_or_discount = "Discount Amount"
-            pr.discount_amount  = float(discount_amount)
+            pr.discount_percentage = self._get("discount_percentage") or 0
+        elif discount_type == "Fixed":
+            pr.rate_or_discount  = "Discount Amount"
+            pr.discount_amount   = self._get("discount_amount") or 0
+        elif discount_type == "Free Item":
+            pr.free_item      = self._get("free_item")
+            pr.free_qty       = 1
+            pr.free_item_rate = 0
         elif discount_type == "Free Shipping":
             pr.rate_or_discount    = "Discount Percentage"
             pr.discount_percentage = 100
             pr.remarks             = "FREE_SHIPPING"
-        elif discount_type == "Free Item" and free_item:
-            pr.price_or_product_discount = "Product"
-            pr.free_item                 = free_item
 
-        # apply_on changes — clear items child and re-add
-        if apply_on:
-            frappe_apply_on_map = {
-                "All Items":   "All Items",
-                "Item Group":  "Item Group",
-                "Item":        "Item Code",
-                "Transaction": "Transaction",
-            }
-            pr.apply_on = frappe_apply_on_map.get(apply_on, pr.apply_on)
-            pr.set("items", [])  # clear existing
-            if apply_on == "Item Group" and apply_on_value:
-                pr.append("items", {"item_group": apply_on_value})
-            elif apply_on == "Item" and apply_on_value:
-                pr.append("items", {"item_code": apply_on_value})
+        # Party
+        pr.selling = 1
+        pr.buying  = 0
+
+        # Amounts
+        pr.min_amt = self._get("min_order_amount") or 0
+        pr.min_qty = 0
+        pr.max_qty = 0
+        pr.max_amt = 0
+
+        # Dates
+        pr.valid_from = self._get("valid_from") or None
+        pr.valid_upto = self._get("valid_upto") or None
+
+        pr.currency          = "IQD"
+        pr.coupon_code_based = 1
+        pr.disable           = 1
+        pr.for_price_list    = self._get("price_list") or "Standard Selling"
+
+        pr.insert(ignore_permissions=True)
+        return pr
+
+    # ---------- UPDATE ----------
+    def update_pricing_rule(self):
+        if not self.doc.pricing_rule:
+            return
+        if not CouponRepository.pricing_rule_exists(self.doc.pricing_rule):
+            return
+
+        pr = CouponRepository.get_pricing_rule(self.doc.pricing_rule)
+        pr.title = self._get("coupon_name") or self._get("coupon_code")
+        pr.set("items", [])
+        pr.set("item_groups", [])
+        pr.set("brands", [])
+
+        apply_map = {
+            "All":         "Transaction",
+            "Item":        "Item Code",
+            "Group":       "Item Group",
+            "Brand":       "Brand",
+            "Transaction": "Transaction",
+        }
+        pr.apply_on = apply_map.get(self._get("apply_on"), "Transaction")
+
+        if pr.apply_on == "Item Code" and self._get("apply_on_value"):
+            for item_code in _parse_apply_on_values(self._get("apply_on_value")):
+                if item_code:
+                    pr.append("items", {"item_code": item_code})
+
+        elif pr.apply_on == "Item Group" and self._get("apply_on_value"):
+            for item_group in _parse_apply_on_values(self._get("apply_on_value")):
+                if item_group:
+                    pr.append("item_groups", {"item_group": item_group})
+
+        elif pr.apply_on == "Brand" and self._get("apply_on_value"):
+            for brand in _parse_apply_on_values(self._get("apply_on_value")):
+                if brand:
+                    pr.append("brands", {"brand": brand})
+
+        discount_type = self._get("discount_type")
+        if discount_type == "Percentage":
+            pr.price_or_product_discount = "Price"
+            pr.rate_or_discount          = "Discount Percentage"
+            pr.discount_percentage       = self._get("discount_percentage") or 0
+        elif discount_type == "Fixed":
+            pr.price_or_product_discount = "Price"
+            pr.rate_or_discount          = "Discount Amount"
+            pr.discount_amount           = self._get("discount_amount") or 0
+        elif discount_type == "Free Item":
+            pr.price_or_product_discount = "Product"
+            pr.free_item                 = self._get("free_item")
+        elif discount_type == "Free Shipping":
+            pr.price_or_product_discount = "Price"
+            pr.rate_or_discount          = "Discount Percentage"
+            pr.discount_percentage       = 100
+            pr.remarks                   = "FREE_SHIPPING"
+
+        pr.min_amt    = self._get("min_order_amount") or 0
+        pr.valid_from = self._get("valid_from") or None
+        pr.valid_upto = self._get("valid_upto") or None
+        pr.disable    = 1
 
         pr.save(ignore_permissions=True)
 
-    frappe.db.commit()
-    frappe.response["data"] = {"coupon_code": coupon_code, "status": "updated"}
+
+    # ---------- DELETE ----------
+    def disable_pricing_rule(self):
+        if self.doc.pricing_rule:
+            CouponRepository.disable_pricing_rule(self.doc.pricing_rule)
 
 
-# ─────────────────────────────────────────────
-#  DELETE  (disables Pricing Rule, removes Coupon)
-# ─────────────────────────────────────────────
-@frappe.whitelist()
-def delete_coupon(coupon_code):
-    _check_permission()
+# =========================================
+# VALIDATOR
+# Only validates — ERPNext handles discount calculation
+# =========================================
+class CouponValidator:
 
-    coupon_code = coupon_code.strip().upper()
+    @staticmethod
+    def validate(code, cart, customer=None):
+        """
+        Validates coupon against cart.
+        Returns pricing rule details when valid so callers can decide whether to
+        let ERPNext handle the coupon at transaction level or apply row-level
+        discounts manually.
+        """
+        code = code.strip().upper()
+    
+        if not CouponRepository.exists(code):
+            return {"valid": False, "message": "Invalid coupon"}
+    
+        coupon = CouponRepository.get_coupon(code)
+    
+        # Expiry
+        if coupon.valid_upto and str(coupon.valid_upto) < nowdate():
+            return {"valid": False, "message": "Coupon has expired"}
+    
+        # Usage limit
+        if coupon.maximum_use and coupon.used >= coupon.maximum_use:
+            return {"valid": False, "message": "Usage limit reached"}
+    
+        if customer and frappe.db.exists(
+            "Sales Order",
+            {
+                "customer": customer,
+                "coupon_code": coupon.name,
+                "docstatus": ["!=", 2],
+            },
+        ):
+            return {"valid": False, "message": "You have already used this coupon"}
+    
+        if not coupon.pricing_rule:
+            return {"valid": False, "message": "Coupon has no linked Pricing Rule"}
+    
+        pr = CouponRepository.get_pricing_rule(coupon.pricing_rule)
+        pricing_rule_details = {
+            "name": pr.name,
+            "apply_on": pr.apply_on,
+            "rate_or_discount": pr.rate_or_discount,
+            "discount_percentage": frappe.utils.flt(pr.discount_percentage or 0),
+            "discount_amount": frappe.utils.flt(pr.discount_amount or 0),
+            "items": [],
+            "item_groups": [],
+            "brands": [],
+        }
+    
+        # Min amount
+        if pr.min_amt and cart["total"] < pr.min_amt:
+            return {"valid": False, "message": f"Minimum order amount is {pr.min_amt}"}
+    
+        # Item Code check
+        if pr.apply_on == "Item Code" and pr.items:
+            target_items = [row.item_code for row in pr.items if row.item_code]
+            pricing_rule_details["items"] = target_items
+    
+            if not any(i.get("item_code") in target_items for i in cart["items"]):
+                return {"valid": False, "message": "Required item not in cart"}
+    
+        # Item Group check
+        if pr.apply_on == "Item Group" and pr.item_groups:
+            target_item_groups = [row.item_group for row in pr.item_groups if row.item_group]
+            pricing_rule_details["item_groups"] = target_item_groups
+            if not any(
+                _item_group_matches_targets(i.get("item_group"), target_item_groups)
+                for i in cart["items"]
+            ):
+                return {"valid": False, "message": "Required item group not in cart"}
 
-    if not frappe.db.exists("Coupon Code", coupon_code):
-        frappe.throw(_(f"Coupon '{coupon_code}' not found."), frappe.DoesNotExistError)
+        # Brand check
+        if pr.apply_on == "Brand" and pr.brands:
+            target_brands = [row.brand for row in pr.brands if row.brand]
+            pricing_rule_details["brands"] = target_brands
+            if not any(i.get("brand") in target_brands for i in cart["items"]):
+                return {"valid": False, "message": "Required brand not in cart"}
+    
+        return {
+            "valid": True,
+            "coupon_name": coupon.name,
+            "coupon_code": coupon.coupon_code,
+            "pricing_rule": pricing_rule_details,
+        }
+    
+# =========================================
+# USAGE
+# =========================================
+class CouponUsage:
 
-    coupon = frappe.get_doc("Coupon Code", coupon_code)
+    @staticmethod
+    def apply(coupon_code):
+        coupon = CouponRepository.get_coupon(coupon_code)
+        CouponRepository.increment_usage(coupon)
 
-    # ── disable linked Pricing Rule (don't delete) ──
-    if coupon.pricing_rule and frappe.db.exists("Pricing Rule", coupon.pricing_rule):
-        frappe.db.set_value("Pricing Rule", coupon.pricing_rule, "disable", 1)
 
-    # ── delete the Coupon Code doc ───────────────────
-    frappe.delete_doc("Coupon Code", coupon_code, ignore_permissions=True)
-    frappe.db.commit()
+# =========================================
+# HOOKS
+# =========================================
 
-    frappe.response["data"] = {
-        "coupon_code":  coupon_code,
-        "pricing_rule": coupon.pricing_rule,
-        "status":       "deleted",
-        "pricing_rule_status": "disabled",
+def validate(doc, method=None):
+    import inspect
+
+    if doc.is_new():
+        return
+
+    if not doc.pricing_rule or not str(doc.pricing_rule).strip():
+        frappe.throw("Pricing Rule is required and cannot be removed")
+
+    old_doc = frappe.get_doc("Coupon Code", doc.name)
+    internal_used_update = any(
+        frame.function in {"update_coupon_code_count", "increment_usage"} for frame in inspect.stack()
+    )
+    ignore_used_validation = getattr(doc.flags, "ignore_coupon_used_validation", False)
+    internal_usage_save = internal_used_update or ignore_used_validation
+
+    if doc.get("used") != old_doc.get("used") and not internal_usage_save:
+        frappe.throw("used cannot be modified manually")
+
+    if internal_usage_save:
+        doc.flags.coupon_pricing_rule_fields_changed = False
+        return
+
+    doc.flags.coupon_pricing_rule_fields_changed = any(
+        doc.get(field) != old_doc.get(field) for field in ("valid_from", "valid_upto")
+    )
+
+    allowed_fields = {
+        "description",
+        "valid_from",
+        "valid_upto",
+        "maximum_use",
     }
+    blocked_fields = {
+        "coupon_code",
+        "coupon_name",
+        "pricing_rule",
+        "apply_on",
+        "apply_on_value",
+        "discount_type",
+        "discount_percentage",
+        "discount_amount",
+    }
+
+    ignore_fields = {
+        "modified", "modified_by", "owner", "creation",
+        "idx", "docstatus", "doctype", "name"
+    }
+
+    request_payload = _get_request_payload()
+    for field in request_payload:
+        if field in allowed_fields or field in ignore_fields:
+            continue
+
+        if field in blocked_fields or field not in doc.meta.get_valid_columns() or field == "used":
+            frappe.throw(f"{field} cannot be modified")
+
+    transient_fields = (
+        set(doc.__dict__.keys())
+        - set(old_doc.__dict__.keys())
+        - ignore_fields
+        - {"meta", "flags"}
+    )
+    for field in transient_fields:
+        if field.startswith("_") or field in allowed_fields:
+            continue
+
+        if field in blocked_fields or field not in doc.meta.get_valid_columns():
+            frappe.throw(f"{field} cannot be modified")
+    
+    for field in doc.meta.get_valid_columns():
+        if field in allowed_fields or field in ignore_fields:
+            continue
+
+        if field == "used":
+            continue
+        
+        if doc.get(field) != old_doc.get(field):
+            frappe.throw(f"{field} cannot be modified")
+
+def after_insert(doc, method=None):
+    pr = CouponService(doc).create_pricing_rule()
+
+    if not pr or not pr.name:
+        frappe.throw(_("Pricing Rule is required for Coupon Code"))
+
+    frappe.db.set_value("Coupon Code", doc.name, "pricing_rule", pr.name)
+
+    doc.reload()
+
+    if not doc.pricing_rule:
+        frappe.throw(_("Coupon must be linked to a Pricing Rule"))
+
+    _log_pricing_rule_conflict_review(pr)
+
+
+def on_update(doc, method=None):
+    if getattr(doc.flags, "ignore_coupon_pricing_rule_update", False) or getattr(
+        frappe.flags, "ignore_coupon_pricing_rule_update", False
+    ):
+        return
+
+    if not getattr(doc.flags, "coupon_pricing_rule_fields_changed", False):
+        return
+
+    CouponService(doc).update_pricing_rule()
+    if doc.pricing_rule and CouponRepository.pricing_rule_exists(doc.pricing_rule):
+        _log_pricing_rule_conflict_review(CouponRepository.get_pricing_rule(doc.pricing_rule))
+
+
+def on_delete(doc, method=None):
+    CouponService(doc).disable_pricing_rule()

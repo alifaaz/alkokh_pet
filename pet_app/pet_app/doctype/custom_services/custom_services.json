@@ -20,14 +20,14 @@
    "fieldname": "care_service_id",
    "fieldtype": "Link",
    "label": "care service id",
-   "options": "CareService"
+   "options": "CareService template"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-01-19 23:34:08.599153",
+ "modified": "2026-04-25 22:13:01.404689",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "custom services",
