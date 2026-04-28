@@ -12,12 +12,16 @@
   "care_service_id",
   "status",
   "doctor",
+  "user",
   "visit",
+  "start_date",
+  "end_date",
   "column_break_adis",
   "due_date",
   "provider",
   "description",
-  "send_reminder"
+  "send_reminder",
+  "amended_from"
  ],
  "fields": [
   {
@@ -91,12 +95,39 @@
    "fieldtype": "Link",
    "label": "visit",
    "options": "Vet Visit"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "PetCareService",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Datetime",
+   "label": "Start Date"
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Datetime",
+   "label": "end date"
+  },
+  {
+   "fetch_from": "doctor.user",
+   "fieldname": "user",
+   "fieldtype": "Data",
+   "label": "user"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
+ "is_submittable": 1,
  "links": [],
- "modified": "2026-04-25 22:20:38.619547",
+ "modified": "2026-04-28 10:37:55.875662",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "PetCareService",

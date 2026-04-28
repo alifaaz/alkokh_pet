@@ -1,11 +1,12 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2026-03-27 00:00:00.000000",
+ "creation": "2026-03-27 00:00:00",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "medication",
   "medication_item",
   "qty",
   "rate",
@@ -17,11 +18,13 @@
  ],
  "fields": [
   {
+   "fetch_from": "medication.linked_item",
    "fieldname": "medication_item",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Medication Item",
    "options": "Item",
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -67,31 +70,24 @@
    "fieldname": "instructions",
    "fieldtype": "Small Text",
    "label": "Instructions"
+  },
+  {
+   "fieldname": "medication",
+   "fieldtype": "Link",
+   "label": "Medication",
+   "options": "Medication"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-03-27 00:00:00.000000",
+ "modified": "2026-04-27 01:52:54.434300",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Vet Visit Medication Item",
  "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
+ "permissions": [],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
  "sort_field": "creation",

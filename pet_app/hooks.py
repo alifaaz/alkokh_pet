@@ -135,13 +135,12 @@ app_license = "mit"
 # Document Events - Auto Folder Creation
 # ═══════════════════════════════════════════════════════════════════
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Vet Visit": {
+		"on_update": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
+		"on_trash": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
+	}
+}
 
 # Scheduled Tasks
 # ---------------
@@ -250,6 +249,10 @@ app_license = "mit"
 
 
 doc_events = {
+    "Appointment": {
+        "before_insert": "pet_app.utils.appointment.link_appointment_identity",
+        "validate": "pet_app.utils.appointment.link_appointment_identity",
+    },
     "Sales Order": {
         "before_update_after_submit": "pet_app.api.order.before_sales_order_update",
         "on_update_after_submit": "pet_app.api.order.on_sales_order_update",
@@ -322,3 +325,97 @@ scheduler_events = {
 #     "on_update":    "pet_app.utils.auto_update_links.on_update",
 #     "after_rename": "pet_app.utils.auto_update_links.after_rename",
 # },
+fixtures = [
+    # Custom Fields
+    {
+        "dt": "Custom Field",
+        "filters": [["dt", "in", [
+            "Address", "Appointment", "Communication", "Contact", "Coupon Code",
+            "Driver", "Email Account", "File", "GoCardless Mandate", "Item",
+            "Item Group", "Patient", "Patient Encounter", "Payment Entry",
+            "POS Profile", "Print Settings", "Sales Invoice", "Sales Order",
+            "Stock Entry", "UTM Campaign", "Web Form",
+        ]]],
+    },
+
+    # Property Setters
+    {
+        "dt": "Property Setter",
+        "filters": [["doc_type", "in", [
+            "Address", "Appointment", "Clinical Procedure Item", "Coupon Code",
+            "Customer", "Delivery Note", "Delivery Note Item", "Driver", "Item",
+            "Item Barcode", "Item Group", "Job Card", "Material Request",
+            "Packed Item", "Patient", "Patient Encounter", "Pick List",
+            "POS Invoice", "POS Invoice Item", "Purchase Invoice",
+            "Purchase Invoice Item", "Purchase Order", "Purchase Receipt",
+            "Purchase Receipt Item", "Quotation", "Sales Invoice",
+            "Sales Invoice Item", "Sales Order", "Specimen", "Stock Entry",
+            "Stock Entry Detail", "Stock Reconciliation",
+            "Stock Reconciliation Item", "Supplier", "Supplier Quotation",
+        ]]],
+    },
+
+    # Server Scripts
+    {
+        "dt": "Server Script",
+        "filters": [["name", "in", ["Auto Create Item For CareService"]]],
+    },
+
+    # Workflow
+    {
+        "dt": "Workflow",
+        "filters": [["name", "in", ["orders"]]],
+    },
+
+    # Workflow States (all 3 — Approved was missing from first scan)
+    {
+        "dt": "Workflow State",
+        "filters": [["name", "in", ["Approved", "Pending", "Rejected"]]],
+    },
+
+    # Workflow Action Masters (Approve and Review were missing from first scan)
+    {
+        "dt": "Workflow Action Master",
+        "filters": [["name", "in", ["Approve", "Reject", "Review"]]],
+    },
+
+    # Email Template
+    {
+        "dt": "Email Template",
+        "filters": [["name", "in", ["Dispatch Notification"]]],
+    },
+
+    # Letter Heads
+    {
+        "dt": "Letter Head",
+        "filters": [["name", "in", ["Company Letterhead", "Company Letterhead - Grey"]]],
+    },
+
+    # Print Formats (all 14 — safe to export all since they were modified on this site)
+    {
+        "dt": "Print Format",
+        "filters": [["name", "in", [
+            "IRS 1099 Form",
+            "Delivery Note Standard", "Delivery Note with Item Image",
+            "Cheque Printing Format",
+            "POS Invoice", "POS Invoice Standard", "POS Invoice with Item Image",
+            "Return POS Invoice",
+            "Drop Shipping Format",
+            "Purchase Order Standard", "Purchase Order with Item Image",
+            "Point of Sale",
+            "Sales Invoice Standard", "Sales Invoice with Item Image",
+        ]]],
+    },
+
+    # Custom Roles (17 roles — completely missed in first scan)
+    {
+        "dt": "Role",
+        "filters": [["is_custom", "=", 1]],
+    },
+
+    # Custom DocPerms — 274 permission rules across 56 doctypes
+    # WARNING: without this, all custom roles will have zero access on fresh install
+    {
+        "dt": "Custom DocPerm",
+    },
+]

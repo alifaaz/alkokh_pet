@@ -1,0 +1,190 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:medication_name",
+ "creation": "2026-04-26 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "medication_name",
+  "code",
+  "linked_item",
+  "default_warehouse",
+  "default_price",
+  "section_break_prescription_defaults",
+  "dosage_form_or_unit",
+  "strength",
+  "default_dosage",
+  "default_frequency",
+  "default_duration_days",
+  "default_instructions",
+  "section_break_status",
+  "disabled",
+  "section_break_counters",
+  "reference_count",
+  "given_count",
+  "total_dispensed_amount"
+ ],
+ "fields": [
+  {
+   "fieldname": "medication_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Medication Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Code"
+  },
+  {
+   "fieldname": "linked_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Linked Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "default_warehouse",
+   "fieldtype": "Link",
+   "label": "Default Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "default_price",
+   "fieldtype": "Currency",
+   "label": "Default Price"
+  },
+  {
+   "fieldname": "section_break_prescription_defaults",
+   "fieldtype": "Section Break",
+   "label": "Prescription Defaults"
+  },
+  {
+   "fieldname": "dosage_form_or_unit",
+   "fieldtype": "Data",
+   "label": "Dosage Form or Unit"
+  },
+  {
+   "fieldname": "strength",
+   "fieldtype": "Data",
+   "label": "Strength"
+  },
+  {
+   "fieldname": "default_dosage",
+   "fieldtype": "Data",
+   "label": "Default Dosage"
+  },
+  {
+   "fieldname": "default_frequency",
+   "fieldtype": "Data",
+   "label": "Default Frequency"
+  },
+  {
+   "fieldname": "default_duration_days",
+   "fieldtype": "Int",
+   "label": "Default Duration Days"
+  },
+  {
+   "fieldname": "default_instructions",
+   "fieldtype": "Small Text",
+   "label": "Default Instructions"
+  },
+  {
+   "fieldname": "section_break_status",
+   "fieldtype": "Section Break",
+   "label": "Status"
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Disabled"
+  },
+  {
+   "fieldname": "section_break_counters",
+   "fieldtype": "Section Break",
+   "label": "Usage Summary"
+  },
+  {
+   "default": "0",
+   "fieldname": "reference_count",
+   "fieldtype": "Int",
+   "label": "Reference Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "given_count",
+   "fieldtype": "Int",
+   "label": "Given Count",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "total_dispensed_amount",
+   "fieldtype": "Float",
+   "label": "Total Dispensed Amount",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-26 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Medication",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Administrator",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Healthcare Practitioner",
+   "share": 1,
+   "write": 0
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "medication_name, code, linked_item",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "medication_name"
+}

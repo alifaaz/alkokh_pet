@@ -11,6 +11,11 @@
   "frequency",
   "item_code",
   "price_list",
+  "specimen",
+  "estimated_turnaround",
+  "modality",
+  "body_part",
+  "service_area",
   "column_break_wbjw",
   "animal_species",
   "category_id",
@@ -67,8 +72,7 @@
    "fieldtype": "Link",
    "label": "Item code",
    "options": "Item",
-   "read_only": 1,
-   "reqd": 1
+   "read_only": 1
   },
   {
    "fieldname": "column_break_wbjw",
@@ -92,12 +96,37 @@
    "fieldname": "disabled",
    "fieldtype": "Check",
    "label": "disabled"
+  },
+  {
+   "fieldname": "specimen",
+   "fieldtype": "Data",
+   "label": "specimen"
+  },
+  {
+   "fieldname": "modality",
+   "fieldtype": "Data",
+   "label": "modality"
+  },
+  {
+   "fieldname": "body_part",
+   "fieldtype": "Data",
+   "label": "body_part"
+  },
+  {
+   "fieldname": "service_area",
+   "fieldtype": "Data",
+   "label": "service_area"
+  },
+  {
+   "fieldname": "estimated_turnaround",
+   "fieldtype": "Data",
+   "label": "turnaround"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-26 10:19:49.602407",
+ "modified": "2026-04-27 00:55:43.489441",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CareService template",

@@ -1,0 +1,21 @@
+[
+ {
+  "allow_guest": 0,
+  "api_method": null,
+  "cron_format": null,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Server Script",
+  "doctype_event": "Before Save",
+  "enable_rate_limit": 0,
+  "event_frequency": "All",
+  "modified": "2026-01-10 18:52:43.992819",
+  "module": null,
+  "name": "Auto Create Item For CareService",
+  "rate_limit_count": 5,
+  "rate_limit_seconds": 86400,
+  "reference_doctype": "CareService template",
+  "script": "# 1) Auto-create/link Item from CareService\r\nif not doc.item_code:\r\n    service_name = (doc.service_name or \"\").strip()\r\n    if not service_name:\r\n        frappe.throw(\"Service name is required\")\r\n\r\n    # Reuse existing Item with same name (prevents duplicates)\r\n    existing_item = frappe.db.get_value(\"Item\", {\"item_name\": service_name}, \"name\")\r\n    if existing_item:\r\n        doc.item_code = existing_item\r\n    else:\r\n        # Use doc.name for safe item_code (always ASCII)\r\n        base_token = (doc.name or \"CARESERVICE\").upper().replace(\"_\", \"-\")\r\n        base = (\"VET-\" + base_token)[:40]\r\n        code = base\r\n        i = 1\r\n        while frappe.db.exists(\"Item\", {\"item_code\": code}):\r\n            i += 1\r\n            code = f\"{base}-{i}\"\r\n\r\n        # Pick an existing Item Group\r\n        if frappe.db.exists(\"Item Group\", \"Veterinary Services\"):\r\n            item_group = \"Veterinary Services\"\r\n        elif frappe.db.exists(\"Item Group\", \"Services\"):\r\n            item_group = \"Services\"\r\n        else:\r\n            frappe.throw(\"Create an Item Group named 'Services' (or 'Veterinary Services') first.\")\r\n\r\n        item = frappe.get_doc({\r\n            \"doctype\": \"Item\",\r\n            \"item_code\": code,\r\n            \"item_name\": service_name,   # Arabic OK\r\n            \"item_group\": item_group,\r\n            \"stock_uom\": \"Nos\",\r\n            \"is_stock_item\": 0,\r\n            \"maintain_stock\": 0,\r\n            \"is_sales_item\": 1,\r\n            \"is_purchase_item\": 0\r\n        })\r\n        item.insert(ignore_permissions=True)\r\n        doc.item_code = item.name\r\n\r\n# 2) Upsert Item Price from default_price + price_list\r\nif doc.default_price and doc.price_list:\r\n    rate = float(doc.default_price)\r\n    price_list = doc.price_list\r\n\r\n    ip_name = frappe.db.get_value(\r\n        \"Item Price\",\r\n        {\"item_code\": doc.item_code, \"price_list\": price_list},\r\n        \"name\"\r\n    )\r\n\r\n    if ip_name:\r\n        frappe.db.set_value(\"Item Price\", ip_name, \"price_list_rate\", rate)\r\n    else:\r\n        ip = frappe.get_doc({\r\n            \"doctype\": \"Item Price\",\r\n            \"item_code\": doc.item_code,\r\n            \"price_list\": price_list,\r\n            \"price_list_rate\": rate\r\n        })\r\n        ip.insert(ignore_permissions=True)\r\n",
+  "script_type": "DocType Event"
+ }
+]
