@@ -1,11 +1,13 @@
 import frappe
 from frappe import _
+from pet_app.api.response import standardize_response
 
 DASHBOARD_ALLOWED_ROLES = {
     "System Manager",
     "Accounts Manager",
     "Accounts User",
     "Accounting",
+    "Healthcare Practitioner",
     "Doctor",
     "Healthcare",
     "Pet",
@@ -66,6 +68,7 @@ def _require_analytics_access():
 # ─────────────────────────────────────────
 
 @frappe.whitelist()
+@standardize_response
 def get_order_status_counts():
     """
     GET /api/method/pet_app.api.dashboard.get_order_status_counts
@@ -98,6 +101,7 @@ def get_order_status_counts():
 # ─────────────────────────────────────────
 
 @frappe.whitelist()
+@standardize_response
 def get_statistics():
     """
     GET /api/method/pet_app.api.dashboard.get_statistics
@@ -120,6 +124,7 @@ def get_statistics():
 # ─────────────────────────────────────────
 
 @frappe.whitelist()
+@standardize_response
 def get_revenue_report(fiscal_year="2026"):
     """
     GET /api/method/pet_app.api.dashboard.get_revenue_report
@@ -172,6 +177,7 @@ def get_revenue_report(fiscal_year="2026"):
 # ─────────────────────────────────────────
 
 @frappe.whitelist()
+@standardize_response
 def get_best_seller():
     """
     GET /api/method/pet_app.api.dashboard.get_best_seller
@@ -201,6 +207,7 @@ def get_best_seller():
 import frappe
 
 @frappe.whitelist()
+@standardize_response
 def get_profit_and_expenses():
     """
     GET /api/method/pet_app.api.dashboard.get_profit_and_expenses
@@ -270,6 +277,7 @@ def get_profit_and_expenses():
 # ─────────────────────────────────────────
 
 @frappe.whitelist()
+@standardize_response
 def get_orders_by_item_group():
     """
     GET /api/method/pet_app.api.dashboard.get_orders_by_item_group

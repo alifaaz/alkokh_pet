@@ -9,20 +9,28 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.utils import date_diff, getdate, now_datetime
 
+from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
+from pet_app.utils.medical_profile import set_visit_case_choice, update_profile_for_case_sheet, update_profile_for_visit
+from pet_app.utils.practitioner import get_practitioner_for_user
+from pet_app.workflows import clinical_state
+from pet_app.api.response import standardize_response
 
 
 class VetCaseSheet(Document):
 	def validate(self):
 		self._set_defaults()
+		self._pull_appointment_values()
 		self._populate_pet_snapshot()
 		self._populate_customer_from_guardian()
 		self._validate_guardian_pet_link()
+		clinical_state.validate_document_transition(self)
 		self._validate_conditional_fields()
 		self._validate_status_consistency()
 
 	def on_update(self):
 		self._sync_status_with_visit()
+		update_profile_for_case_sheet(self)
 
 	def _set_defaults(self):
 		if not self.case_sheet_date:
@@ -33,6 +41,24 @@ class VetCaseSheet(Document):
 
 		if not self.status:
 			self.status = "Draft"
+
+	def _pull_appointment_values(self):
+		if not self.meta.has_field("appointment") or not self.appointment:
+			return
+		if not frappe.db.exists("Appointment", self.appointment):
+			frappe.throw(_("Appointment {0} was not found.").format(frappe.bold(self.appointment)))
+
+		appointment = frappe.get_doc("Appointment", self.appointment)
+		if appointment.meta.has_field("custom_pet") and appointment.get("custom_pet"):
+			if self.animal_patient and self.animal_patient != appointment.get("custom_pet"):
+				frappe.throw(_("Case Sheet pet must match the linked Appointment pet."))
+			self.animal_patient = appointment.get("custom_pet")
+		if appointment.meta.has_field("custom_guardian") and appointment.get("custom_guardian"):
+			if self.guardian and self.guardian != appointment.get("custom_guardian"):
+				frappe.throw(_("Case Sheet guardian must match the linked Appointment guardian."))
+			self.guardian = appointment.get("custom_guardian")
+		if appointment.meta.has_field("custom_customer") and appointment.get("custom_customer") and not self.customer:
+			self.customer = appointment.get("custom_customer")
 
 	def _populate_pet_snapshot(self):
 		if not self.animal_patient:
@@ -96,7 +122,7 @@ class VetCaseSheet(Document):
 			frappe.throw(_("Feeding Type Other is required when Feeding Type is Other."))
 
 	def _validate_status_consistency(self):
-		if self.vet_visit and self.status in {"Draft", "Waiting Doctor"}:
+		if self.vet_visit and self.status in {"Draft", "Waiting Practitioner"}:
 			self.status = "In Consultation"
 
 	def _validate_guardian_pet_link(self):
@@ -171,6 +197,7 @@ def build_case_summary(case_sheet) -> str:
 
 
 @frappe.whitelist()
+@standardize_response
 def get_pet_context(pet_name: str) -> dict:
 	if not pet_name:
 		return {}
@@ -203,18 +230,19 @@ def get_pet_context(pet_name: str) -> dict:
 
 
 @frappe.whitelist()
-def start_visit(case_sheet_name: str) -> dict:
+@standardize_response
+def start_visit(case_sheet_name: str, doctor_case_choice: str | None = None, care_episode: str | None = None, case_choice_note: str | None = None) -> dict:
 	if not case_sheet_name:
 		frappe.throw(_("Case Sheet is required."))
 
 	if frappe.session.user != "Administrator":
-		frappe.only_for(("Doctor", "System Manager", "Healthcare"))
-	if not frappe.has_permission("Vet Visit", ptype="create"):
-		raise frappe.PermissionError(_("Not permitted to create Vet Visit."))
+		frappe.only_for(("Healthcare Practitioner", "Doctor", "System Manager", "Healthcare"))
+	require_doctype_permission("Vet Visit", "create")
 
 	doctor = _get_session_doctor()
 	if not doctor:
-		frappe.throw(_("Start Visit requires a user linked to a Doctor."))
+		frappe.throw(_("Start Visit requires a user linked to a Healthcare Practitioner."))
+	require_restriction_value("practitioner", doctor)
 
 	case_sheet = frappe.get_doc("Vet Case Sheet", case_sheet_name)
 	case_sheet.check_permission("read")
@@ -236,12 +264,17 @@ def start_visit(case_sheet_name: str) -> dict:
 		as_dict=True,
 	)
 	if existing_visit:
-		frappe.throw(
-			_("Vet Visit {0} already exists for this Case Sheet with status {1}.").format(
-				frappe.bold(existing_visit.name), frappe.bold(existing_visit.status)
-			),
-			title=_("Visit Already Exists"),
-		)
+		if case_sheet.vet_visit != existing_visit.name:
+			frappe.db.set_value("Vet Case Sheet", case_sheet.name, "vet_visit", existing_visit.name, update_modified=False)
+		if doctor_case_choice:
+			visit = frappe.get_doc("Vet Visit", existing_visit.name)
+			set_visit_case_choice(visit, doctor_case_choice, episode=care_episode, note=case_choice_note)
+		return {
+			"name": existing_visit.name,
+			"doctype": "Vet Visit",
+			"status": existing_visit.status,
+			"idempotent": True,
+		}
 
 	visit = get_mapped_doc(
 		"Vet Case Sheet",
@@ -251,6 +284,7 @@ def start_visit(case_sheet_name: str) -> dict:
 				"doctype": "Vet Visit",
 				"field_map": {
 					"name": "case_sheet",
+					"appointment": "appointment",
 					"customer": "customer",
 					"animal_patient": "animal_patient",
 					"weight": "weight",
@@ -260,6 +294,10 @@ def start_visit(case_sheet_name: str) -> dict:
 		postprocess=_set_visit_defaults,
 	)
 	visit.insert()
+	if doctor_case_choice:
+		set_visit_case_choice(visit, doctor_case_choice, episode=care_episode, note=case_choice_note)
+	else:
+		update_profile_for_visit(visit, clinical_status="Waiting Doctor")
 	visit.add_comment("Comment", _("Vet Visit created from Case Sheet by {0}.").format(frappe.session.user))
 
 	frappe.db.set_value(
@@ -304,7 +342,7 @@ def _get_visit_type_from_case_sheet(case_sheet) -> str:
 
 
 def _get_session_doctor() -> str | None:
-	return frappe.db.get_value("Doctor", {"user": frappe.session.user}, "name")
+	return get_practitioner_for_user(frappe.session.user)
 
 
 def _get_primary_guardian_for_pet(pet_name: str):

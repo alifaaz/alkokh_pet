@@ -21,10 +21,10 @@
   "is_active",
   "otp_verified",
   "otp_section",
-	  "otp_code",
-	  "otp_expires_at",
-	  "pending_phone_change",
-	  "wrong_attempts"
+  "otp_code",
+  "otp_expires_at",
+  "pending_phone_change",
+  "wrong_attempts"
  ],
  "fields": [
   {
@@ -68,19 +68,19 @@
    "in_list_view": 1,
    "label": "otp_code"
   },
-	  {
-	   "fieldname": "otp_expires_at",
-	   "fieldtype": "Datetime",
-	   "label": "otp_expires_at"
-	  },
-	  {
-	   "fieldname": "pending_phone_change",
-	   "fieldtype": "Data",
-	   "label": "Pending Phone Change"
-	  },
-	  {
-	   "default": "0",
-	   "fieldname": "wrong_attempts",
+  {
+   "fieldname": "otp_expires_at",
+   "fieldtype": "Datetime",
+   "label": "otp_expires_at"
+  },
+  {
+   "fieldname": "pending_phone_change",
+   "fieldtype": "Data",
+   "label": "Pending Phone Change"
+  },
+  {
+   "default": "0",
+   "fieldname": "wrong_attempts",
    "fieldtype": "Int",
    "label": "Wrong Attempts"
   },
@@ -155,21 +155,11 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
-  },
-  {
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Guardian",
-   "select": 1,
-   "share": 1,
-   "write": 1
   }
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
+ "title_field": "full_name",
  "sort_field": "creation",
  "sort_order": "DESC",
  "states": []

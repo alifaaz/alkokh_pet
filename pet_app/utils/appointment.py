@@ -6,6 +6,7 @@ import frappe
 from frappe import _
 from frappe.utils import cstr
 
+from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import (
     get_guardian_by_customer,
     get_or_create_customer_from_guardian,
@@ -79,24 +80,28 @@ def _apply_customer_link(doc, customer_id: str | None):
 
     guardian = get_guardian_by_customer(customer_id)
     if guardian:
-        if doc.get("custom_gurdian") and doc.custom_gurdian != guardian.get("name"):
+        if doc.get("custom_guardian") and doc.custom_guardian != guardian.get("name"):
             frappe.throw(
                 _("Appointment guardian {0} does not match customer {1}.").format(
-                    frappe.bold(doc.custom_gurdian), frappe.bold(customer_id)
+                    frappe.bold(doc.custom_guardian), frappe.bold(customer_id)
                 )
             )
-        doc.custom_gurdian = guardian.get("name")
+        doc.custom_guardian = guardian.get("name")
 
 
 def link_appointment_identity(doc, method=None):
     if doc.doctype != "Appointment":
         return
 
+    if method == "before_insert" or doc.is_new():
+        require_doctype_permission("Appointment", "create")
+        require_restriction_value("practitioner", _get_appointment_doctor(doc))
+
     customer_id = None
 
-    if doc.get("custom_gurdian"):
-        customer_id = get_or_create_customer_from_guardian(doc.custom_gurdian)
-        doc.custom_gurdian = cstr(doc.custom_gurdian).strip()
+    if doc.get("custom_guardian"):
+        customer_id = get_or_create_customer_from_guardian(doc.custom_guardian)
+        doc.custom_guardian = cstr(doc.custom_guardian).strip()
         _apply_customer_link(doc, customer_id)
         return
 
@@ -110,7 +115,7 @@ def link_appointment_identity(doc, method=None):
 
     guardian = _find_guardian_by_phone(phone)
     if guardian:
-        doc.custom_gurdian = guardian["name"]
+        doc.custom_guardian = guardian["name"]
         customer_id = get_or_create_customer_from_guardian(guardian["name"])
         _apply_customer_link(doc, customer_id)
         return
@@ -118,3 +123,10 @@ def link_appointment_identity(doc, method=None):
     customer_id = _find_customer_by_phone(phone)
     if customer_id:
         _apply_customer_link(doc, customer_id)
+
+
+def _get_appointment_doctor(doc) -> str | None:
+    for fieldname in ("practitioner", "custom_doctor", "doctor"):
+        if doc.meta.has_field(fieldname) and doc.get(fieldname):
+            return doc.get(fieldname)
+    return None

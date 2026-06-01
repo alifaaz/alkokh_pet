@@ -31,7 +31,7 @@ PROFILE_USERS = {
 }
 
 EXPECTED_PROFILE_ROLES = {
-	"Healthcare Profile": {"Healthcare", "Doctor"},
+	"Healthcare Profile": {"Healthcare", "Healthcare Practitioner"},
 	"Pet Profile": {"Pet"},
 	"Ecommerce Profile": {"E-commerce"},
 	"Order Profile": {"Order"},

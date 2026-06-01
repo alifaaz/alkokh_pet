@@ -37,7 +37,7 @@ class TestAppointmentIdentity(IntegrationTestCase):
         appointment.reload()
 
         self.assertTrue(guardian.customer_id)
-        self.assertEqual(appointment.custom_gurdian, guardian.name)
+        self.assertEqual(appointment.custom_guardian, guardian.name)
         self.assertEqual(appointment.custom_customer, guardian.customer_id)
         self.assertEqual(appointment.appointment_with, "Customer")
         self.assertEqual(appointment.party, guardian.customer_id)

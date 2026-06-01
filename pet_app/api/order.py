@@ -2,17 +2,20 @@ import frappe
 from frappe import _
 from frappe.rate_limiter import rate_limit
 from frappe.utils import cint, flt, nowdate, rounded
+from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.driver import (
     _create_driver_debit_entry,
     _collect_driver_cash,
     _reverse_driver_entry,
     COMPANY,
 )
+from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import (
     get_guardian_by_user,
     get_guardian_record,
     get_or_create_customer_from_guardian,
 )
+from pet_app.api.response import standardize_response
 
 # ─────────────────────────────────────────
 # Roles
@@ -55,18 +58,19 @@ def _require_sales_order_create_access():
 
 
 def _require_stock_entry_access():
+    require_doctype_permission("Stock Entry", "create")
+    require_doctype_permission("Stock Entry", "submit")
     if frappe.session.user == "Administrator":
         return
     user_roles = set(frappe.get_roles(frappe.session.user) or [])
     allowed_roles = {"System Manager", "Stock Manager", "Item Manager", "Administrator"}
     if user_roles.isdisjoint(allowed_roles):
         frappe.throw(_("Not permitted to create Stock Entry."), frappe.PermissionError)
-    if not frappe.has_permission("Stock Entry", ptype="create"):
-        frappe.throw(_("Not permitted to create Stock Entry."), frappe.PermissionError)
 
 
 def _get_stock_basic_rate(item_code, warehouse=None):
-    warehouse = warehouse or "Stores - H"
+    warehouse = warehouse or "Stores - K"
+    require_restriction_value("warehouse", warehouse)
     rate = frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "valuation_rate")
     source = "bin_valuation_rate"
 
@@ -337,6 +341,7 @@ def _coupon_validation_response(message, coupon_code=None, http_status_code=422)
 
 
 @frappe.whitelist()
+@standardize_response
 @rate_limit(limit=ORDER_RATE_LIMIT, seconds=ORDER_RATE_WINDOW)
 def place_order(customer=None, items=None, payment_method="Cash on Delivery",
                 delivery_lat=None, delivery_lng=None,
@@ -379,8 +384,9 @@ def place_order(customer=None, items=None, payment_method="Cash on Delivery",
         if qty <= 0:
             frappe.throw(_(f"Invalid qty for item '{item_code}'"))
 
+        require_restriction_value("warehouse", "Stores - K")
         stock_qty = frappe.db.get_value(
-            "Bin", {"item_code": item_code, "warehouse": "Stores - H"}, "actual_qty"
+            "Bin", {"item_code": item_code, "warehouse": "Stores - K"}, "actual_qty"
         ) or 0
         if stock_qty < qty:
             frappe.throw(_(f"Insufficient stock for '{item_code}'. Available: {stock_qty}"))
@@ -458,6 +464,7 @@ def place_order(customer=None, items=None, payment_method="Cash on Delivery",
         so.append("items", {
             "item_code": item.get("item_code"),
             "qty": flt(item.get("qty", 1)),
+            "warehouse": "Stores - K",
         })
 
     so.selling_price_list = "Standard Selling"
@@ -501,7 +508,7 @@ def place_order(customer=None, items=None, payment_method="Cash on Delivery",
         frappe.db.rollback()
         raise
 
-    frappe.response["data"] = {
+    response = {
         "order": so.name,
         "guardian": guardian_row.get("name"),
         "customer": so.customer,
@@ -524,6 +531,7 @@ def place_order(customer=None, items=None, payment_method="Cash on Delivery",
             } for i in so.items
         ],
     }
+    frappe.response["data"] = with_link_aliases(response, guardian_field="guardian", include_pet=False, include_doctor=False, include_provider=False)
     so.add_comment("Comment", _("Sales Order created via guarded order API by {0}.").format(frappe.session.user))
 
 # ─────────────────────────────────────────
@@ -566,11 +574,12 @@ def _create_stock_issue(doc):
     se.remarks = f"Order Preparing - {doc.name}"
 
     for item in doc.items:
+        require_restriction_value("warehouse", "Stores - K")
         se.append("items", {
             "item_code": item.item_code,
             "qty": item.qty,
-            "s_warehouse": "Stores - H",
-            "basic_rate": _get_stock_basic_rate(item.item_code, "Stores - H"),
+            "s_warehouse": "Stores - K",
+            "basic_rate": _get_stock_basic_rate(item.item_code, "Stores - K"),
         })
 
     _require_stock_entry_access()

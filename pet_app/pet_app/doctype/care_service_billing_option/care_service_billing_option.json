@@ -1,0 +1,130 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "CSBO-.#####",
+ "creation": "2026-05-11 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "category_care_services",
+  "option_label",
+  "animal_species",
+  "size_weight_label",
+  "min_weight",
+  "max_weight",
+  "item_code",
+  "default_rate",
+  "disabled",
+  "sort_order",
+  "service_title"
+ ],
+ "fields": [
+  {
+   "fieldname": "option_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Option Label",
+   "reqd": 1
+  },
+  {
+   "fieldname": "animal_species",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Animal Species",
+   "options": "\nMammal\nBird\nReptile\nAmphibian\nFish\nInsect\nArachnid\nCrustacean"
+  },
+  {
+   "fieldname": "size_weight_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Size / Weight Label"
+  },
+  {
+   "fieldname": "min_weight",
+   "fieldtype": "Float",
+   "label": "Min Weight"
+  },
+  {
+   "fieldname": "max_weight",
+   "fieldtype": "Float",
+   "label": "Max Weight"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Linked Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "default_rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Default Rate",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Disabled"
+  },
+  {
+   "default": "0",
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Sort Order"
+  },
+  {
+   "fieldname": "category_care_services",
+   "fieldtype": "Link",
+   "label": "Category Care Services",
+   "options": "CategoryCareServices",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "service_title",
+   "fieldtype": "Data",
+   "label": "Service Name",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-19 07:30:31.299026",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Care Service Billing Option",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "import": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "option_label,item_code,size_weight_label",
+ "sort_field": "sort_order",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "option_label",
+ "track_changes": 1
+}

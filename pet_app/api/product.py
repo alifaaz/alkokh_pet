@@ -3,6 +3,17 @@ from frappe import _
 from frappe.utils import flt, cint
 from itertools import product as iterproduct
 
+from pet_app.api.permissions import (
+	get_restriction_values,
+	require_doctype_permission,
+	require_restriction_value,
+	user_has_full_access,
+)
+from pet_app.pet_app.doctype.product_category.product_category import (
+	apply_product_category_to_product,
+	get_product_category_summary,
+)
+from pet_app.api.response import standardize_response
 
 # ─────────────────────────────────────────
 # Allowed Roles
@@ -58,11 +69,39 @@ def _get_default_warehouse():
     return frappe.db.get_single_value("Stock Settings", "default_warehouse")
 
 
+def _get_allowed_warehouses_for_current_user():
+    if user_has_full_access():
+        return []
+    return get_restriction_values("warehouse")
+
+
+def _resolve_allowed_warehouse(warehouse=None):
+    allowed_warehouses = _get_allowed_warehouses_for_current_user()
+    if warehouse:
+        require_restriction_value("warehouse", warehouse)
+        return warehouse
+
+    default_warehouse = _get_default_warehouse()
+    if allowed_warehouses and default_warehouse not in allowed_warehouses:
+        return allowed_warehouses[0]
+    return default_warehouse
+
+
 def _get_bin_qty(item_code, warehouse=None):
     if warehouse:
+        require_restriction_value("warehouse", warehouse)
         return flt(
             frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty") or 0
         )
+    allowed_warehouses = _get_allowed_warehouses_for_current_user()
+    if allowed_warehouses:
+        result = frappe.db.sql("""
+            SELECT COALESCE(SUM(actual_qty), 0)
+            FROM `tabBin`
+            WHERE item_code = %s
+              AND warehouse IN %(warehouses)s
+        """, {"item_code": item_code, "warehouses": tuple(allowed_warehouses)})
+        return flt(result[0][0]) if result else 0.0
     result = frappe.db.sql("""
         SELECT COALESCE(SUM(actual_qty), 0)
         FROM `tabBin`
@@ -128,6 +167,44 @@ def _validate_publish(doc):
         frappe.throw("<br>".join(errors))
 
 
+def _resolve_product_item_group(doc):
+    if not doc.category:
+        return doc.item_group or "All Item Groups"
+
+    item_group = apply_product_category_to_product(doc, ignore_permissions=True)
+    if doc.name and not doc.is_new():
+        updates = {}
+        db_category = frappe.db.get_value("Product", doc.name, "category")
+        db_item_group = frappe.db.get_value("Product", doc.name, "item_group")
+        if db_category != doc.category:
+            updates["category"] = doc.category
+        if db_item_group != item_group:
+            updates["item_group"] = item_group
+        if updates:
+            frappe.db.set_value("Product", doc.name, updates, update_modified=False)
+    return item_group or "All Item Groups"
+
+
+def _enrich_product_category(row):
+    category = row.get("category")
+    if not category:
+        row["category_name"] = None
+        row["category_image"] = None
+        row["category_item_group"] = None
+        return
+
+    summary = get_product_category_summary(category)
+    row["category_name"] = summary.get("category_name") or category
+    row["category_item_group"] = summary.get("item_group")
+    row["category_image"] = summary.get("image")
+
+    if not row["category_image"] and row["category_item_group"]:
+        row["category_image"] = frappe.db.get_value("Item Group", row["category_item_group"], "image")
+
+    if not row["category_image"] and frappe.db.exists("Item Group", category):
+        row["category_image"] = frappe.db.get_value("Item Group", category, "image")
+
+
 # ─────────────────────────────────────────
 # Item
 # ─────────────────────────────────────────
@@ -147,6 +224,8 @@ def _apply_item_projection(item, doc):
 
 
 def _create_item_from_product(doc):
+    require_doctype_permission("Item", "create")
+
     if not doc.sku:
         _log_product_projection_event(
             "PRODUCT_ITEM_MISSING_SKU",
@@ -167,7 +246,7 @@ def _create_item_from_product(doc):
     item = frappe.new_doc("Item")
     item.item_code = doc.sku
     item.item_name = doc.product_name
-    item.item_group = doc.category or "All Item Groups"
+    item.item_group = _resolve_product_item_group(doc)
     item.brand = doc.brand or ""
     item.description = doc.description or ""
     item.stock_uom = "Nos"
@@ -253,6 +332,7 @@ def _ensure_item(doc):
 
     changed = _apply_item_projection(item, doc)
     if changed:
+        require_doctype_permission("Item", "write")
         item.flags.ignore_permissions = True
         item.flags.from_product_projection = True
         try:
@@ -278,7 +358,7 @@ def _ensure_item(doc):
 def _get_item_sync_payload(doc):
     return {
         "item_name": doc.product_name,
-        "item_group": doc.category or "All Item Groups",
+        "item_group": _resolve_product_item_group(doc),
         "brand": doc.brand or "",
         "description": doc.description or "",
         "image": doc.image or "",
@@ -304,9 +384,6 @@ def sync_product_item(doc, method=None):
 
     if _effective_rate(doc) > 0:
         _ensure_item_price(doc, item.name)
-
-    if doc.website_item or doc.status == "Active":
-        _ensure_website_item(doc, item.name, published=1 if doc.status == "Active" else 0)
 
 
 def _get_product_for_item(item_code):
@@ -497,29 +574,6 @@ def _ensure_item_price(doc, item_code, rate=None):
 
 
 # ─────────────────────────────────────────
-# Website Item
-# ─────────────────────────────────────────
-
-def _ensure_website_item(doc, item_code, published=1):
-    """خلق أو تحديث Website Item"""
-    existing = frappe.db.get_value("Website Item", {"item_code": item_code}, "name")
-    wi       = frappe.get_doc("Website Item", existing) if existing else frappe.new_doc("Website Item")
-
-    if not existing:
-        wi.item_code = item_code
-
-    wi.published            = published
-    wi.website_item_name    = doc.product_name
-    wi.web_long_description = doc.description or ""
-
-    wi.flags.ignore_permissions = True
-    wi.save() if existing else wi.insert()
-
-    frappe.db.set_value("Product", doc.name, "website_item", wi.name, update_modified=False)
-    return wi
-
-
-# ─────────────────────────────────────────
 # Variants
 # ─────────────────────────────────────────
 
@@ -581,12 +635,16 @@ def _ensure_variant_items(doc, template_item):
 
     # ضيف الـ attributes للـ Template
     existing_attrs = [r.attribute for r in template_item.attributes]
+    template_changed = False
     for attr_name in attributes_map:
         if attr_name not in existing_attrs:
             template_item.append("attributes", {"attribute": attr_name})
+            template_changed = True
 
-    template_item.flags.ignore_permissions = True
-    template_item.save()
+    if template_changed:
+        require_doctype_permission("Item", "write")
+        template_item.flags.ignore_permissions = True
+        template_item.save()
 
     # ولّد كل التوليفات
     attr_names  = list(attributes_map.keys())
@@ -601,11 +659,12 @@ def _ensure_variant_items(doc, template_item):
         item_code = f"{template_item.name}-{suffix}"
 
         if not frappe.db.exists("Item", item_code):
+            require_doctype_permission("Item", "create")
             variant              = frappe.new_doc("Item")
             variant.item_code    = item_code
             variant.item_name    = f"{doc.product_name} - {suffix}"
             variant.variant_of   = template_item.name
-            variant.item_group   = doc.category or "All Item Groups"
+            variant.item_group   = _resolve_product_item_group(doc)
             variant.stock_uom    = "Nos"
             variant.is_stock_item = 1
 
@@ -658,6 +717,7 @@ PRODUCT_FIELDS = [
 
 
 @frappe.whitelist(allow_guest=False)
+@standardize_response
 def publish_product(product_id=None, **kwargs):
     _check_permission()
 
@@ -688,6 +748,8 @@ def publish_product(product_id=None, **kwargs):
 
             if not doc.status:
                 doc.status = "Draft"
+
+            _validate_publish(doc)
             doc.flags.ignore_permissions = True
             doc.insert()
             frappe.db.commit()
@@ -695,8 +757,6 @@ def publish_product(product_id=None, **kwargs):
 
         doc = frappe.get_doc("Product", product_id)
 
-        # Validate
-        _validate_publish(doc)
 
         if not cint(doc.has_variants):
             # ── Simple Product ──
@@ -704,11 +764,12 @@ def publish_product(product_id=None, **kwargs):
             if not item:
                 frappe.throw(_("Cannot safely resolve Item for this Product. Check Product projection logs."))
             _ensure_item_price(doc, item.name)
-            _ensure_website_item(doc, item.name)
 
             # ── Initial Stock ──
             if _initial_qty > 0:
-                wh = _get_default_warehouse()
+                require_doctype_permission("Stock Entry", "create")
+                require_doctype_permission("Stock Entry", "submit")
+                wh = _resolve_allowed_warehouse()
                 if not wh:
                     frappe.throw(_("Default Warehouse not set in Stock Settings"))
                 se = frappe.new_doc("Stock Entry")
@@ -731,11 +792,12 @@ def publish_product(product_id=None, **kwargs):
                 frappe.throw(_("Cannot safely resolve Item for this Product. Check Product projection logs."))
 
             _ensure_item_price(doc, item.name)
-            _ensure_website_item(doc, item.name)
 
             # ── Initial Stock for variant ──
             if _initial_qty > 0:
-                wh = _get_default_warehouse()
+                require_doctype_permission("Stock Entry", "create")
+                require_doctype_permission("Stock Entry", "submit")
+                wh = _resolve_allowed_warehouse()
                 if not wh:
                     frappe.throw(_("Default Warehouse not set in Stock Settings"))
                 se = frappe.new_doc("Stock Entry")
@@ -777,11 +839,10 @@ def publish_product(product_id=None, **kwargs):
                 "brand_image": None,
             }
 
-        wh = _get_default_warehouse()
+        wh = _resolve_allowed_warehouse()
         frappe.response["data"] = {
             "product":      doc.name,
             "item":         doc.item or doc.sku,
-            "website_item": doc.website_item,
             "has_variants": cint(doc.has_variants),
             "qty":          _get_bin_qty(doc.item or doc.sku, wh),
             "variants":     generated if cint(doc.has_variants) else [],
@@ -798,6 +859,7 @@ def publish_product(product_id=None, **kwargs):
 
         
 @frappe.whitelist()
+@standardize_response
 def restock_product(product_id, qty, warehouse=None, item_variant=None):
     """
     إضافة مخزون للمنتج
@@ -807,11 +869,13 @@ def restock_product(product_id, qty, warehouse=None, item_variant=None):
     {
       "product_id": "PRODUCT-00001",
       "qty": 20,
-      "warehouse": "Stores - H",
+      "warehouse": "Stores - K",
       "item_variant": "RC-001-1kg"   ← مطلوب فقط إذا has_variants
     }
     """
     _check_permission()
+    require_doctype_permission("Stock Entry", "create")
+    require_doctype_permission("Stock Entry", "submit")
 
     qty = flt(qty)
     if qty <= 0:
@@ -825,7 +889,7 @@ def restock_product(product_id, qty, warehouse=None, item_variant=None):
     # variant products use one template item
     item_code = doc.item
 
-    wh = warehouse or _get_default_warehouse()
+    wh = _resolve_allowed_warehouse(warehouse)
     if not wh:
         frappe.throw(_("حدد المستودع أو اضبط Default Warehouse بـ Stock Settings"))
 
@@ -866,17 +930,18 @@ def restock_product(product_id, qty, warehouse=None, item_variant=None):
 
 
 @frappe.whitelist()
+@standardize_response
 def get_stock_info(product_id, warehouse=None):
     """
     جلب معلومات المخزون
 
     GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001
-    GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001&warehouse=Stores - H
+    GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001&warehouse=Stores - K
     """
     _check_permission()
 
     doc = frappe.get_doc("Product", product_id)
-    wh  = warehouse or _get_default_warehouse()
+    wh  = _resolve_allowed_warehouse(warehouse)
 
     # المنتج ما منشور بعد
     if not doc.item:
@@ -961,6 +1026,7 @@ def get_stock_info(product_id, warehouse=None):
         }
 
 @frappe.whitelist()
+@standardize_response
 def get_products(filters=None, fields=None, order_by="creation desc",
                  limit_start=0, limit_page_length=20,
                  search_term=None):
@@ -986,7 +1052,7 @@ def get_products(filters=None, fields=None, order_by="creation desc",
         limit_page_length=cint(limit_page_length)
     )
 
-    wh = _get_default_warehouse()
+    wh = _resolve_allowed_warehouse()
     for p in products:
         p["qty"] = _get_bin_qty(p["item"], wh) if p.get("item") else 0
 
@@ -996,7 +1062,7 @@ def get_products(filters=None, fields=None, order_by="creation desc",
             order_by="custom_is_default desc, creation asc"
         )
 
-        p["category_image"] = frappe.db.get_value("Item Group", p.get("category"), "image") if p.get("category") else None
+        _enrich_product_category(p)
 
         if p.get("brand"):
             brand_doc = frappe.db.get_value("Brand", p.get("brand"), ["name", "brand", "image"], as_dict=True)

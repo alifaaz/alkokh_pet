@@ -16,6 +16,7 @@ import re
 from frappe.rate_limiter import rate_limit
 from frappe.utils import add_to_date, now_datetime
 from frappe.utils.password import get_decrypted_password, check_password
+from pet_app.api.link_aliases import with_link_aliases
 from pet_app.utils.guardian_customer import (
     change_guardian_phone_number,
     get_guardian_by_user,
@@ -26,6 +27,7 @@ from pet_app.utils.guardian_customer import (
     upsert_primary_address_from_guardian,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
+from pet_app.api.response import standardize_response
 
 
 # ====== CONFIG ======
@@ -37,6 +39,16 @@ def is_debug_mode() -> bool:
         return bool(conf.get("development_mode"))
     except Exception:
         return bool(getattr(conf, "development_mode", False))
+
+
+def _with_guardian_alias(payload: dict) -> dict:
+    return with_link_aliases(
+        payload,
+        guardian_field="guardian_id",
+        include_pet=False,
+        include_doctor=False,
+        include_provider=False,
+    )
 
 
 OTP_EXPIRY_MINUTES = 10
@@ -154,7 +166,26 @@ def set_new_otp(guardian_name: str, pending_phone_change: str | None = None) -> 
         updates,
         update_modified=False
     )
+    _queue_otp_notification(guardian_name, otp, pending_phone_change=pending_phone_change)
     return otp
+
+
+def _queue_otp_notification(guardian_name: str, otp: str, pending_phone_change: str | None = None):
+    if not frappe.db.exists("DocType", "Pet App Notification Queue"):
+        return
+    try:
+        from pet_app.notifications.engine import send_whatsapp_otp
+
+        phone = pending_phone_change or frappe.db.get_value("Guardian", guardian_name, "phone")
+        send_whatsapp_otp(
+            guardian=guardian_name if not pending_phone_change else None,
+            phone=phone if pending_phone_change else None,
+            otp=otp,
+            context={"guardian": guardian_name},
+            idempotency_key=f"otp:{guardian_name}:{frappe.generate_hash(length=10)}",
+        )
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Pet App OTP notification failed")
 
 
 def _current_user_is_admin() -> bool:
@@ -329,6 +360,7 @@ def ensure_user(phone: str, password: str, full_name: str = None) -> str:
 # ====== ENDPOINTS ======
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 def register_guardian(phone, password, full_name):
     """
     Step 1: Guardian ONLY + OTP (NO User/Customer)
@@ -363,7 +395,7 @@ def register_guardian(phone, password, full_name):
             resp = {"status": "otp_resent", "guardian_id": guardian.get("name"), "message": "OTP sent"}
             if is_debug_mode():
                 resp["otp"] = otp
-            return resp
+            return _with_guardian_alias(resp)
 
         # Create Guardian ONLY (no User, no Customer)
         doc = frappe.get_doc({
@@ -379,6 +411,7 @@ def register_guardian(phone, password, full_name):
             "user_id": None,
             "customer_id": None,
         })
+        doc.flags.skip_guardian_customer_auto_create = True
         doc.insert(ignore_permissions=True)
 
         otp = set_new_otp(doc.name)
@@ -387,9 +420,10 @@ def register_guardian(phone, password, full_name):
         resp = {"status": "otp_sent", "guardian_id": doc.name, "message": "OTP sent"}
         if is_debug_mode():
             resp["otp"] = otp
-        return resp
+        return _with_guardian_alias(resp)
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 @rate_limit(limit=AUTH_RATE_LIMIT, seconds=AUTH_RATE_WINDOW)
 def send_otp(phone):
     phone = validate_iraqi_phone(phone)
@@ -408,15 +442,17 @@ def send_otp(phone):
     resp = {"status": "success", "guardian_id": guardian.get("name"), "message": "OTP sent"}
     if is_debug_mode():
         resp["otp"] = otp
-    return resp
+    return _with_guardian_alias(resp)
 
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 def resend_otp(phone):
     return send_otp(phone)
 
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 @rate_limit(limit=AUTH_RATE_LIMIT, seconds=AUTH_RATE_WINDOW)
 def verify_otp(phone, otp, password):
     """
@@ -503,15 +539,17 @@ def verify_otp(phone, otp, password):
     api_key, api_secret = create_api_keys(user_id)
     log_security_event("OTP_VERIFIED", phone)
 
-    return {
+    response = {
         "status": "verified",
         "token": f"token {api_key}:{api_secret}",
         "guardian_id": guardian.get("name"),
         "customer_id": customer_id
     }
+    return _with_guardian_alias(response)
 
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 @rate_limit(limit=AUTH_RATE_LIMIT, seconds=AUTH_RATE_WINDOW)
 def login(phone, password):
     phone = validate_iraqi_phone(phone)
@@ -548,6 +586,7 @@ def login(phone, password):
 
 
 @frappe.whitelist()
+@standardize_response
 def complete_profile(full_name, city, address_line1, email_id=None, country=DEFAULT_COUNTRY):
     """
     Step 3: Complete profile - Update Customer + Address
@@ -589,15 +628,17 @@ def complete_profile(full_name, city, address_line1, email_id=None, country=DEFA
 
     log_security_event("PROFILE_COMPLETED", guardian_doc.phone)
 
-    return {
+    response = {
         "status": "success",
         "guardian_id": guardian_doc.name,
         "customer_id": customer_id,
         "primary_address_id": address_id
     }
+    return _with_guardian_alias(response)
 
 
 @frappe.whitelist()
+@standardize_response
 def request_guardian_phone_change_otp(new_phone, user_id=None, guardian_id=None):
     """
     Request an OTP bound to the current Guardian and the requested new phone.
@@ -657,10 +698,11 @@ def request_guardian_phone_change_otp(new_phone, user_id=None, guardian_id=None)
     resp = {"status": "otp_sent", "guardian_id": guardian_name, "new_phone": new_phone, "message": "OTP sent"}
     if is_debug_mode():
         resp["otp"] = otp
-    return resp
+    return _with_guardian_alias(resp)
 
 
 @frappe.whitelist()
+@standardize_response
 def change_guardian_phone(new_phone, otp_code, user_id=None, guardian_id=None):
     """
     Atomically update Guardian.phone and linked Customer.mobile_no after
@@ -679,16 +721,18 @@ def change_guardian_phone(new_phone, otp_code, user_id=None, guardian_id=None):
     result = change_guardian_phone_number(guardian, new_phone)
     _clear_phone_change_otp(guardian_name)
 
-    return {
+    response = {
         "status": "success",
         "guardian_id": result.get("guardian_id"),
         "customer_id": result.get("customer_id"),
         "old_phone": result.get("old_phone"),
         "new_phone": result.get("new_phone"),
     }
+    return _with_guardian_alias(response)
 
 
 @frappe.whitelist()
+@standardize_response
 def get_guardian_profile(guardian_id):
     if frappe.session.user == "Guest":
         frappe.throw("Not permitted", frappe.PermissionError)
@@ -814,6 +858,7 @@ def get_guardian_profile(guardian_id):
 
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 @rate_limit(limit=AUTH_RATE_LIMIT, seconds=AUTH_RATE_WINDOW)
 def forgot_password(phone):
     phone = validate_iraqi_phone(phone)
@@ -834,6 +879,7 @@ def forgot_password(phone):
     return resp
 
 @frappe.whitelist(allow_guest=True)
+@standardize_response
 @rate_limit(limit=AUTH_RATE_LIMIT, seconds=AUTH_RATE_WINDOW)
 def reset_password(phone, otp, new_password):
     phone = validate_iraqi_phone(phone)
@@ -882,6 +928,7 @@ def reset_password(phone, otp, new_password):
     return {"status": "success", "message": "Password reset successfully"}
 
 @frappe.whitelist()
+@standardize_response
 def logout():
     """
     Logout endpoint (token-based)

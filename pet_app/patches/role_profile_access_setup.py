@@ -2,26 +2,28 @@ from __future__ import annotations
 
 import frappe
 from frappe.permissions import add_permission, update_permission_property
-from frappe.core.doctype.role_profile.role_profile import RoleProfile
 
-
-LEGACY_MODULE_ROLE_MAP = {
-	"Healthcare User": "Healthcare",
-	"Pet User": "Pet",
-	"Ecommerce User": "E-commerce",
-	"Order User": "Order",
-	"POS User": "POS",
-	"Accounting User": "Accounting",
-	"Warehouse User": "Warehouse",
-	"Audit User": "Audit",
-	"Users User": "Users",
-	"Guardians User": "Guardians",
-	"Settings User": "Setting",
-}
+from pet_app.patches.operational_healthcare_roles import OPERATIONAL_HEALTHCARE_ROLE_PERMISSIONS
 
 
 ROLE_PERMISSION_MAP = {
 	"Healthcare": {
+		"Vet Case Sheet": ("read", "write", "create", "print", "report"),
+		"Vet Visit": ("read", "write", "create", "print", "report"),
+		"Lab": ("read", "write", "create", "print", "report"),
+		"Imaging": ("read", "write", "create", "print", "report"),
+		"PetCareService": ("read",),
+		"CareService template": ("read", "write", "create", "print", "report"),
+		"CategoryCareServices": ("read", "write", "create", "print", "report"),
+		"Service Room": ("read", "write", "create", "print", "report"),
+		"Driver": ("read",),
+		"Supplier": ("read",),
+		"Pet Boarding": ("read", "write", "create", "submit", "print", "report"),
+		"Healthcare Practitioner": ("read",),
+		"Pet": ("read",),
+		"Guardian": ("read",),
+	},
+	"Visit": {
 		"Vet Case Sheet": ("read", "write", "create", "print", "report"),
 		"Vet Visit": ("read", "write", "create", "print", "report"),
 		"Lab": ("read", "write", "create", "print", "report"),
@@ -32,10 +34,37 @@ ROLE_PERMISSION_MAP = {
 		"Driver": ("read",),
 		"Supplier": ("read",),
 		"Pet Boarding": ("read", "write", "create", "submit", "print", "report"),
-		"Doctor": ("read",),
+		"Healthcare Practitioner": ("read",),
+		"PetCareService": ("read",),
+		"Pet": ("read",),
+		"Guardian": ("read",),
 	},
 	"Doctor": {
-		"Doctor": ("read",),
+		"Healthcare Practitioner": ("read",),
+	},
+	"Healthcare Practitioner": {
+		"Healthcare Practitioner": ("read",),
+		"Vet Case Sheet": ("read", "write", "create", "print", "report"),
+		"Vet Visit": ("read", "write", "create", "print", "report"),
+		"Lab": ("read", "write", "create", "print", "report"),
+		"Imaging": ("read", "write", "create", "print", "report"),
+		"PetCareService": ("read",),
+		"CareService template": ("read",),
+		"CategoryCareServices": ("read",),
+		"Pet": ("read",),
+		"Guardian": ("read",),
+		"Pet Boarding": ("read", "write", "create", "submit", "print", "report"),
+	},
+	"Laboratory User": {
+		"Lab": ("read",),
+		"Imaging": ("read",),
+		"PetCareService": ("read",),
+		"CareService template": ("read",),
+		"CategoryCareServices": ("read",),
+		"Pet": ("read",),
+		"Guardian": ("read",),
+		"Healthcare Practitioner": ("read",),
+		"Vet Visit": ("read",),
 	},
 	"Pet": {
 		"Pet": ("read", "write", "create", "print", "report"),
@@ -49,7 +78,6 @@ ROLE_PERMISSION_MAP = {
 		"Product Variant": ("read", "write", "create", "print", "report"),
 		"Item": ("read",),
 		"Item Price": ("read",),
-		"Website Item": ("read",),
 	},
 	"Order": {
 		"Sales Order": ("read", "write", "create", "submit", "print", "report"),
@@ -111,18 +139,37 @@ ROLE_PERMISSION_MAP = {
 		"Stock Settings": ("read", "write", "print"),
 		"System Settings": ("read",),
 	},
+	**OPERATIONAL_HEALTHCARE_ROLE_PERMISSIONS,
 }
 
 
 PROFILE_ROLE_MAP = {
-	"Healthcare Profile": ["Healthcare", "Doctor"],
+	"Healthcare Profile": ["Healthcare", "Healthcare Practitioner"],
+	"Visit Read Profile": ["Visit Read"],
+	"Visit Admin Profile": ["Visit Admin"],
+	"Lab Read Profile": ["Lab Read"],
+	"Lab Admin Profile": ["Lab Admin"],
+	"Radiology Read Profile": ["Radiology Read"],
+	"Radiology Admin Profile": ["Radiology Admin"],
+	"Reception Profile": ["Reception"],
+	"Coordinator Profile": ["Coordinator", "Reception"],
+	"Service Provider Profile": ["Service Provider", "Nursing User", "Groomer"],
+	"Service Provider Manager Profile": ["Desk User", "Service Provider Manager"],
 	"Pet Profile": ["Pet"],
 	"Ecommerce Profile": ["E-commerce"],
+	"Ecommerce Admin Profile": ["Ecommerce Admin"],
 	"Order Profile": ["Order"],
 	"POS Profile": ["POS"],
+	"POS Cashier Profile": ["POS Cashier"],
+	"POS Admin Profile": ["POS Admin"],
 	"Accounting Profile": ["Accounting"],
+	"Accounting Read Profile": ["Accounting Read"],
+	"Accounting Admin Profile": ["Accounting Admin"],
 	"Warehouse Profile": ["Warehouse"],
+	"Warehouse Read Profile": ["Warehouse Read"],
+	"Warehouse Admin Profile": ["Warehouse Admin"],
 	"Audit Profile": ["Audit"],
+	"Audit Read Profile": ["Audit Read"],
 	"Users Profile": ["Users"],
 	"Guardians Profile": ["Guardians", "Guardian"],
 	"Settings Profile": ["Setting"],
@@ -152,62 +199,15 @@ def ensure_roles():
 
 
 def ensure_role_profiles():
-	original_on_update = RoleProfile.on_update
-
-	def _patch_safe_on_update(self):
-		self.clear_cache()
-
-	RoleProfile.on_update = _patch_safe_on_update
-	try:
-		for profile_name, expected_roles in PROFILE_ROLE_MAP.items():
-			role_profile = get_or_create_role_profile(profile_name)
-			changed = normalize_profile_roles(role_profile)
-			existing_roles = {row.role for row in role_profile.roles if row.role}
-
-			for role_name in expected_roles:
-				if role_name in existing_roles:
-					continue
-				role_profile.append("roles", {"role": role_name})
-				existing_roles.add(role_name)
-				changed = True
-
-			if changed:
-				role_profile.save(ignore_permissions=True)
-	finally:
-		RoleProfile.on_update = original_on_update
-
-
-def get_or_create_role_profile(profile_name: str):
-	if frappe.db.exists("Role Profile", profile_name):
-		return frappe.get_doc("Role Profile", profile_name)
-
-	return frappe.get_doc(
-		{
-			"doctype": "Role Profile",
-			"role_profile": profile_name,
-			"roles": [],
-		}
-	).insert(ignore_permissions=True)
-
-
-def normalize_profile_roles(role_profile):
-	seen_roles = set()
-	normalized_roles = []
-	changed = False
-
-	for row in role_profile.roles:
-		role_name = row.role
-		normalized_name = LEGACY_MODULE_ROLE_MAP.get(role_name, role_name)
-		if normalized_name != role_name or normalized_name in seen_roles:
-			changed = True
-		if normalized_name in seen_roles:
+	for profile_name, expected_roles in PROFILE_ROLE_MAP.items():
+		if frappe.db.exists("Role Profile", profile_name):
 			continue
-		seen_roles.add(normalized_name)
-		normalized_roles.append({"role": normalized_name})
 
-	if changed:
-		role_profile.set("roles", normalized_roles)
-	return changed
+		role_profile = frappe.get_doc({"doctype": "Role Profile", "role_profile": profile_name, "roles": []})
+		for role_name in expected_roles:
+			if frappe.db.exists("Role", role_name):
+				role_profile.append("roles", {"role": role_name})
+		role_profile.insert(ignore_permissions=True)
 
 
 def ensure_permissions():

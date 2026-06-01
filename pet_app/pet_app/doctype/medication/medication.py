@@ -10,14 +10,19 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
+from pet_app.api.permissions import require_doctype_permission, require_restriction_value
+
 
 class Medication(Document):
 	def validate(self):
 		self._normalize_fields()
 		self._validate_code_uniqueness()
+		self._validate_name_uniqueness()
 		self._validate_default_duration_days()
 		self._resolve_linked_item()
 		self._validate_linked_item()
+		self._hydrate_item_fields_from_linked_item()
+		self._validate_item_group()
 		self._validate_default_warehouse()
 		self._sync_item_defaults()
 		self._refresh_usage_counters()
@@ -26,6 +31,7 @@ class Medication(Document):
 		self.medication_name = cstr(self.medication_name).strip()
 		self.code = cstr(self.code).strip() or None
 		self.dosage_form_or_unit = cstr(self.dosage_form_or_unit).strip()
+		self.item_group = cstr(self.item_group).strip()
 		self.strength = cstr(self.strength).strip()
 		self.default_dosage = cstr(self.default_dosage).strip()
 		self.default_frequency = cstr(self.default_frequency).strip()
@@ -46,6 +52,10 @@ class Medication(Document):
 
 		if frappe.get_all("Medication", filters=filters, pluck="name", limit=1):
 			frappe.throw(_("Medication Code {0} is already in use.").format(frappe.bold(self.code)))
+
+	def _validate_name_uniqueness(self):
+		if frappe.db.exists("Medication", {"medication_name": self.medication_name, "name": ["!=", self.name]}):
+			frappe.throw(_("Medication Name {0} is already in use.").format(frappe.bold(self.medication_name)))
 
 	def _validate_default_duration_days(self):
 		if self.default_duration_days in (None, ""):
@@ -77,9 +87,41 @@ class Medication(Document):
 		if cint(item.disabled):
 			frappe.throw(_("Linked Item {0} is disabled.").format(frappe.bold(self.linked_item)))
 
+	def _hydrate_item_fields_from_linked_item(self):
+		if not self.linked_item:
+			return
+
+		item = frappe.db.get_value("Item", self.linked_item, ["stock_uom", "item_group"], as_dict=True)
+		if not item:
+			return
+
+		if not self.dosage_form_or_unit and item.stock_uom:
+			self.dosage_form_or_unit = item.stock_uom
+		if not self.item_group and item.item_group:
+			self.item_group = item.item_group
+
+	def _validate_item_group(self):
+		if not self.item_group:
+			self.item_group = _get_medication_item_group()
+
+		if not self.item_group:
+			frappe.throw(_("Item Group is required."))
+
+		item_group = frappe.db.get_value(
+			"Item Group",
+			self.item_group,
+			["name", "is_group"],
+			as_dict=True,
+		)
+		if not item_group:
+			frappe.throw(_("Item Group {0} does not exist.").format(frappe.bold(self.item_group)))
+		if cint(item_group.is_group):
+			frappe.throw(_("Item Group {0} must be a leaf item group.").format(frappe.bold(self.item_group)))
+
 	def _validate_default_warehouse(self):
 		if not self.default_warehouse:
 			return
+		require_restriction_value("warehouse", self.default_warehouse)
 
 		warehouse = frappe.db.get_value(
 			"Warehouse",
@@ -115,8 +157,14 @@ class Medication(Document):
 			item.standard_rate = flt(self.default_price)
 			changed = True
 
-		if not item.stock_uom:
-			item.stock_uom = self.dosage_form_or_unit or "Nos"
+		stock_uom = self.dosage_form_or_unit or item.stock_uom or "Nos"
+		_ensure_uom(stock_uom)
+		if item.stock_uom != stock_uom:
+			item.stock_uom = stock_uom
+			changed = True
+
+		if self.item_group and item.item_group != self.item_group:
+			item.item_group = self.item_group
 			changed = True
 
 		if not cint(item.is_stock_item):
@@ -132,6 +180,7 @@ class Medication(Document):
 			changed = True
 
 		if changed:
+			require_doctype_permission("Item", "write")
 			item.flags.ignore_permissions = True
 			item.save()
 
@@ -179,11 +228,15 @@ def find_matching_item(medication_name: str, code: str | None = None) -> str | N
 
 
 def create_item_for_medication(doc: Medication) -> str:
+	require_doctype_permission("Item", "create")
+	stock_uom = doc.dosage_form_or_unit or "Nos"
+	_ensure_uom(stock_uom)
+
 	item = frappe.new_doc("Item")
 	item.item_code = doc.medication_name
 	item.item_name = doc.medication_name
-	item.item_group = _get_medication_item_group()
-	item.stock_uom = doc.dosage_form_or_unit or "Nos"
+	item.item_group = doc.item_group or _get_medication_item_group()
+	item.stock_uom = stock_uom
 	item.is_stock_item = 1
 	item.is_sales_item = 1
 	item.is_purchase_item = 1
@@ -198,10 +251,22 @@ def create_item_for_medication(doc: Medication) -> str:
 	return item.name
 
 
+def _ensure_uom(uom: str):
+	uom = cstr(uom).strip()
+	if not uom or frappe.db.exists("UOM", uom):
+		return
+	frappe.get_doc({"doctype": "UOM", "uom_name": uom}).insert(ignore_permissions=True)
+
+
 def _get_medication_item_group() -> str:
-	for group in ("Pharmacy", "Medicines", "All Item Groups"):
-		if frappe.db.exists("Item Group", group):
+	for group in ("Pharmacy", "Medicines", "أدوية بيطرية", "Services"):
+		if frappe.db.exists("Item Group", group) and not cint(frappe.db.get_value("Item Group", group, "is_group")):
 			return group
+
+	leaf_groups = frappe.get_all("Item Group", filters={"is_group": 0}, pluck="name", order_by="name asc", limit=1)
+	if leaf_groups:
+		return leaf_groups[0]
+
 	return "All Item Groups"
 
 
@@ -236,11 +301,15 @@ def upsert_item_price(item_code: str, rate: float):
 		"name",
 	)
 
+	if existing:
+		frappe.db.set_value("Item Price", existing, "uom", None, update_modified=False)
+
 	item_price = frappe.get_doc("Item Price", existing) if existing else frappe.new_doc("Item Price")
 	item_price.item_code = item_code
 	item_price.price_list = price_list
 	item_price.selling = 1
 	item_price.price_list_rate = flt(rate)
+	item_price.uom = None
 	item_price.flags.ignore_permissions = True
 	item_price.save()
 

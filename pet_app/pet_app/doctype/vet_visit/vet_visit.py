@@ -6,19 +6,25 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt, getdate, now_datetime
+from frappe.utils import cstr, flt, getdate, now_datetime
 
+from pet_app.api.permissions import require_doctype_permission
 from pet_app.pet_app.doctype.vet_case_sheet.vet_case_sheet import build_case_summary
+from pet_app.utils.medical_profile import sync_latest_vitals, sync_treatment_from_visit, update_profile_for_visit
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
 	apply_billable_item_amounts,
+	get_care_service_doc,
 	log_visit_billing_event,
 	upsert_visit_billable_item,
 )
+from pet_app.utils.practitioner import get_practitioner_for_user
+from pet_app.workflows import clinical_state
+from pet_app.api.response import standardize_response
 
-VISIT_READ_ROLES = ("Doctor", "System Manager", "Accounts User", "Healthcare", "Accounting")
-VISIT_BILLING_ROLES = ("Doctor", "System Manager", "Accounts User", "Healthcare", "Accounting")
+VISIT_READ_ROLES = ("Healthcare Practitioner", "Doctor", "System Manager", "Accounts User", "Healthcare", "Accounting")
+VISIT_BILLING_ROLES = ("Healthcare Practitioner", "Doctor", "System Manager", "Accounts User", "Healthcare", "Accounting")
 
 
 class VetVisit(Document):
@@ -27,17 +33,65 @@ class VetVisit(Document):
 		self._pull_case_sheet_values()
 		self._reject_legacy_payload()
 
+	def after_insert(self):
+		if self.animal_patient:
+			update_profile_for_visit(self)
+			if self.get("treatment_plan") or self.get("prescribed_medications"):
+				sync_treatment_from_visit(self)
+			sync_latest_vitals(self)
+
+		self._notify_doctor()
+
+	def _notify_doctor(self):
+		if not self.doctor:
+			return
+
+		user_id = frappe.db.get_value(
+			"Healthcare Practitioner",
+			self.doctor,
+			"user_id"
+		)
+
+		if not user_id or user_id == "Administrator":
+			return
+
+		pet_name = (
+			frappe.db.get_value("Pet", self.animal_patient, "pet_name")
+			or self.animal_patient
+		)
+
+		try:
+			log = frappe.new_doc("Notification Log")
+			log.for_user = user_id
+			log.from_user = frappe.session.user
+			log.subject = f"New visit assigned: {pet_name}"
+			log.document_type = "Vet Visit"
+			log.document_name = self.name
+			log.type = "Alert"
+			log.insert(ignore_permissions=True)
+
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				"Vet Visit Notification Error"
+			)
+	
 	def validate(self):
 		self._set_defaults()
 		self._reject_legacy_payload()
 		self._pull_case_sheet_values()
 		self._validate_identity_consistency()
 		self._validate_identity_immutability()
+		clinical_state.validate_document_transition(self)
+		self._validate_order_id_uniqueness()
+		self._validate_order_status_transitions()
+		self._sync_latest_vital_signs()
 		self._validate_sales_invoice_lock()
 		self._validate_billing_lock()
 		self._sync_prescribed_medications_billables()
 		self._sync_care_services_billables()
 		self._validate_billable_item_rows()
+		self._validate_billed_billable_rows_unchanged()
 		self._apply_row_pricing()
 		self._validate_case_sheet_uniqueness()
 		self._validate_follow_up()
@@ -45,6 +99,7 @@ class VetVisit(Document):
 
 	def on_update(self):
 		self._sync_case_sheet()
+		self._sync_medical_profile_snapshot()
 		self._audit_manual_billable_items()
 
 	def _set_defaults(self):
@@ -62,6 +117,15 @@ class VetVisit(Document):
 			if doctor:
 				self.doctor = doctor
 
+		if self.meta.has_field("follow_up_preferred_date"):
+			if self.follow_up_date and not self.follow_up_preferred_date:
+				self.follow_up_preferred_date = self.follow_up_date
+			if self.follow_up_preferred_date and not self.follow_up_date:
+				self.follow_up_date = self.follow_up_preferred_date
+
+		if self.meta.has_field("follow_up_status") and not self.follow_up_status:
+			self.follow_up_status = "Requested" if self.follow_up_required else "Not Needed"
+
 	def _pull_case_sheet_values(self):
 		if not self.case_sheet:
 			return
@@ -70,6 +134,8 @@ class VetVisit(Document):
 		self.guardian = case_sheet.guardian
 		self.customer = case_sheet.customer
 		self.animal_patient = case_sheet.animal_patient
+		if self.meta.has_field("appointment") and case_sheet.meta.has_field("appointment"):
+			self.appointment = case_sheet.get("appointment")
 
 		if not self.weight:
 			self.weight = case_sheet.weight
@@ -134,8 +200,9 @@ class VetVisit(Document):
 			)
 
 	def _validate_follow_up(self):
-		if self.follow_up_required and not self.follow_up_date:
-			frappe.throw(_("Follow-up Date is required when Follow-up Required is checked."))
+		preferred_date = self.get("follow_up_preferred_date") or self.get("follow_up_date")
+		if self.follow_up_required and not preferred_date:
+			frappe.throw(_("Follow-up Preferred Date is required when Follow-up Required is checked."))
 
 	def _reject_legacy_payload(self):
 		legacy_fields = {
@@ -183,6 +250,67 @@ class VetVisit(Document):
 		if STRICT_MODE:
 			self._validate_no_pending_clinical_records()
 
+	def _validate_order_status_transitions(self):
+		previous = self.get_doc_before_save()
+		if not previous or not self.meta.has_field("orders"):
+			return
+		previous_by_name = {row.name: row for row in previous.get("orders") or [] if row.name}
+		for row in self.get("orders") or []:
+			if not row.name or row.name not in previous_by_name:
+				continue
+			old_status = previous_by_name[row.name].status
+			if old_status != row.status:
+				clinical_state.assert_transition("Visit Order", old_status, row.status)
+
+	def _validate_order_id_uniqueness(self):
+		if not self.meta.has_field("orders"):
+			return
+		seen = {}
+		for row in self.get("orders") or []:
+			if not row.order_id:
+				continue
+			if row.order_id in seen:
+				frappe.throw(
+					_("Visit Order ID {0} is duplicated in rows {1} and {2}.").format(
+						frappe.bold(row.order_id), seen[row.order_id], row.idx
+					)
+				)
+			seen[row.order_id] = row.idx
+
+	def _sync_latest_vital_signs(self):
+		if not self.meta.has_field("vital_signs") or not self.get("vital_signs"):
+			return
+
+		for row in self.get("vital_signs") or []:
+			if not row.recorded_at:
+				row.recorded_at = now_datetime()
+			if not row.recorded_by:
+				row.recorded_by = frappe.session.user
+
+		latest = max(
+			self.get("vital_signs") or [],
+			key=lambda row: (cstr(row.recorded_at), row.idx or 0),
+		)
+		if latest.temperature not in (None, ""):
+			self.temperature = latest.temperature
+		if latest.heart_rate not in (None, ""):
+			self.heart_rate = latest.heart_rate
+		if latest.respiratory_rate not in (None, ""):
+			self.respiratory_rate = latest.respiratory_rate
+		if latest.weight not in (None, ""):
+			self.weight = latest.weight
+
+	def _sync_medical_profile_snapshot(self):
+		if not self.animal_patient or not frappe.db.exists("DocType", "Pet Medical Profile"):
+			return
+		update_profile_for_visit(self)
+		if self.get("treatment_plan") or self.get("prescribed_medications"):
+			sync_treatment_from_visit(self)
+		sync_latest_vitals(self)
+
+	def _ensure_care_episode_after_insert(self):
+		return self.get("care_episode") if self.meta.has_field("care_episode") else None
+
 	def _validate_billing_lock(self):
 		if self.flags.ignore_billing_lock:
 			return
@@ -204,13 +332,25 @@ class VetVisit(Document):
 			frappe.throw(_("Visit is locked after billing"))
 
 	def _validate_no_pending_clinical_records(self):
-		pending_lab = frappe.db.exists("Lab", {"visit": self.name, "status": ["!=", "Completed"]})
+		pending_lab = frappe.db.exists(
+			"Lab", {"visit": self.name, "status": ["not in", ["Released", "Completed", "Cancelled"]]}
+		)
 		if pending_lab:
 			frappe.throw(_("Complete all Lab records before completing this visit."))
 
-		pending_imaging = frappe.db.exists("Imaging", {"visit": self.name, "status": ["!=", "Completed"]})
+		pending_imaging = frappe.db.exists(
+			"Imaging", {"visit": self.name, "status": ["not in", ["Released", "Completed", "Cancelled"]]}
+		)
 		if pending_imaging:
 			frappe.throw(_("Complete all Imaging records before completing this visit."))
+
+		if frappe.db.exists("DocType", "Pet Procedure"):
+			pending_procedure = frappe.db.exists(
+				"Pet Procedure",
+				{"visit": self.name, "status": ["not in", ["Completed", "Closed", "Cancelled"]]},
+			)
+			if pending_procedure:
+				frappe.throw(_("Complete or cancel all Procedure records before completing this visit."))
 
 	def _apply_row_pricing(self):
 		self.total_billable_amount = apply_billable_item_amounts(self)
@@ -219,6 +359,8 @@ class VetVisit(Document):
 		active_linked_ids = set()
 
 		for row in self.prescribed_medications or []:
+			if cstr(row.get("dispense_status")).strip() == "Cancelled":
+				continue
 			if not row.medication_item:
 				continue
 
@@ -273,17 +415,12 @@ class VetVisit(Document):
 		active_linked_ids = set()
 
 		for row in self.care_services or []:
+			if cstr(row.get("status")).strip() == "Cancelled":
+				continue
 			if not row.care_service_id:
 				continue
 
-			service = frappe.db.get_value(
-				"CareService",
-				row.care_service_id,
-				["service_name", "item_code", "default_price", "category_id"],
-				as_dict=True,
-			)
-			if not service:
-				frappe.throw(_("Care Service {0} was not found.").format(frappe.bold(row.care_service_id)))
+			service = get_care_service_doc(row.care_service_id)
 			if not service.item_code:
 				frappe.throw(_("Care Service {0} must have an Item Code.").format(frappe.bold(row.care_service_id)))
 			if service.default_price in (None, ""):
@@ -296,7 +433,7 @@ class VetVisit(Document):
 				)
 
 			category_name = None
-			if service.category_id:
+			if service.get("category_id"):
 				category_name = frappe.db.get_value("CategoryCareServices", service.category_id, "category_name")
 			if cstr(category_name).strip().lower() in {"lab", "imaging"}:
 				frappe.throw(
@@ -328,6 +465,7 @@ class VetVisit(Document):
 			billable_row.status = "Cancelled"
 
 	def _validate_billable_item_rows(self):
+		active_keys = set()
 		for row in self.billable_items or []:
 			if row.status == "Cancelled":
 				continue
@@ -337,6 +475,46 @@ class VetVisit(Document):
 				frappe.throw(_("Billable item row {0} must have Qty greater than zero.").format(row.idx))
 			if flt(row.rate) < 0:
 				frappe.throw(_("Billable item row {0} must not have a negative Rate.").format(row.idx))
+			key = (
+				row.get("linked_service_id"),
+				row.get("linked_doctype"),
+				row.get("linked_name"),
+				row.get("order_id"),
+				row.get("item_code"),
+				row.get("item_type"),
+			)
+			if any(key) and key in active_keys:
+				frappe.throw(_("Duplicate active billable item row found for linked record/order {0}.").format(row.get("linked_name") or row.get("order_id") or row.get("linked_service_id")))
+			active_keys.add(key)
+
+	def _validate_billed_billable_rows_unchanged(self):
+		previous = self.get_doc_before_save()
+		if not previous:
+			return
+		previous_rows = {row.name: row for row in previous.get("billable_items") or [] if row.name}
+		locked_fields = (
+			"item_code",
+			"item_name",
+			"item_type",
+			"qty",
+			"rate",
+			"amount",
+			"linked_service_id",
+			"linked_doctype",
+			"linked_name",
+			"order_id",
+			"status",
+			"note",
+		)
+		for row in self.get("billable_items") or []:
+			if not row.name or row.name not in previous_rows:
+				continue
+			before = previous_rows[row.name]
+			if before.status != "Billed":
+				continue
+			for fieldname in locked_fields:
+				if cstr(before.get(fieldname)) != cstr(row.get(fieldname)):
+					frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
 
 	def _get_medication_rate(self, item) -> float:
 		rate = frappe.db.get_value(
@@ -425,7 +603,7 @@ def _get_case_sheet_status_for_visit(visit_status: str) -> str:
 
 
 def _get_session_doctor() -> str | None:
-	return frappe.db.get_value("Doctor", {"user": frappe.session.user}, "name")
+	return get_practitioner_for_user(frappe.session.user)
 
 
 def _require_visit_role(roles):
@@ -435,6 +613,7 @@ def _require_visit_role(roles):
 
 
 @frappe.whitelist()
+@standardize_response
 def get_item_billing_details(item_code: str) -> dict:
 	_require_visit_role(VISIT_READ_ROLES)
 	if not item_code:
@@ -461,19 +640,13 @@ def get_item_billing_details(item_code: str) -> dict:
 
 
 @frappe.whitelist()
+@standardize_response
 def get_care_service_billing_details(care_service_name: str) -> dict:
 	_require_visit_role(VISIT_READ_ROLES)
 	if not care_service_name:
 		return {}
 
-	service = frappe.db.get_value(
-		"CareService",
-		care_service_name,
-		["name", "service_name", "item_code", "default_price", "price_list"],
-		as_dict=True,
-	)
-	if not service:
-		frappe.throw(_("Care Service {0} was not found.").format(frappe.bold(care_service_name)))
+	service = get_care_service_doc(care_service_name)
 
 	return {
 		"care_service": service.name,
@@ -485,12 +658,13 @@ def get_care_service_billing_details(care_service_name: str) -> dict:
 
 
 @frappe.whitelist()
+@standardize_response
 def create_sales_invoice(visit_name: str) -> dict:
 	_require_visit_role(VISIT_BILLING_ROLES)
+	require_doctype_permission("Sales Invoice", "create")
+	require_doctype_permission("Sales Invoice", "submit")
 	if not visit_name:
 		frappe.throw(_("Vet Visit is required."))
-	if not frappe.has_permission("Sales Invoice", ptype="create"):
-		raise frappe.PermissionError(_("Not permitted to create Sales Invoice."))
 
 	visit = _get_locked_visit_for_invoice(visit_name)
 	visit.check_permission("write")
@@ -609,13 +783,25 @@ def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
 
 
 def _validate_visit_ready_for_invoice(visit):
-	pending_lab = frappe.db.exists("Lab", {"visit": visit.name, "status": ["!=", "Completed"]})
+	pending_lab = frappe.db.exists(
+		"Lab", {"visit": visit.name, "status": ["not in", ["Released", "Completed", "Cancelled"]]}
+	)
 	if pending_lab:
 		frappe.throw(_("Complete all Lab records before creating the invoice."))
 
-	pending_imaging = frappe.db.exists("Imaging", {"visit": visit.name, "status": ["!=", "Completed"]})
+	pending_imaging = frappe.db.exists(
+		"Imaging", {"visit": visit.name, "status": ["not in", ["Released", "Completed", "Cancelled"]]}
+	)
 	if pending_imaging:
 		frappe.throw(_("Complete all Imaging records before creating the invoice."))
+
+	if frappe.db.exists("DocType", "Pet Procedure"):
+		pending_procedure = frappe.db.exists(
+			"Pet Procedure",
+			{"visit": visit.name, "status": ["not in", ["Completed", "Closed", "Cancelled"]]},
+		)
+		if pending_procedure:
+			frappe.throw(_("Complete or cancel all Procedure records before creating the invoice."))
 
 
 def _get_locked_visit_for_invoice(visit_name: str):

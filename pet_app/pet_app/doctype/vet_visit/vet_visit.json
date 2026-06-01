@@ -2,27 +2,33 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "naming_series:",
- "creation": "2026-03-27 00:00:00.000000",
+ "creation": "2026-03-27 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
- "track_changes": 1,
  "field_order": [
   "naming_series",
   "status",
+  "priority",
   "billed",
   "column_break_top",
   "visit_datetime",
   "sales_invoice",
   "column_break_top_2",
   "total_billable_amount",
+  "billing_status",
+  "paid_amount",
+  "balance_amount",
   "basic_info_tab",
   "section_break_basic_info",
   "case_sheet",
+  "appointment",
   "guardian",
+  "guardian_name",
   "customer",
   "animal_patient",
   "column_break_basic_info_1",
   "doctor",
+  "doctor_name",
   "visit_type",
   "weight",
   "examination_tab",
@@ -30,28 +36,48 @@
   "temperature",
   "heart_rate",
   "respiratory_rate",
+  "vital_signs",
   "column_break_examination_1",
   "examination_notes",
   "assessment_tab",
   "section_break_assessment",
   "case_summary",
+  "intake_summary",
+  "overview",
   "illness",
   "diagnosis",
+  "assessment",
   "column_break_assessment_1",
   "differential_diagnosis",
+  "diagnoses",
   "care_services",
   "plan_tab",
   "section_break_plan",
   "treatment_plan",
   "doctor_notes",
+  "instructions",
   "orders_actions_tab",
   "section_break_orders",
   "prescribed_medications",
+  "orders",
   "billable_items",
   "follow_up_tab",
   "section_break_follow_up",
   "follow_up_required",
-  "follow_up_date"
+  "follow_up_status",
+  "follow_up_contacted_at",
+  "follow_up_contacted_by",
+  "follow_up_reason",
+  "follow_up_contact_note",
+  "missed_reason",
+  "follow_up_preferred_date",
+  "follow_up_date",
+  "follow_up_appointment_id",
+  "follow_up_visit_id",
+  "follow_up_of_visit_id",
+  "consults_tab",
+  "section_break_consults",
+  "consult_requests"
  ],
  "fields": [
   {
@@ -71,6 +97,15 @@
    "in_list_view": 1,
    "label": "Visit Status",
    "options": "Draft\nIn Progress\nCompleted\nCancelled\nFollow-up Needed",
+   "reqd": 1
+  },
+  {
+   "default": "Normal",
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Priority",
+   "options": "Low\nNormal\nUrgent\nEmergency",
    "reqd": 1
   },
   {
@@ -112,6 +147,26 @@
    "read_only": 1
   },
   {
+   "default": "Unbilled",
+   "fieldname": "billing_status",
+   "fieldtype": "Select",
+   "label": "Billing Status",
+   "options": "Unbilled\nDraft Invoice\nPartially Paid\nPaid\nFollow-up\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "paid_amount",
+   "fieldtype": "Currency",
+   "label": "Paid Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "balance_amount",
+   "fieldtype": "Currency",
+   "label": "Balance Amount",
+   "read_only": 1
+  },
+  {
    "fieldname": "basic_info_tab",
    "fieldtype": "Tab Break",
    "label": "Basic Info"
@@ -125,20 +180,28 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Case Sheet",
-   "read_only_depends_on": "eval:!doc.__islocal",
    "options": "Vet Case Sheet",
-   "reqd": 1,
+   "read_only_depends_on": "eval:!doc.__islocal",
    "unique": 1
+  },
+  {
+   "fieldname": "appointment",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Appointment",
+   "options": "Appointment",
+   "read_only_depends_on": "eval:!doc.__islocal"
   },
   {
    "fieldname": "guardian",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Guardian",
-   "read_only_depends_on": "eval:!doc.__islocal",
-   "options": "Guardian"
+   "options": "Guardian",
+   "read_only_depends_on": "eval:!doc.__islocal"
   },
   {
+   "fetch_from": "guardian.customer_id",
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -152,7 +215,7 @@
    "fieldname": "animal_patient",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Animal / Pet",
+   "label": "Pet",
    "options": "Pet",
    "read_only_depends_on": "eval:!doc.__islocal",
    "reqd": 1
@@ -164,8 +227,8 @@
   {
    "fieldname": "doctor",
    "fieldtype": "Link",
-   "label": "Doctor",
-   "options": "Doctor",
+   "label": "Healthcare Practitioner",
+   "options": "Healthcare Practitioner",
    "reqd": 1
   },
   {
@@ -206,6 +269,12 @@
    "label": "Respiratory Rate"
   },
   {
+   "fieldname": "vital_signs",
+   "fieldtype": "Table",
+   "label": "Repeated Vitals",
+   "options": "Vet Visit Vital Sign"
+  },
+  {
    "fieldname": "column_break_examination_1",
    "fieldtype": "Column Break"
   },
@@ -230,6 +299,16 @@
    "read_only": 1
   },
   {
+   "fieldname": "intake_summary",
+   "fieldtype": "Text Editor",
+   "label": "Intake Summary"
+  },
+  {
+   "fieldname": "overview",
+   "fieldtype": "Text Editor",
+   "label": "Overview"
+  },
+  {
    "fieldname": "illness",
    "fieldtype": "Select",
    "label": "Illness / Condition",
@@ -241,6 +320,11 @@
    "label": "Diagnosis"
   },
   {
+   "fieldname": "assessment",
+   "fieldtype": "Text Editor",
+   "label": "Assessment"
+  },
+  {
    "fieldname": "column_break_assessment_1",
    "fieldtype": "Column Break"
   },
@@ -248,6 +332,12 @@
    "fieldname": "differential_diagnosis",
    "fieldtype": "Small Text",
    "label": "Differential Diagnosis"
+  },
+  {
+   "fieldname": "diagnoses",
+   "fieldtype": "Table",
+   "label": "Diagnoses",
+   "options": "Visit Diagnosis"
   },
   {
    "fieldname": "care_services",
@@ -272,7 +362,12 @@
   {
    "fieldname": "doctor_notes",
    "fieldtype": "Text Editor",
-   "label": "Doctor Notes"
+   "label": "Practitioner Notes"
+  },
+  {
+   "fieldname": "instructions",
+   "fieldtype": "Text Editor",
+   "label": "Instructions"
   },
   {
    "fieldname": "orders_actions_tab",
@@ -290,6 +385,12 @@
    "options": "Vet Visit Medication Item"
   },
   {
+   "fieldname": "orders",
+   "fieldtype": "Table",
+   "label": "Orders",
+   "options": "Visit Order"
+  },
+  {
    "fieldname": "billable_items",
    "fieldtype": "Table",
    "label": "Billable Items",
@@ -305,9 +406,53 @@
    "fieldtype": "Section Break"
   },
   {
+   "default": "0",
    "fieldname": "follow_up_required",
    "fieldtype": "Check",
    "label": "Follow-up Required"
+  },
+  {
+   "default": "Not Needed",
+   "fieldname": "follow_up_status",
+   "fieldtype": "Select",
+   "label": "Follow-up Status",
+   "options": "Not Needed\nRequested\nScheduled\nContacted\nMissed\nSeen\nCancelled"
+  },
+  {
+   "fieldname": "follow_up_contacted_at",
+   "fieldtype": "Datetime",
+   "label": "Contacted At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "follow_up_contacted_by",
+   "fieldtype": "Link",
+   "label": "Contacted By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.follow_up_required === 1",
+   "fieldname": "follow_up_reason",
+   "fieldtype": "Small Text",
+   "label": "Follow-up Reason"
+  },
+  {
+   "fieldname": "follow_up_contact_note",
+   "fieldtype": "Small Text",
+   "label": "Contact Note"
+  },
+  {
+   "fieldname": "missed_reason",
+   "fieldtype": "Small Text",
+   "label": "Missed Reason"
+  },
+  {
+   "depends_on": "eval:doc.follow_up_required === 1",
+   "fieldname": "follow_up_preferred_date",
+   "fieldtype": "Date",
+   "label": "Follow-up Preferred Date",
+   "mandatory_depends_on": "eval:doc.follow_up_required === 1"
   },
   {
    "depends_on": "eval:doc.follow_up_required === 1",
@@ -315,12 +460,60 @@
    "fieldtype": "Date",
    "label": "Follow-up Date",
    "mandatory_depends_on": "eval:doc.follow_up_required === 1"
+  },
+  {
+   "fieldname": "follow_up_appointment_id",
+   "fieldtype": "Link",
+   "label": "Follow-up Appointment",
+   "options": "Appointment",
+   "read_only": 1
+  },
+  {
+   "fieldname": "follow_up_visit_id",
+   "fieldtype": "Link",
+   "label": "Follow-up Visit",
+   "options": "Vet Visit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "follow_up_of_visit_id",
+   "fieldtype": "Link",
+   "label": "Follow-up Of Visit",
+   "options": "Vet Visit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "consults_tab",
+   "fieldtype": "Tab Break",
+   "label": "Consults"
+  },
+  {
+   "fieldname": "section_break_consults",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "consult_requests",
+   "fieldtype": "Table",
+   "label": "Consult Requests",
+   "options": "Visit Consult Request"
+  },
+  {
+   "fetch_from": "guardian.full_name",
+   "fieldname": "guardian_name",
+   "fieldtype": "Data",
+   "label": "Guardian Name"
+  },
+  {
+   "fetch_from": "doctor.practitioner_name",
+   "fieldname": "doctor_name",
+   "fieldtype": "Data",
+   "label": "Doctor Name"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-27 00:00:00.000000",
+ "modified": "2026-05-16 06:27:31.081825",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Vet Visit",
@@ -347,18 +540,6 @@
    "report": 1,
    "role": "Desk User",
    "share": 1
-  },
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Healthcare Practitioner",
-   "share": 1,
-   "write": 1
   }
  ],
  "row_format": "Dynamic",

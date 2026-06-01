@@ -1,0 +1,265 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "PCPI-.YYYY.-.#####",
+ "creation": "2026-05-08 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "pet",
+  "guardian",
+  "customer",
+  "care_episode",
+  "source_visit",
+  "doctor",
+  "plan_type",
+  "title",
+  "description",
+  "instructions",
+  "start_date",
+  "due_date",
+  "due_time",
+  "end_date",
+  "frequency",
+  "duration_days",
+  "requires_appointment",
+  "appointment",
+  "appointment_status",
+  "requires_reminder",
+  "reminder",
+  "reminder_status",
+  "status",
+  "priority",
+  "completed_on",
+  "completed_by",
+  "completion_note",
+  "converted_to_visit",
+  "converted_visit",
+  "created_from_action",
+  "source_doctype",
+  "source_name"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "label": "Guardian",
+   "options": "Guardian",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "care_episode",
+   "fieldtype": "Link",
+   "label": "Care Episode",
+   "options": "Pet Care Episode",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "source_visit",
+   "fieldtype": "Link",
+   "label": "Source Visit",
+   "options": "Vet Visit",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "label": "Doctor",
+   "options": "Healthcare Practitioner",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "plan_type",
+   "fieldtype": "Select",
+   "label": "Plan Type",
+   "options": "Medication\nInjection\nDiet Plan\nWound Care\nLab Recheck\nImaging Recheck\nProcedure\nFollow-up Visit\nMonitoring\nVaccination\nDeworming\nOwner Instruction\nBoarding Review\nOther",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "instructions",
+   "fieldtype": "Small Text",
+   "label": "Instructions"
+  },
+  {
+   "fieldname": "start_date",
+   "fieldtype": "Date",
+   "label": "Start Date"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "due_time",
+   "fieldtype": "Time",
+   "label": "Due Time"
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date"
+  },
+  {
+   "fieldname": "frequency",
+   "fieldtype": "Data",
+   "label": "Frequency"
+  },
+  {
+   "fieldname": "duration_days",
+   "fieldtype": "Int",
+   "label": "Duration Days"
+  },
+  {
+   "fieldname": "requires_appointment",
+   "fieldtype": "Check",
+   "label": "Requires Appointment"
+  },
+  {
+   "fieldname": "appointment",
+   "fieldtype": "Link",
+   "label": "Appointment",
+   "options": "Appointment"
+  },
+  {
+   "fieldname": "appointment_status",
+   "fieldtype": "Data",
+   "label": "Appointment Status"
+  },
+  {
+   "fieldname": "requires_reminder",
+   "fieldtype": "Check",
+   "label": "Requires Reminder"
+  },
+  {
+   "fieldname": "reminder",
+   "fieldtype": "Link",
+   "label": "Reminder",
+   "options": "Pet Reminder"
+  },
+  {
+   "fieldname": "reminder_status",
+   "fieldtype": "Data",
+   "label": "Reminder Status"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Planned\nScheduled\nIn Progress\nDone\nMissed\nOverdue\nCancelled\nChanged\nConverted To Visit",
+   "default": "Planned",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "Low\nNormal\nImportant\nUrgent",
+   "default": "Normal"
+  },
+  {
+   "fieldname": "completed_on",
+   "fieldtype": "Datetime",
+   "label": "Completed On"
+  },
+  {
+   "fieldname": "completed_by",
+   "fieldtype": "Link",
+   "label": "Completed By",
+   "options": "User"
+  },
+  {
+   "fieldname": "completion_note",
+   "fieldtype": "Small Text",
+   "label": "Completion Note"
+  },
+  {
+   "fieldname": "converted_to_visit",
+   "fieldtype": "Check",
+   "label": "Converted To Visit"
+  },
+  {
+   "fieldname": "converted_visit",
+   "fieldtype": "Link",
+   "label": "Converted Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "created_from_action",
+   "fieldtype": "Data",
+   "label": "Created From Action"
+  },
+  {
+   "fieldname": "source_doctype",
+   "fieldtype": "Link",
+   "label": "Source DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "source_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Source Name",
+   "options": "source_doctype"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Care Plan Item",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}

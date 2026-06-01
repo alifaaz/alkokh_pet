@@ -3,6 +3,7 @@ import hashlib
 import re
 import math
 from frappe.utils import cint
+from pet_app.api.response import standardize_response
 
 
 # ============================================================
@@ -31,6 +32,38 @@ def _require_pet_read_access(docname: str | None = None):
     if not frappe.has_permission("Pet", doc=docname, ptype="read") if docname else not frappe.has_permission("Pet", ptype="read"):
         frappe.throw("Not permitted", frappe.PermissionError)
     return None
+
+
+@frappe.whitelist()
+@standardize_response
+def list_pet_breeds(animal_type=None, animal_species=None, search=None, page_size=100):
+    if frappe.session.user == "Guest":
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+    if not frappe.db.exists("DocType", "Pet Breed"):
+        return {"data": []}
+
+    if not frappe.has_permission("Pet Breed", ptype="read"):
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+    filters = {"enabled": 1}
+    if animal_type:
+        filters["animal_type"] = animal_type
+    if animal_species:
+        filters["animal_species"] = animal_species
+    if search:
+        filters["breed_name"] = ["like", f"%{search}%"]
+
+    page_size = min(cint(page_size) or 100, 500)
+    breeds = frappe.get_all(
+        "Pet Breed",
+        filters=filters,
+        fields=["name", "breed_name", "animal_species", "animal_type"],
+        order_by="breed_name asc",
+        page_length=page_size,
+    )
+
+    return {"data": breeds}
 
 
 def resolve_image_fieldname(doctype: str) -> str:
@@ -78,6 +111,7 @@ def _safe_filename(name: str) -> str:
 # ============================================================
 
 @frappe.whitelist()
+@standardize_response
 def upload_multiple_files():
     try:
         if not frappe.request.files:
@@ -184,6 +218,7 @@ def upload_multiple_files():
 # 2) Delete Files (SECURE)
 # ============================================================
 @frappe.whitelist()
+@standardize_response
 def delete_multiple_files(file_names):
     import json
 
@@ -241,6 +276,7 @@ def delete_multiple_files(file_names):
 # ============================================================
 
 @frappe.whitelist()
+@standardize_response
 def set_default_file(file_id, doctype, docname):
     if not doctype or not docname:
         frappe.throw("Missing doctype or docname")
@@ -288,6 +324,7 @@ def set_default_file(file_id, doctype, docname):
 # ============================================================
 
 @frappe.whitelist()
+@standardize_response
 def get_pet_images(doctype, docname):
     if not doctype or not docname:
         frappe.throw("Missing doctype or docname")
@@ -321,6 +358,7 @@ def get_pet_images(doctype, docname):
 # ============================================================
 
 @frappe.whitelist()
+@standardize_response
 def list_pets(page=1, page_size=10, search=None):
     guardian = _require_pet_read_access()
     page = cint(page) or 1
@@ -390,6 +428,8 @@ def list_pets(page=1, page_size=10, search=None):
 
         pet["images"] = images
         pet["image"] = next((img["file_url"] for img in images if img.get("custom_is_default")), None)
+        pet["pet_id"] = pet.get("name")
+        pet["pet_name"] = pet.get("pet_name") or pet.get("name")
 
     total_pages = math.ceil(total / page_size) if page_size else 1
 
@@ -409,6 +449,7 @@ def list_pets(page=1, page_size=10, search=None):
 # ============================================================
 
 @frappe.whitelist()
+@standardize_response
 def get_pet(pet_id):
     _require_pet_read_access(pet_id)
     if not frappe.db.exists("Pet", pet_id):
@@ -451,6 +492,8 @@ def get_pet(pet_id):
 
     pet["images"] = images
     pet["image"] = next((img["file_url"] for img in images if img.get("custom_is_default")), None)
+    pet["pet_id"] = pet.get("name")
+    pet["pet_name"] = pet.get("pet_name") or pet.get("name")
 
     return {"data": pet}
 
@@ -490,6 +533,7 @@ def _sync_user_image_from_upload(doctype: str, docname: str, new_file_url: str |
 
     frappe.db.set_value("User", user_id, "user_image", new_file_url, update_modified=False)
 @frappe.whitelist()
+@standardize_response
 def upload_single_file():
     try:
         if not frappe.request.files:

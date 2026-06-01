@@ -1,0 +1,305 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "PCE-.YYYY.-.#####",
+ "creation": "2026-05-08 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "pet",
+  "guardian",
+  "customer",
+  "primary_doctor",
+  "episode_title",
+  "episode_type",
+  "episode_status",
+  "priority",
+  "severity",
+  "opened_from_doctype",
+  "opened_from_name",
+  "opened_visit",
+  "current_visit",
+  "last_visit",
+  "chief_complaint",
+  "problem_summary",
+  "diagnosis_summary",
+  "treatment_summary",
+  "owner_instruction_summary",
+  "primary_diagnosis",
+  "secondary_diagnoses_text",
+  "started_on",
+  "expected_end_date",
+  "resolved_on",
+  "closed_on",
+  "next_follow_up_date",
+  "follow_up_status",
+  "requires_follow_up",
+  "requires_monitoring",
+  "requires_lab_followup",
+  "requires_imaging_followup",
+  "requires_procedure_followup",
+  "outcome",
+  "closure_reason",
+  "created_by",
+  "closed_by",
+  "problems",
+  "medications",
+  "monitoring_items"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "label": "Guardian",
+   "options": "Guardian",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "primary_doctor",
+   "fieldtype": "Link",
+   "label": "Primary Doctor",
+   "options": "Healthcare Practitioner",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "episode_title",
+   "fieldtype": "Data",
+   "label": "Episode Title",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "episode_type",
+   "fieldtype": "Select",
+   "label": "Episode Type",
+   "options": "Acute Illness\nChronic Disease\nEmergency\nSurgery / Procedure\nVaccination Course\nDental Case\nSkin / Ear Case\nBoarding Medical Case\nFollow-up Case\nGeneral Wellness\nOther"
+  },
+  {
+   "fieldname": "episode_status",
+   "fieldtype": "Select",
+   "label": "Episode Status",
+   "options": "Open\nUnder Diagnosis\nPending Diagnostics\nUnder Treatment\nMonitoring\nFollow-up Scheduled\nFollow-up Due\nReferred\nResolved\nClosed\nDeceased\nCancelled",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "Low\nNormal\nImportant\nUrgent\nEmergency"
+  },
+  {
+   "fieldname": "severity",
+   "fieldtype": "Select",
+   "label": "Severity",
+   "options": "Mild\nModerate\nSevere\nCritical"
+  },
+  {
+   "fieldname": "opened_from_doctype",
+   "fieldtype": "Link",
+   "label": "Opened From DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "opened_from_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Opened From Name",
+   "options": "opened_from_doctype"
+  },
+  {
+   "fieldname": "opened_visit",
+   "fieldtype": "Link",
+   "label": "Opened Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "current_visit",
+   "fieldtype": "Link",
+   "label": "Current Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "last_visit",
+   "fieldtype": "Link",
+   "label": "Last Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "chief_complaint",
+   "fieldtype": "Small Text",
+   "label": "Chief Complaint"
+  },
+  {
+   "fieldname": "problem_summary",
+   "fieldtype": "Small Text",
+   "label": "Problem Summary"
+  },
+  {
+   "fieldname": "diagnosis_summary",
+   "fieldtype": "Small Text",
+   "label": "Diagnosis Summary"
+  },
+  {
+   "fieldname": "treatment_summary",
+   "fieldtype": "Small Text",
+   "label": "Treatment Summary"
+  },
+  {
+   "fieldname": "owner_instruction_summary",
+   "fieldtype": "Small Text",
+   "label": "Owner Instruction Summary"
+  },
+  {
+   "fieldname": "primary_diagnosis",
+   "fieldtype": "Data",
+   "label": "Primary Diagnosis"
+  },
+  {
+   "fieldname": "secondary_diagnoses_text",
+   "fieldtype": "Small Text",
+   "label": "Secondary Diagnoses"
+  },
+  {
+   "fieldname": "started_on",
+   "fieldtype": "Date",
+   "label": "Started On"
+  },
+  {
+   "fieldname": "expected_end_date",
+   "fieldtype": "Date",
+   "label": "Expected End Date"
+  },
+  {
+   "fieldname": "resolved_on",
+   "fieldtype": "Date",
+   "label": "Resolved On"
+  },
+  {
+   "fieldname": "closed_on",
+   "fieldtype": "Date",
+   "label": "Closed On"
+  },
+  {
+   "fieldname": "next_follow_up_date",
+   "fieldtype": "Date",
+   "label": "Next Follow-up Date"
+  },
+  {
+   "fieldname": "follow_up_status",
+   "fieldtype": "Select",
+   "label": "Follow-up Status",
+   "options": "\nNot Needed\nRequested\nScheduled\nDue\nMissed\nCompleted\nCancelled"
+  },
+  {
+   "fieldname": "requires_follow_up",
+   "fieldtype": "Check",
+   "label": "Requires Follow-up"
+  },
+  {
+   "fieldname": "requires_monitoring",
+   "fieldtype": "Check",
+   "label": "Requires Monitoring"
+  },
+  {
+   "fieldname": "requires_lab_followup",
+   "fieldtype": "Check",
+   "label": "Requires Lab Follow-up"
+  },
+  {
+   "fieldname": "requires_imaging_followup",
+   "fieldtype": "Check",
+   "label": "Requires Imaging Follow-up"
+  },
+  {
+   "fieldname": "requires_procedure_followup",
+   "fieldtype": "Check",
+   "label": "Requires Procedure Follow-up"
+  },
+  {
+   "fieldname": "outcome",
+   "fieldtype": "Select",
+   "label": "Outcome",
+   "options": "\nRecovered\nImproved\nStable\nOngoing\nReferred\nNo Response\nWorsened\nDeath\nEuthanasia\nUnknown"
+  },
+  {
+   "fieldname": "closure_reason",
+   "fieldtype": "Small Text",
+   "label": "Closure Reason"
+  },
+  {
+   "fieldname": "created_by",
+   "fieldtype": "Link",
+   "label": "Created By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "closed_by",
+   "fieldtype": "Link",
+   "label": "Closed By",
+   "options": "User"
+  },
+  {
+   "fieldname": "problems",
+   "fieldtype": "Table",
+   "label": "Problems",
+   "options": "Pet Care Episode Problem"
+  },
+  {
+   "fieldname": "medications",
+   "fieldtype": "Table",
+   "label": "Medications",
+   "options": "Pet Care Episode Medication"
+  },
+  {
+   "fieldname": "monitoring_items",
+   "fieldtype": "Table",
+   "label": "Monitoring Items",
+   "options": "Pet Care Episode Monitoring Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Care Episode",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "episode_title",
+ "track_changes": 1
+}

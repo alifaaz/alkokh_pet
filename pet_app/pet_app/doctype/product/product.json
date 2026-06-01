@@ -25,8 +25,8 @@
   "tags",
   "section_break_atcq",
   "item",
+  "item_group",
   "item_price",
-  "website_item",
   "variants_section",
   "has_variants",
   "product_variant"
@@ -94,7 +94,7 @@
    "fieldname": "category",
    "fieldtype": "Link",
    "label": "category",
-   "options": "Item Group"
+   "options": "Product Category"
   },
   {
    "fieldname": "status",
@@ -119,10 +119,12 @@
    "options": "Item"
   },
   {
-   "fieldname": "website_item",
+   "fieldname": "item_group",
    "fieldtype": "Link",
-   "label": "website item",
-   "options": "Website Item"
+   "hidden": 1,
+   "label": "Item Group",
+   "options": "Item Group",
+   "read_only": 1
   },
   {
    "fieldname": "item_price",
@@ -171,7 +173,7 @@
   }
  ],
  "grid_page_length": 50,
- "index_web_pages_for_search": 1,
+ "index_web_pages_for_search": 0,
  "links": [],
  "modified": "2026-04-07 16:31:38.941486",
  "modified_by": "Administrator",

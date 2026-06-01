@@ -4,8 +4,17 @@ from contextlib import contextmanager
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, flt, get_datetime, getdate, now_datetime
+from frappe.utils import cint, cstr, flt, get_datetime, getdate, now_datetime, nowdate
 
+from erpnext.accounts.party import get_party_account
+from pet_app.api.accounting.cashier import (
+	_default_cash_mode_of_payment,
+	_get_default_company,
+	_get_settings_doc,
+	_is_cash_mode,
+	_validate_account,
+)
+from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.sales import _set_optional_guardian_reference
 from pet_app.pet_app.doctype.pet_boarding.pet_boarding import (
 	ACTIVE_BOARDING_STATUSES,
@@ -13,14 +22,15 @@ from pet_app.pet_app.doctype.pet_boarding.pet_boarding import (
 	get_active_boarding_for_room,
 )
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
+from pet_app.api.response import standardize_response
 
 
 ROOM_STAY_SERVICE_PREFIX = "boarding_room_stay"
 LOCK_TIMEOUT_SECONDS = 15
 BILLABLE_ITEM_STATUSES = ("Draft", "Billable", "Billed", "Cancelled")
 BILLABLE_ITEM_TYPES = ("Room Stay", "Service", "Medication", "Lab", "Product", "Other")
-BOARDING_READ_ROLES = ("System Manager", "Doctor", "Accounts User", "Healthcare", "Accounting")
-BOARDING_WRITE_ROLES = ("System Manager", "Doctor", "Accounts User", "Healthcare", "Accounting")
+BOARDING_READ_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
+BOARDING_WRITE_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
 
 
 def _require_boarding_role(*allowed_roles):
@@ -45,8 +55,7 @@ def _require_boarding_write_access():
 
 def _require_boarding_invoice_access():
 	_require_boarding_role(*BOARDING_WRITE_ROLES)
-	if not frappe.has_permission("Sales Invoice", ptype="create"):
-		frappe.throw(_("Not permitted to create Sales Invoice."), frappe.PermissionError)
+	require_doctype_permission("Sales Invoice", "create")
 
 
 def _log_boarding_event(event: str, **context):
@@ -54,6 +63,7 @@ def _log_boarding_event(event: str, **context):
 
 
 @frappe.whitelist()
+@standardize_response
 def list_boarding_units(search=None, occupancy=None, date=None):
 	_require_boarding_read_access()
 	rooms = _get_active_service_rooms(search=search)
@@ -70,6 +80,7 @@ def list_boarding_units(search=None, occupancy=None, date=None):
 
 
 @frappe.whitelist()
+@standardize_response
 def get_boarding_detail(boarding_id=None, room_id=None, name=None):
 	_require_boarding_read_access()
 	boarding_name = boarding_id
@@ -98,6 +109,7 @@ def get_boarding_detail(boarding_id=None, room_id=None, name=None):
 
 
 @frappe.whitelist()
+@standardize_response
 def list_boarding_records(
 	search=None,
 	status=None,
@@ -185,6 +197,7 @@ def list_boarding_records(
 			pb.stay_days,
 			pb.total_cost,
 			pb.deposit,
+			pb.deposit_payment_entry,
 			pb.balance,
 			pb.billing_status,
 			pb.sales_invoice,
@@ -209,6 +222,7 @@ def list_boarding_records(
 
 
 @frappe.whitelist()
+@standardize_response
 def reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=None, boardingType=None):
 	_require_boarding_write_access()
 	room_id = cstr(roomId).strip()
@@ -272,6 +286,7 @@ def reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=No
 
 
 @frappe.whitelist()
+@standardize_response
 def check_in_boarding(boarding_id):
 	_require_boarding_write_access()
 	if not boarding_id:
@@ -302,6 +317,10 @@ def check_in_boarding(boarding_id):
 		boarding.status = "Open"
 		boarding.workflow_state = "Checked In"
 		boarding.check_in = now_datetime()
+		boarding.customer = boarding.customer or get_or_create_customer_from_guardian(boarding.guardian)
+		deposit_payment_entry = _create_boarding_deposit_payment_entry(boarding)
+		if deposit_payment_entry:
+			boarding.deposit_payment_entry = deposit_payment_entry.name
 		boarding.save()
 		boarding.add_comment("Comment", _("Boarding checked in by {0}.").format(frappe.session.user))
 		_log_boarding_event("BOARDING_CHECKED_IN", boarding=boarding.name, room=boarding.service_room, user=frappe.session.user)
@@ -313,10 +332,12 @@ def check_in_boarding(boarding_id):
 		"record_status": boarding.record_status,
 		"occupancy": "Occupied",
 		"boarding": _serialize_boarding_doc(boarding),
+		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
 	}
 
 
 @frappe.whitelist()
+@standardize_response
 def check_out_boarding(boarding_id):
 	_require_boarding_invoice_access()
 	if not boarding_id:
@@ -408,7 +429,76 @@ def check_out_boarding(boarding_id):
 	}
 
 
+def _create_boarding_deposit_payment_entry(boarding):
+	deposit_amount = flt(boarding.deposit)
+	if deposit_amount <= 0:
+		return None
+
+	existing = boarding.get("deposit_payment_entry")
+	if existing and frappe.db.exists("Payment Entry", existing):
+		existing_doc = frappe.get_doc("Payment Entry", existing)
+		if existing_doc.docstatus != 2:
+			return existing_doc
+
+	customer = boarding.customer or get_or_create_customer_from_guardian(boarding.guardian)
+	if not customer:
+		frappe.throw(_("Customer is required to capture boarding deposit."))
+
+	company = _get_default_company()
+	if not company:
+		frappe.throw(_("Default company is required to capture boarding deposit."))
+
+	mode_of_payment = _default_cash_mode_of_payment()
+	paid_to = _resolve_boarding_deposit_account(company, mode_of_payment)
+	party_account = get_party_account("Customer", customer, company)
+	_validate_account(party_account, company=company, label="Customer Receivable Account")
+	posting_date = getdate(boarding.check_in or nowdate())
+
+	pe = frappe.new_doc("Payment Entry")
+	pe.payment_type = "Receive"
+	pe.company = company
+	pe.posting_date = posting_date
+	pe.mode_of_payment = mode_of_payment
+	pe.party_type = "Customer"
+	pe.party = customer
+	pe.paid_from = party_account
+	pe.paid_to = paid_to
+	pe.paid_amount = deposit_amount
+	pe.received_amount = deposit_amount
+	pe.reference_no = boarding.name
+	pe.reference_date = posting_date
+	pe.remarks = _("Boarding deposit for Pet Boarding {0}.").format(boarding.name)
+	pe.flags.ignore_permissions = True
+	pe.insert(ignore_permissions=True)
+	pe.submit()
+	pe.add_comment(
+		"Comment",
+		_("Boarding deposit captured for Pet Boarding {0} by {1}.").format(boarding.name, frappe.session.user),
+	)
+	return pe
+
+
+def _resolve_boarding_deposit_account(company: str, mode_of_payment: str | None) -> str:
+	if _is_cash_mode(mode_of_payment):
+		settings = _get_settings_doc()
+		account = settings.get("treasury_cash_account")
+		_validate_account(account, company=company, account_type="Cash", label="Treasury Cash Account")
+		return account
+
+	if mode_of_payment and not frappe.db.exists("Mode of Payment", mode_of_payment):
+		frappe.throw(_("Mode of Payment {0} does not exist.").format(frappe.bold(mode_of_payment)))
+
+	account = frappe.db.get_value(
+		"Mode of Payment Account",
+		{"parent": mode_of_payment, "company": company},
+		"default_account",
+	)
+	_validate_account(account, company=company, label="Mode of Payment Account")
+	return account
+
+
 @frappe.whitelist()
+@standardize_response
 def sync_billable_items(boarding_id=None, billable_items=None, name=None, boardingId=None, billableItems=None):
 	_require_boarding_write_access()
 	boarding_name = cstr(boarding_id or boardingId or name).strip()
@@ -510,6 +600,7 @@ def _get_active_boardings_by_room(room_names: list[str]) -> dict:
 			"stay_days",
 			"total_cost",
 			"deposit",
+			"deposit_payment_entry",
 			"balance",
 			"billing_status",
 			"sales_invoice",
@@ -551,7 +642,11 @@ def _serialize_room(room, boarding=None) -> dict:
 				"boarding_id": boarding.name,
 				"record_status": boarding.record_status,
 				"pet": boarding.pet,
+				"pet_id": boarding.pet,
+				"pet_name": boarding_data.get("pet_name"),
 				"guardian": boarding.guardian,
+				"guardian_id": boarding.guardian,
+				"guardian_name": boarding_data.get("guardian_name"),
 				"customer": boarding.customer,
 				"boarding_type": boarding.boarding_type,
 				"reserved_at": boarding.reserved_at,
@@ -585,8 +680,10 @@ def _serialize_boarding_doc(boarding) -> dict:
 		"service_room": boarding.service_room,
 		"room_id": boarding.service_room,
 		"pet": boarding.pet,
+		"pet_id": boarding.pet,
 		"pet_name": frappe.db.get_value("Pet", boarding.pet, "pet_name") if boarding.pet else None,
 		"guardian": boarding.guardian,
+		"guardian_id": boarding.guardian,
 		"guardian_name": frappe.db.get_value("Guardian", boarding.guardian, "full_name") if boarding.guardian else None,
 		"customer": boarding.customer,
 		"boarding_type": boarding.boarding_type,
@@ -599,6 +696,7 @@ def _serialize_boarding_doc(boarding) -> dict:
 		"stay_days": boarding.stay_days,
 		"total_cost": boarding.total_cost,
 		"deposit": boarding.deposit,
+		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
 		"balance": boarding.balance,
 		"billing_status": boarding.billing_status,
 		"sales_invoice": boarding.sales_invoice,
@@ -618,9 +716,11 @@ def _serialize_boarding_record(row) -> dict:
 		"room_code": row.get("room_code"),
 		"room_name": row.get("room_name"),
 		"pet": row.pet,
+		"pet_id": row.pet,
 		"pet_name": row.get("pet_name") or _get_pet_name(row.pet),
 		"pet_image": row.get("pet_image"),
 		"guardian": row.guardian,
+		"guardian_id": row.guardian,
 		"guardian_name": row.get("guardian_name") or _get_guardian_name(row.guardian),
 		"guardian_phone": row.get("guardian_phone"),
 		"customer": row.customer,
@@ -635,6 +735,7 @@ def _serialize_boarding_record(row) -> dict:
 		"stay_days": row.stay_days,
 		"total_cost": row.total_cost,
 		"deposit": row.deposit,
+		"deposit_payment_entry": row.get("deposit_payment_entry"),
 		"balance": row.balance,
 		"billing_status": row.billing_status,
 		"sales_invoice": row.sales_invoice,

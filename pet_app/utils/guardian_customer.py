@@ -5,7 +5,7 @@ from contextlib import contextmanager
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cstr
+from frappe.utils import cint, cstr
 
 
 DEFAULT_COUNTRY = "Iraq"
@@ -278,6 +278,46 @@ def sync_customer_from_guardian(guardian, customer_id: str | None = None) -> str
     return customer_id
 
 
+def _should_auto_create_customer_for_web_admin_guardian(guardian) -> bool:
+    if getattr(guardian.flags, "skip_guardian_customer_auto_create", False):
+        return False
+
+    if (
+        getattr(frappe.flags, "in_patch", False)
+        or getattr(frappe.flags, "in_migrate", False)
+        or getattr(frappe.flags, "in_install", False)
+    ):
+        return False
+
+    if frappe.session.user == "Guest":
+        return False
+
+    if guardian.get("customer_id"):
+        return False
+
+    if cstr(guardian.get("pending_password_hash")).strip() and not cint(guardian.get("otp_verified")):
+        return False
+
+    return bool(cstr(guardian.get("phone")).strip())
+
+
+def ensure_customer_for_web_admin_guardian(guardian) -> str | None:
+    """Create/link a Customer when a Guardian is created directly from Desk/admin flows."""
+    if not _should_auto_create_customer_for_web_admin_guardian(guardian):
+        return guardian.get("customer_id")
+
+    customer_id = get_or_create_customer_from_guardian(guardian)
+    if customer_id:
+        guardian.customer_id = customer_id
+        log_customer_event(
+            "WEB_ADMIN_GUARDIAN_CUSTOMER_LINKED",
+            guardian_name=guardian.name,
+            customer_id=customer_id,
+            phone=guardian.get("phone"),
+        )
+    return customer_id
+
+
 def _create_customer_for_guardian(guardian: dict) -> str:
     phone = cstr(guardian.get("phone")).strip()
     customer = frappe.get_doc(
@@ -299,7 +339,7 @@ def validate_customer_identity_projection(doc, method=None):
     if doc.doctype != "Customer":
         return
 
-    if getattr(doc.flags, "from_guardian_resolver", False):
+    if _allow_system_customer_insert(doc):
         return
 
     guardian = get_guardian_by_customer(doc.name) if doc.name else None
@@ -316,6 +356,19 @@ def validate_customer_identity_projection(doc, method=None):
 
     if cstr(doc.customer_type).strip() == "Individual":
         frappe.throw(_("Create a Guardian first. Individual Customers must be created through the Guardian identity flow."))
+
+
+def _allow_system_customer_insert(doc) -> bool:
+    if getattr(doc.flags, "from_guardian_resolver", False):
+        return True
+    if getattr(doc.flags, "ignore_guardian_identity_validation", False):
+        return True
+    return bool(
+        getattr(frappe.flags, "in_test", False)
+        or getattr(frappe.flags, "in_patch", False)
+        or getattr(frappe.flags, "in_migrate", False)
+        or getattr(frappe.flags, "in_install", False)
+    )
 
 
 def get_or_create_customer_from_guardian(guardian) -> str:

@@ -3,6 +3,7 @@ import json
 import frappe
 from frappe import _
 from frappe.utils.password import update_password
+from pet_app.api.response import standardize_response
 
 
 ALLOWED_USER_ADMIN_ROLES = {"System Manager", "Healthcare Administrator", "Users"}
@@ -24,6 +25,7 @@ def _log_user_admin_error(message, **context):
     )
 
 @frappe.whitelist()
+@standardize_response
 def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_only=0, filters=None):
     _require_user_admin_access()
 
@@ -104,6 +106,7 @@ def get_users_with_role_profile(limit_start=0, limit_page_length=20, enabled_onl
 
 
 @frappe.whitelist()
+@standardize_response
 def get_all_role_profiles_with_roles(limit_page_length=999):
     _require_user_admin_access()
 
@@ -167,6 +170,7 @@ def get_all_role_profiles_with_roles(limit_page_length=999):
 
 
 @frappe.whitelist(methods=["POST"])
+@standardize_response
 def change_user_password(user: str, new_password: str):
     """Change another user's password.
 

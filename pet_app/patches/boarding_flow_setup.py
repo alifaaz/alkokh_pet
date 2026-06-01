@@ -46,7 +46,7 @@ def _migrate_existing_pet_boarding_rows():
 			SET status = CASE
 				WHEN record_status = 'Checked Out' THEN 'Closed'
 				WHEN record_status = 'Cancelled' THEN 'Cancelled'
-				ELSE 'Open'Pet Billable Item
+				ELSE 'Open'
 			END
 			WHERE status IN ('Reserved', 'Checked In', 'Checked Out')
 			   OR status IS NULL

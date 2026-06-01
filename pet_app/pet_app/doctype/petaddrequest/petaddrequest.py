@@ -3,7 +3,7 @@
 
 from frappe.model.document import Document
 import frappe
-from pet_app.utils.patient_linking import get_or_create_patient_for_pet  # ✅ add this
+from pet_app.pet_app.doctype.pet_medical_profile.pet_medical_profile import ensure_pet_medical_profile
 
 class PetAddRequest(Document):
 
@@ -28,5 +28,5 @@ class PetAddRequest(Document):
                 "role": "primary_owner"
             }).insert(ignore_permissions=True)
 
-        # 3️⃣ ✅ إنشاء/ربط Patient للحيوان (مرة وحدة فقط)
-        get_or_create_patient_for_pet(self.pet_id, self.guardian_id)
+        # 3️⃣ إنشاء الملف الطبي للحيوان (مرة وحدة فقط)
+        ensure_pet_medical_profile(self.pet_id, self.guardian_id)

@@ -14,7 +14,10 @@
   "amount",
   "status",
   "note",
-  "linked_service_id"
+  "linked_service_id",
+  "linked_doctype",
+  "linked_name",
+  "order_id"
  ],
  "fields": [
   {
@@ -36,7 +39,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Item Type",
-   "options": "Room Stay\nService\nMedication\nLab\nImaging\nProduct\nOther"
+   "options": "Room Stay\nService\nMedication\nLab\nImaging\nProcedure\nProduct\nOther"
   },
   {
    "default": "1",
@@ -76,6 +79,23 @@
    "fieldname": "linked_service_id",
    "fieldtype": "Data",
    "label": "Linked Service ID"
+  },
+  {
+   "fieldname": "linked_doctype",
+   "fieldtype": "Link",
+   "label": "Linked DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "linked_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Linked Name",
+   "options": "linked_doctype"
+  },
+  {
+   "fieldname": "order_id",
+   "fieldtype": "Data",
+   "label": "Order ID"
   }
  ],
  "grid_page_length": 50,

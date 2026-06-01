@@ -1,0 +1,141 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "CONSENT-.#####",
+ "creation": "2026-05-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "procedure",
+  "visit",
+  "pet",
+  "guardian",
+  "doctor",
+  "template",
+  "status",
+  "column_break_main",
+  "signed_by",
+  "signed_at",
+  "witness",
+  "signature",
+  "consent_text",
+  "notes"
+ ],
+ "fields": [
+  {
+   "fieldname": "procedure",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Procedure",
+   "options": "Pet Procedure"
+  },
+  {
+   "fieldname": "visit",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Pet",
+   "options": "Pet"
+  },
+  {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Guardian",
+   "options": "Guardian"
+  },
+  {
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Healthcare Practitioner",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "fieldname": "template",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Template",
+   "options": "Pet Consent Template"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nSigned\nRevoked",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "signed_by",
+   "fieldtype": "Data",
+   "label": "Signed By"
+  },
+  {
+   "fieldname": "signed_at",
+   "fieldtype": "Datetime",
+   "label": "Signed At"
+  },
+  {
+   "fieldname": "witness",
+   "fieldtype": "Link",
+   "label": "Witness",
+   "options": "User"
+  },
+  {
+   "fieldname": "signature",
+   "fieldtype": "Attach Image",
+   "label": "Signature"
+  },
+  {
+   "fieldname": "consent_text",
+   "fieldtype": "Text Editor",
+   "label": "Consent Text"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Consent Form",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "search_fields": "procedure,visit,pet,guardian,status",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

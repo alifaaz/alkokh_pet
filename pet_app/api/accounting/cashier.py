@@ -8,6 +8,12 @@ from frappe import _
 from frappe.utils import cint, cstr, flt, getdate, nowdate
 
 from erpnext.accounts.party import get_party_account
+from pet_app.api.permissions import (
+	filter_restricted_values,
+	require_doctype_permission,
+	require_restriction_value,
+)
+from pet_app.api.response import standardize_response
 
 
 ACCOUNTING_ROLES = {"System Manager", "Accounts Manager", "Accounts User", "Accounting", "POS"}
@@ -276,6 +282,7 @@ def _get_authorized_profile(profile: str, *, allow_disabled: bool = False):
 	doc = frappe.get_doc("POS Profile", profile)
 	if doc.disabled and not allow_disabled:
 		frappe.throw(_("Cashier profile {0} is disabled.").format(frappe.bold(profile)))
+	require_restriction_value("cashier_profile", doc.name)
 
 	if _is_accounting_user():
 		return doc
@@ -494,6 +501,7 @@ def _stamp_sales_invoice_references(references: list[dict], profile: str, cashie
 
 
 @frappe.whitelist()
+@standardize_response
 def list_cashier_profiles_for_user(user=None, company=None, search=None, include_disabled=0):
 	user = user or _current_user()
 	if user != _current_user() and not _is_accounting_user():
@@ -541,6 +549,7 @@ def list_cashier_profiles_for_user(user=None, company=None, search=None, include
 		]
 
 	search_text = cstr(search).strip().lower()
+	profile_names = filter_restricted_values("cashier_profile", profile_names, user=user)
 	data = []
 	for name in profile_names:
 		profile = frappe.get_doc("POS Profile", name)
@@ -552,16 +561,18 @@ def list_cashier_profiles_for_user(user=None, company=None, search=None, include
 
 
 @frappe.whitelist()
+@standardize_response
 def get_cashier_profile_detail(pos_profile=None, profile=None, cashier_profile=None):
 	doc = _get_authorized_profile(pos_profile or profile or cashier_profile)
 	return _profile_payload(doc)
 
 
 @frappe.whitelist()
+@standardize_response
 def get_cashier_runtime_defaults(pos_profile=None, company=None):
 	settings = _settings_payload()
 	resolved_company = _get_default_company(company)
-	profiles = list_cashier_profiles_for_user(company=resolved_company).get("data", [])
+	profiles = list_cashier_profiles_for_user.__wrapped__(company=resolved_company).get("data", [])
 
 	active_profile = None
 	selected_profile = pos_profile
@@ -574,7 +585,7 @@ def get_cashier_runtime_defaults(pos_profile=None, company=None):
 		selected_profile = (default_profiles[0] if default_profiles else profiles[0]).get("name")
 
 	if selected_profile:
-		active_profile = get_cashier_profile_detail(selected_profile)
+		active_profile = get_cashier_profile_detail.__wrapped__(selected_profile)
 
 	return {
 		"settings": settings,
@@ -680,6 +691,7 @@ def _apply_profile_defaults(doc):
 
 
 @frappe.whitelist()
+@standardize_response
 def save_cashier_profile(profile=None, data=None, **kwargs):
 	_require_accounting_user()
 
@@ -688,10 +700,13 @@ def save_cashier_profile(profile=None, data=None, **kwargs):
 	if "cash_account" in payload and "custom_cash_account" not in payload:
 		payload["custom_cash_account"] = payload.get("cash_account")
 	profile_name = profile or payload.get("name") or payload.get("pos_profile") or payload.get("cashier_profile")
+	require_restriction_value("cashier_profile", profile_name)
 
 	if profile_name and frappe.db.exists("POS Profile", profile_name):
+		require_doctype_permission("POS Profile", "write")
 		doc = frappe.get_doc("POS Profile", profile_name)
 	else:
+		require_doctype_permission("POS Profile", "create")
 		if not profile_name:
 			frappe.throw(_("Cashier profile name is required."))
 		doc = frappe.get_doc({"doctype": "POS Profile", "__newname": profile_name})
@@ -721,6 +736,7 @@ def save_cashier_profile(profile=None, data=None, **kwargs):
 			doc.set(fieldname, payload.get(fieldname))
 
 	_apply_profile_defaults(doc)
+	require_restriction_value("warehouse", doc.get("warehouse"))
 	if doc.get("custom_cash_account"):
 		_validate_account(doc.custom_cash_account, company=doc.company, account_type="Cash", label="Cashier Cash Account")
 
@@ -747,7 +763,12 @@ def save_cashier_profile(profile=None, data=None, **kwargs):
 
 
 @frappe.whitelist()
+@standardize_response
 def create_payment_entry_with_cashier_context(pos_profile=None, data=None, submit=1, **kwargs):
+	require_doctype_permission("Payment Entry", "create")
+	if cint(submit):
+		require_doctype_permission("Payment Entry", "submit")
+
 	payload = _coerce_dict(data)
 	payload.update({key: value for key, value in kwargs.items() if value is not None})
 
@@ -781,6 +802,9 @@ def create_payment_entry_with_cashier_context(pos_profile=None, data=None, submi
 		frappe.throw(_("Payment amount must be greater than zero."))
 
 	references = _normalize_references(raw_references, amount)
+	if any(row.get("reference_doctype") == "Sales Invoice" for row in references):
+		require_doctype_permission("Sales Invoice", "read")
+
 	party_type = payload.get("party_type")
 	party = payload.get("party")
 	if (not party_type or not party) and references:
@@ -841,6 +865,7 @@ def create_payment_entry_with_cashier_context(pos_profile=None, data=None, submi
 
 
 @frappe.whitelist()
+@standardize_response
 def get_cashier_settlement_snapshot(
 	pos_profile=None, profile=None, cashier_profile=None, posting_date=None, from_date=None, to_date=None
 ):
@@ -936,6 +961,7 @@ def get_cashier_settlement_snapshot(
 
 
 @frappe.whitelist()
+@standardize_response
 def settle_cashier_to_treasury(
 	pos_profile=None, profile=None, cashier_profile=None, amount=None, posting_date=None, submit=1, **kwargs
 ):
@@ -978,6 +1004,10 @@ def settle_cashier_to_treasury(
 	remarks = payload.get("remarks") or _("Cashier settlement from {0} to treasury.").format(doc.name)
 	pe = None
 	if transfer_amount > 0:
+		require_doctype_permission("Payment Entry", "create")
+		if cint(submit):
+			require_doctype_permission("Payment Entry", "submit")
+
 		pe = frappe.new_doc("Payment Entry")
 		pe.payment_type = "Internal Transfer"
 		pe.company = company
@@ -1036,6 +1066,7 @@ def settle_cashier_to_treasury(
 
 
 @frappe.whitelist()
+@standardize_response
 def list_cashier_settlements(
 	profile=None,
 	cashier_profile=None,
@@ -1061,6 +1092,9 @@ def list_cashier_settlements(
 				ignore_permissions=True,
 			)
 		]
+		if not assigned_profiles:
+			return {"data": [], "total": 0}
+		assigned_profiles = filter_restricted_values("cashier_profile", assigned_profiles)
 		if not assigned_profiles:
 			return {"data": [], "total": 0}
 		filters["cashier_profile"] = ["in", assigned_profiles]
@@ -1109,6 +1143,7 @@ def list_cashier_settlements(
 
 
 @frappe.whitelist()
+@standardize_response
 def get_cashier_settlement_detail(name):
 	if not name or not frappe.db.exists("Pet App Cashier Settlement", name):
 		frappe.throw(_("Cashier settlement is required."))

@@ -45,7 +45,7 @@
    "name": "Appointment-custom_appointment_type",
    "no_copy": 0,
    "non_negative": 0,
-   "options": "\nvisit\nshowering\nbarbering \n",
+	   "options": "\nvisit\nfollow_up\nshowering\nbarbering \n",
    "owner": "Administrator",
    "permlevel": 0,
    "placeholder": null,
@@ -81,7 +81,7 @@
    "description": null,
    "docstatus": 0,
    "dt": "Appointment",
-   "fetch_from": "custom_gurdian.customer_id",
+   "fetch_from": "custom_guardian.customer_id",
    "fetch_if_empty": 0,
    "fieldname": "custom_customer",
    "fieldtype": "Link",
@@ -96,7 +96,7 @@
    "in_list_view": 0,
    "in_preview": 0,
    "in_standard_filter": 0,
-   "insert_after": "custom_gurdian",
+   "insert_after": "custom_guardian",
    "is_system_generated": 0,
    "is_virtual": 0,
    "label": "customer",
@@ -147,7 +147,7 @@
    "dt": "Appointment",
    "fetch_from": null,
    "fetch_if_empty": 0,
-   "fieldname": "custom_gurdian",
+   "fieldname": "custom_guardian",
    "fieldtype": "Link",
    "hidden": 0,
    "hide_border": 0,
@@ -163,14 +163,14 @@
    "insert_after": "custom_pet",
    "is_system_generated": 0,
    "is_virtual": 0,
-   "label": "gurdian",
+   "label": "guardian",
    "length": 0,
    "link_filters": null,
    "mandatory_depends_on": null,
    "modified": "2026-04-29 01:08:04.558916",
    "modified_by": "Administrator",
    "module": null,
-   "name": "Appointment-custom_gurdian",
+   "name": "Appointment-custom_guardian",
    "no_copy": 0,
    "non_negative": 0,
    "options": "Guardian",
@@ -255,6 +255,55 @@
    "translatable": 0,
    "unique": 0,
    "width": null
+  },
+	  {
+	   "dt": "Appointment",
+	   "fieldname": "custom_follow_up_of_visit_id",
+	   "fieldtype": "Link",
+	   "insert_after": "custom_customer",
+	   "label": "Follow-up Of Visit",
+	   "name": "Appointment-custom_follow_up_of_visit_id",
+	   "options": "Vet Visit",
+	   "read_only": 1
+	  },
+	  {
+	   "dt": "Appointment",
+	   "fieldname": "custom_linked_visit_id",
+	   "fieldtype": "Link",
+	   "insert_after": "custom_follow_up_of_visit_id",
+	   "label": "Linked Visit",
+	   "name": "Appointment-custom_linked_visit_id",
+	   "options": "Vet Visit",
+   "read_only": 1
+  },
+  {
+   "dt": "Appointment",
+   "fieldname": "custom_linked_service_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_linked_visit_id",
+   "label": "Linked Service",
+   "name": "Appointment-custom_linked_service_id",
+   "options": "PetCareService",
+   "read_only": 1
+  },
+  {
+   "dt": "Appointment",
+   "fieldname": "custom_converted_target",
+   "fieldtype": "Select",
+   "insert_after": "custom_linked_service_id",
+   "label": "Converted Target",
+   "name": "Appointment-custom_converted_target",
+   "options": "\nVisit\nService",
+   "read_only": 1
+  },
+  {
+   "dt": "Appointment",
+   "fieldname": "custom_converted_at",
+   "fieldtype": "Datetime",
+   "insert_after": "custom_converted_target",
+   "label": "Converted At",
+   "name": "Appointment-custom_converted_at",
+   "read_only": 1
   }
  ],
  "custom_perms": [],
@@ -282,7 +331,7 @@
    "property": "field_order",
    "property_type": "Data",
    "row_name": null,
-   "value": "[\"scheduled_time\", \"status\", \"customer_details_section\", \"customer_name\", \"customer_phone_number\", \"customer_skype\", \"customer_email\", \"custom_appointment_type\", \"custom_pet\", \"custom_gurdian\", \"custom_customer\", \"col_br_2\", \"customer_details\", \"linked_docs_section\", \"appointment_with\", \"party\", \"col_br_3\", \"calendar_event\"]"
+	   "value": "[\"scheduled_time\", \"status\", \"customer_details_section\", \"customer_name\", \"customer_phone_number\", \"customer_skype\", \"customer_email\", \"custom_appointment_type\", \"custom_pet\", \"custom_guardian\", \"custom_customer\", \"custom_follow_up_of_visit_id\", \"custom_linked_visit_id\", \"custom_linked_service_id\", \"custom_converted_target\", \"custom_converted_at\", \"col_br_2\", \"customer_details\", \"linked_docs_section\", \"appointment_with\", \"party\", \"col_br_3\", \"calendar_event\"]"
   }
  ],
  "sync_on_migrate": 1

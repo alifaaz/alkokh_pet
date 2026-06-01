@@ -12,6 +12,7 @@
   "column_break_top",
   "case_sheet_date",
   "vet_visit",
+  "appointment",
   "basic_info_tab",
   "section_break_basic_info",
   "guardian",
@@ -98,7 +99,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Draft\nWaiting Doctor\nIn Consultation\nConverted to Visit\nClosed",
+   "options": "Draft\nWaiting Practitioner\nIn Consultation\nConverted to Visit\nClosed",
    "reqd": 1
   },
   {
@@ -129,6 +130,14 @@
    "no_copy": 1,
    "options": "Vet Visit",
    "read_only": 1
+  },
+  {
+   "fieldname": "appointment",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Appointment",
+   "options": "Appointment",
+   "read_only_depends_on": "eval:!doc.__islocal"
   },
   {
    "fieldname": "basic_info_tab",
@@ -168,7 +177,7 @@
    "fieldname": "animal_patient",
    "fieldtype": "Link",
    "in_list_view": 1,
-   "label": "Animal / Pet",
+   "label": "Pet",
    "link_filters": "[]",
    "options": "Pet",
    "reqd": 1
@@ -542,17 +551,6 @@
    "read": 1,
    "report": 1,
    "role": "Desk User",
-   "share": 1,
-   "write": 1
-  },
-  {
-   "create": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Healthcare Practitioner",
    "share": 1,
    "write": 1
   }

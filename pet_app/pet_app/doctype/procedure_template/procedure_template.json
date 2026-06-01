@@ -1,0 +1,137 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:procedure_name",
+ "creation": "2026-05-02 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "procedure_name",
+  "code",
+  "species",
+  "category",
+  "default_duration_minutes",
+  "price",
+  "column_break_main",
+  "consent_required",
+  "consent_template",
+  "anesthesia_required",
+  "active",
+  "item_code",
+  "steps_section",
+  "steps"
+ ],
+ "fields": [
+  {
+   "fieldname": "procedure_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Procedure Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Code"
+  },
+  {
+   "fieldname": "species",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Species"
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Category"
+  },
+  {
+   "default": "30",
+   "fieldname": "default_duration_minutes",
+   "fieldtype": "Int",
+   "label": "Default Duration Minutes"
+  },
+  {
+   "fieldname": "column_break_main",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "consent_required",
+   "fieldtype": "Check",
+   "label": "Consent Required"
+  },
+  {
+   "fieldname": "consent_template",
+   "fieldtype": "Link",
+   "label": "Consent Template",
+   "options": "Pet Consent Template"
+  },
+  {
+   "default": "0",
+   "fieldname": "anesthesia_required",
+   "fieldtype": "Check",
+   "label": "Anesthesia Required"
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "fieldname": "steps_section",
+   "fieldtype": "Section Break",
+   "label": "Steps"
+  },
+  {
+   "fieldname": "steps",
+   "fieldtype": "Table",
+   "label": "Steps",
+   "options": "Procedure Template Step"
+  },
+  {
+   "fieldname": "price",
+   "fieldtype": "Currency",
+   "label": "price",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item Code",
+   "options": "Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-19 06:02:09.996029",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Procedure Template",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

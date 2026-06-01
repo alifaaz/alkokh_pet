@@ -1,6 +1,7 @@
 [pre_model_sync]
 # Patches added in this section will be executed before doctypes are migrated
 # Read docs to understand patches: https://frappeframework.com/docs/v14/user/en/database-migrations
+pet_app.patches.rename_guardian_typo_fields
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
@@ -9,3 +10,26 @@ pet_app.patches.sync_alkohk_workspace
 pet_app.patches.cashier_backend_setup
 pet_app.patches.cashier_settlement_setup
 pet_app.patches.role_profile_access_setup
+pet_app.patches.product_category_item_group_sync
+pet_app.patches.backfill_visit_follow_up_fields
+pet_app.patches.p2_product_growth_schema
+pet_app.patches.p1_5_notification_engine_schema
+pet_app.patches.p0_5_medical_core_schema
+pet_app.patches.healthcare_practitioner_migration
+pet_app.patches.remove_healthcare_patient_bridge
+pet_app.patches.visit_case_choice_schema
+pet_app.patches.pet_breed_master
+pet_app.patches.lab_flow_read_dependencies
+pet_app.patches.operational_healthcare_roles
+pet_app.patches.remove_legacy_permission_doctypes
+pet_app.patches.refresh_operational_role_dependencies
+pet_app.patches.align_testing_role_profiles
+pet_app.patches.migrate_approved_role_docperms
+pet_app.patches.add_service_provider_profile
+pet_app.patches.service_provider_manager_permissions
+pet_app.patches.enforce_iqd_defaults
+pet_app.patches.cleanup_legacy_roles
+pet_app.patches.create_pet_app_sidebar_config
+pet_app.patches.fix_cat_grooming_weight_range
+pet_app.patches.backfill_pet_care_service_category
+pet_app.patches.disable_test_care_service_billing_option

@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "category_name",
+  "active",
   "description"
  ],
  "fields": [
@@ -23,16 +24,23 @@
    "label": "Name",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-10 16:49:38.414104",
- "modified_by": "Administrator",
+ "modified": "2026-05-22 17:43:29.444872",
+ "modified_by": "alifaazali@gmail.com",
  "module": "Pet App",
  "name": "CategoryCareServices",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -50,7 +58,9 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
+ "search_fields": "category_name",
  "sort_field": "creation",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "category_name"
 }

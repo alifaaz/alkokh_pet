@@ -11,7 +11,7 @@
   "pet",
   "guardian",
   "customer",
-  "gurdian_name",
+  "guardian_name",
   "pet_name",
   "column_break_room",
   "boarding_type",
@@ -26,6 +26,7 @@
   "billing_section",
   "total_cost",
   "deposit",
+  "deposit_payment_entry",
   "balance",
   "column_break_billing",
   "billing_status",
@@ -162,6 +163,14 @@
    "label": "Deposit"
   },
   {
+   "fieldname": "deposit_payment_entry",
+   "fieldtype": "Link",
+   "label": "Deposit Payment Entry",
+   "no_copy": 1,
+   "options": "Payment Entry",
+   "read_only": 1
+  },
+  {
    "fieldname": "balance",
    "fieldtype": "Currency",
    "label": "Balance",
@@ -206,7 +215,7 @@
   },
   {
    "fetch_from": "guardian.full_name",
-   "fieldname": "gurdian_name",
+   "fieldname": "guardian_name",
    "fieldtype": "Data",
    "read_only": 1
   },
@@ -269,18 +278,6 @@
    "report": 1,
    "role": "Desk User",
    "share": 1
-  },
-  {
-   "create": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "Healthcare Practitioner",
-   "share": 1,
-   "submit": 1,
-   "write": 1
   }
  ],
  "row_format": "Dynamic",

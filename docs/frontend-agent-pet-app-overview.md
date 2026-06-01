@@ -612,7 +612,7 @@ Use a clinic operations mindset:
 
 - Make lists dense, searchable, and paginated.
 - Keep clinical screens focused and readable.
-- Put patient context in headers: pet, owner, species/type, age, weight, status.
+- Put pet context in headers: pet, owner, species/type, age, weight, status.
 - Use clear status badges.
 - Use action buttons only for valid transitions.
 - Keep billing visible but secondary in clinical workflows.

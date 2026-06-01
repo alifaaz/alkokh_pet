@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"alkohk_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Alkohk</span>\",\"col\":12}},{\"id\":\"alkohk_para\",\"type\":\"paragraph\",\"data\":{\"text\":\"Mapped workspace for pet operations, veterinary flow, pricing, and settings.\",\"col\":12}},{\"id\":\"alkohk_shortcut_dashboard\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Alkohk Dashboard\",\"col\":3}},{\"id\":\"alkohk_shortcut_case_sheet\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Vet Case Sheet\",\"col\":3}},{\"id\":\"alkohk_shortcut_visit\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Vet Visit\",\"col\":3}},{\"id\":\"alkohk_shortcut_pet\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Pet\",\"col\":3}},{\"id\":\"alkohk_spacer_1\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_shortcut_service\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"CareService\",\"col\":3}},{\"id\":\"alkohk_shortcut_product\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Product\",\"col\":3}},{\"id\":\"alkohk_shortcut_sales_invoice\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Sales Invoice\",\"col\":3}},{\"id\":\"alkohk_shortcut_workspace\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Workspace\",\"col\":3}},{\"id\":\"alkohk_spacer_2\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_card_vet\",\"type\":\"card\",\"data\":{\"card_name\":\"Veterinary Operations\",\"col\":4}},{\"id\":\"alkohk_card_registry\",\"type\":\"card\",\"data\":{\"card_name\":\"Pet Registry\",\"col\":4}},{\"id\":\"alkohk_card_services\",\"type\":\"card\",\"data\":{\"card_name\":\"Services and Pricing\",\"col\":4}},{\"id\":\"alkohk_spacer_3\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_card_sales\",\"type\":\"card\",\"data\":{\"card_name\":\"Catalog and Sales\",\"col\":4}},{\"id\":\"alkohk_card_settings\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings and Control\",\"col\":4}},{\"id\":\"alkohk_card_healthcare\",\"type\":\"card\",\"data\":{\"card_name\":\"Healthcare Bridge\",\"col\":4}}]",
+ "content": "[{\"id\":\"alkohk_header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Alkohk</span>\",\"col\":12}},{\"id\":\"alkohk_para\",\"type\":\"paragraph\",\"data\":{\"text\":\"Mapped workspace for pet operations, veterinary flow, pricing, and settings.\",\"col\":12}},{\"id\":\"alkohk_shortcut_dashboard\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Alkohk Dashboard\",\"col\":3}},{\"id\":\"alkohk_shortcut_case_sheet\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Vet Case Sheet\",\"col\":3}},{\"id\":\"alkohk_shortcut_visit\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Vet Visit\",\"col\":3}},{\"id\":\"alkohk_shortcut_pet\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Pet\",\"col\":3}},{\"id\":\"alkohk_spacer_1\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_shortcut_service\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"CareService\",\"col\":3}},{\"id\":\"alkohk_shortcut_product\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Product\",\"col\":3}},{\"id\":\"alkohk_shortcut_sales_invoice\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Sales Invoice\",\"col\":3}},{\"id\":\"alkohk_shortcut_workspace\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Workspace\",\"col\":3}},{\"id\":\"alkohk_spacer_2\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_card_vet\",\"type\":\"card\",\"data\":{\"card_name\":\"Veterinary Operations\",\"col\":4}},{\"id\":\"alkohk_card_registry\",\"type\":\"card\",\"data\":{\"card_name\":\"Pet Registry\",\"col\":4}},{\"id\":\"alkohk_card_services\",\"type\":\"card\",\"data\":{\"card_name\":\"Services and Pricing\",\"col\":4}},{\"id\":\"alkohk_spacer_3\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"alkohk_card_sales\",\"type\":\"card\",\"data\":{\"card_name\":\"Catalog and Sales\",\"col\":4}},{\"id\":\"alkohk_card_settings\",\"type\":\"card\",\"data\":{\"card_name\":\"Settings and Control\",\"col\":4}},{\"id\":\"alkohk_card_admin\",\"type\":\"card\",\"data\":{\"card_name\":\"Admin Tools\",\"col\":4}}]",
  "creation": "2026-03-28 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -15,7 +15,7 @@
   {
    "hidden": 0,
    "label": "Veterinary Operations",
-   "link_count": 4,
+   "link_count": 3,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -40,14 +40,6 @@
    "hidden": 0,
    "label": "Healthcare Practitioner",
    "link_to": "Healthcare Practitioner",
-   "link_type": "DocType",
-   "onboard": 0,
-   "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "label": "Patient Encounter",
-   "link_to": "Patient Encounter",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
@@ -94,8 +86,8 @@
   },
   {
    "hidden": 0,
-   "label": "Patient",
-   "link_to": "Patient",
+   "label": "Pet Medical Profile",
+   "link_to": "Pet Medical Profile",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"
@@ -254,7 +246,7 @@
   },
   {
    "hidden": 0,
-   "label": "Healthcare Bridge",
+   "label": "Admin Tools",
    "link_count": 3,
    "link_type": "DocType",
    "onboard": 0,

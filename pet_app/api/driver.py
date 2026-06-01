@@ -8,6 +8,8 @@ from frappe.utils import cstr, today, validate_email_address
 from frappe.utils.password import update_password
 
 from pet_app.api.auth_mobile import create_api_keys, validate_iraqi_phone
+from pet_app.api.permissions import require_doctype_permission
+from pet_app.api.response import standardize_response
 
 COMPANY = "HM"
 DRIVER_CASH_PARENT = "Cash In Hand - H"
@@ -415,6 +417,7 @@ def on_driver_update(doc, method=None):
 
 
 @frappe.whitelist()
+@standardize_response
 def create_driver(
     full_name,
     phone,
@@ -525,6 +528,11 @@ def _journal_entry_exists(*remarks):
     return bool(frappe.db.exists("Journal Entry", {"user_remark": filter_value, "docstatus": 1}))
 
 
+def _require_journal_entry_create_submit():
+    require_doctype_permission("Journal Entry", "create")
+    require_doctype_permission("Journal Entry", "submit")
+
+
 def _clear_cash_account_party(je, cash_account):
     for row in je.accounts:
         if row.account == cash_account:
@@ -549,6 +557,7 @@ def _create_driver_debit_entry(doc):
         )
         return
 
+    _require_journal_entry_create_submit()
     je = frappe.get_doc({
         "doctype": "Journal Entry",
         "voucher_type": "Journal Entry",
@@ -596,6 +605,7 @@ def _collect_driver_cash(doc):
         )
         return
 
+    _require_journal_entry_create_submit()
     je = frappe.get_doc({
         "doctype": "Journal Entry",
         "voucher_type": "Cash Entry",
@@ -638,6 +648,7 @@ def _reverse_driver_entry(doc):
         )
         return
 
+    _require_journal_entry_create_submit()
     je = frappe.get_doc({
         "doctype": "Journal Entry",
         "voucher_type": "Journal Entry",
@@ -667,6 +678,7 @@ def _reverse_driver_entry(doc):
 
 
 @frappe.whitelist()
+@standardize_response
 def delete_driver(driver_id):
     _check_permission()
 
@@ -709,6 +721,7 @@ def delete_driver(driver_id):
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
+@standardize_response
 @rate_limit(limit=DRIVER_LOGIN_RATE_LIMIT, seconds=DRIVER_LOGIN_RATE_WINDOW, methods=["POST"])
 def driver_login(phone, password):
     # Endpoint-level throttling is enforced via Frappe's built-in rate limiter above.
@@ -756,6 +769,7 @@ def driver_login(phone, password):
 
 
 @frappe.whitelist()
+@standardize_response
 def get_driver_balance(driver_id):
     if not driver_id:
         frappe.throw(_("Driver is required."))

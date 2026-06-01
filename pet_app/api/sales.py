@@ -6,13 +6,17 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, getdate, nowdate
 
+from pet_app.api.link_aliases import with_link_aliases
+from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
+from pet_app.api.response import standardize_response
 
 INVOICE_CREATION_ROLES = {
     "System Manager",
     "Accounts Manager",
     "Accounts User",
     "Accounting",
+    "Healthcare Practitioner",
     "Doctor",
     "Healthcare",
     "POS",
@@ -20,13 +24,7 @@ INVOICE_CREATION_ROLES = {
 
 
 def _validate_invoice_permission():
-    if frappe.session.user == "Administrator":
-        return
-    user_roles = set(frappe.get_roles(frappe.session.user) or [])
-    if user_roles.isdisjoint(INVOICE_CREATION_ROLES):
-        raise frappe.PermissionError(_("Not permitted to create Sales Invoice."))
-    if not frappe.has_permission("Sales Invoice", ptype="create"):
-        raise frappe.PermissionError(_("Not permitted to create Sales Invoice."))
+    require_doctype_permission("Sales Invoice", "create")
 
 
 def _get_item_rate(item_code: str):
@@ -66,6 +64,7 @@ def _validate_pos_profile(pos_profile: str | None):
 
 
 @frappe.whitelist()
+@standardize_response
 def create_sales_invoice_for_guardian(
     guardian,
     items,
@@ -86,6 +85,9 @@ def create_sales_invoice_for_guardian(
 
     items = _coerce_items(items)
     _validate_pos_profile(pos_profile)
+    if pos_profile:
+        require_doctype_permission("POS Profile", "read")
+    require_restriction_value("cashier_profile", pos_profile)
 
     if not items:
         frappe.throw(_("At least one item is required."))
@@ -146,9 +148,10 @@ def create_sales_invoice_for_guardian(
         created_by=frappe.session.user,
     )
 
-    return {
+    response = {
         "sales_invoice": invoice.name,
         "guardian": guardian_row.get("name"),
         "guardian_reference_field": guardian_field,
         "customer": customer_id,
     }
+    return with_link_aliases(response, guardian_field="guardian", include_pet=False, include_doctor=False, include_provider=False)

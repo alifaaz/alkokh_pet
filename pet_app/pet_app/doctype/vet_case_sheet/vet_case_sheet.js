@@ -77,6 +77,6 @@ function can_start_visit(frm) {
 		frappe.model.can_create("Vet Visit") &&
 		frm.doc.docstatus === 0 &&
 		!frm.doc.vet_visit &&
-		["Draft", "Waiting Doctor"].includes(frm.doc.status)
+		["Draft", "Waiting Practitioner"].includes(frm.doc.status)
 	);
 }

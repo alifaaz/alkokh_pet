@@ -7,7 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "care_service_id",
-  "pet_care_service_id"
+  "pet_care_service_id",
+  "status"
  ],
  "fields": [
   {
@@ -21,6 +22,13 @@
    "fieldtype": "Link",
    "label": "care service id",
    "options": "CareService template"
+  },
+  {
+   "default": "Active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Active\nCancelled"
   }
  ],
  "grid_page_length": 50,

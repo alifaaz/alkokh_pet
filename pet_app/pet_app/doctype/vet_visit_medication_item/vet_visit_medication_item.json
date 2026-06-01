@@ -14,7 +14,19 @@
   "dosage",
   "frequency",
   "duration_days",
-  "instructions"
+  "instructions",
+  "dispense_section",
+  "warehouse",
+  "dispense_status",
+  "dispensed_qty",
+  "return_qty",
+  "column_break_dispense",
+  "dispensed_by",
+  "dispensed_at",
+  "batch_no",
+  "expiry_date",
+  "stock_entry",
+  "sales_invoice_item"
  ],
  "fields": [
   {
@@ -76,6 +88,79 @@
    "fieldtype": "Link",
    "label": "Medication",
    "options": "Medication"
+  },
+  {
+   "fieldname": "dispense_section",
+   "fieldtype": "Section Break",
+   "label": "Dispense"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "default": "Prescribed",
+   "fieldname": "dispense_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Dispense Status",
+   "options": "Prescribed\nPending Dispense\nDispensed\nPartially Dispensed\nCancelled\nReturned"
+  },
+  {
+   "default": "0",
+   "fieldname": "dispensed_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Dispensed Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "return_qty",
+   "fieldtype": "Float",
+   "label": "Return Qty"
+  },
+  {
+   "fieldname": "column_break_dispense",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "dispensed_by",
+   "fieldtype": "Link",
+   "label": "Dispensed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dispensed_at",
+   "fieldtype": "Datetime",
+   "label": "Dispensed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "label": "Batch No"
+  },
+  {
+   "fieldname": "expiry_date",
+   "fieldtype": "Date",
+   "label": "Expiry Date"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_invoice_item",
+   "fieldtype": "Data",
+   "label": "Sales Invoice Item",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,

@@ -1,0 +1,63 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-05-19 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "question_key",
+  "question_text",
+  "required",
+  "sort_order",
+  "help_text"
+ ],
+ "fields": [
+  {
+   "fieldname": "question_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Question Key"
+  },
+  {
+   "fieldname": "question_text",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Question Text",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "required",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Required"
+  },
+  {
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Sort Order"
+  },
+  {
+   "fieldname": "help_text",
+   "fieldtype": "Small Text",
+   "label": "Help Text"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Rating Questionnaire Question",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

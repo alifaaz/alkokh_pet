@@ -71,8 +71,7 @@
    "fieldname": "item_code",
    "fieldtype": "Link",
    "label": "Item code",
-   "options": "Item",
-   "read_only": 1
+   "options": "Item"
   },
   {
    "fieldname": "column_break_wbjw",
@@ -126,11 +125,11 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-27 00:55:43.489441",
+ "modified": "2026-05-19 01:09:39.725217",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CareService template",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

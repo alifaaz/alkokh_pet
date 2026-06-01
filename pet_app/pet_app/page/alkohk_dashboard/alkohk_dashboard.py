@@ -6,6 +6,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from pet_app.api.dashboard import _require_analytics_access
+from pet_app.api.response import standardize_response
 
 
 HERO_METRICS = (
@@ -66,7 +67,7 @@ SECTION_CONFIG = (
 				"label": "Vet Case Sheet",
 				"kind": "DocType",
 				"target": "Vet Case Sheet",
-				"description": "Structured intake and triage form used before the doctor encounter.",
+				"description": "Structured intake and triage form used before the practitioner encounter.",
 				"icon": "es-line-file",
 				"accent": "leaf",
 			},
@@ -74,7 +75,7 @@ SECTION_CONFIG = (
 				"label": "Vet Visit",
 				"kind": "DocType",
 				"target": "Vet Visit",
-				"description": "Doctor encounter with assessment, plan, and billing workflow.",
+				"description": "Practitioner encounter with assessment, plan, and billing workflow.",
 				"icon": "es-line-clipboard",
 				"accent": "berry",
 			},
@@ -82,23 +83,15 @@ SECTION_CONFIG = (
 				"label": "Healthcare Practitioner",
 				"kind": "DocType",
 				"target": "Healthcare Practitioner",
-				"description": "Practitioner master linked to the visit doctor field and healthcare flows.",
+				"description": "Practitioner master linked to clinical visit fields and healthcare flows.",
 				"icon": "es-line-user",
 				"accent": "lagoon",
-			},
-			{
-				"label": "Patient Encounter",
-				"kind": "DocType",
-				"target": "Patient Encounter",
-				"description": "Existing healthcare encounter model with invoice integration already active in hooks.",
-				"icon": "es-line-document",
-				"accent": "sun",
 			},
 		),
 	},
 	{
 		"title": "Pet Registry",
-		"subtitle": "Core records connecting pets, guardians, requests, and patients.",
+		"subtitle": "Core records connecting pets, guardians, requests, and medical profiles.",
 		"tone": "lagoon",
 		"items": (
 			{
@@ -134,10 +127,10 @@ SECTION_CONFIG = (
 				"accent": "leaf",
 			},
 			{
-				"label": "Patient",
+				"label": "Pet Medical Profile",
 				"kind": "DocType",
-				"target": "Patient",
-				"description": "Healthcare patient record created from the pet and guardian relationship.",
+				"target": "Pet Medical Profile",
+				"description": "Pet clinical summary with alerts, notes, and latest visit snapshot.",
 				"icon": "es-line-id-card",
 				"accent": "lagoon",
 			},
@@ -199,7 +192,7 @@ SECTION_CONFIG = (
 				"label": "Product",
 				"kind": "DocType",
 				"target": "Product",
-				"description": "Custom product master synchronized with ERPNext Item, Item Price, and Website Item.",
+				"description": "Custom product master synchronized with ERPNext Item and Item Price.",
 				"icon": "es-line-tag",
 				"accent": "berry",
 			},
@@ -310,6 +303,7 @@ EMBEDDED_MODELS = (
 
 
 @frappe.whitelist()
+@standardize_response
 def get_dashboard_payload() -> dict:
 	_require_analytics_access()
 

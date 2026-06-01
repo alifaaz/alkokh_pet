@@ -1,0 +1,270 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "PROC-.#####",
+ "creation": "2026-05-02 00:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "procedure_info_section",
+  "visit",
+  "order_id",
+  "pet",
+  "guardian",
+  "doctor",
+  "provider",
+  "procedure_template",
+  "care_service",
+  "item_code",
+  "rate",
+  "status",
+  "schedule_section",
+  "scheduled_at",
+  "started_at",
+  "completed_at",
+  "closed_at",
+  "clinical_section",
+  "indication",
+  "consent_obtained",
+  "anesthesia_used",
+  "checklist_section",
+  "checklist",
+  "documentation_section",
+  "procedure_note",
+  "findings",
+  "outcome",
+  "complications",
+  "aftercare_instructions"
+ ],
+ "fields": [
+  {
+   "fieldname": "procedure_info_section",
+   "fieldtype": "Section Break",
+   "label": "Procedure Info"
+  },
+  {
+   "fieldname": "visit",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Visit",
+   "options": "Vet Visit",
+   "reqd": 1
+  },
+  {
+   "fieldname": "order_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Order ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Guardian",
+   "options": "Guardian"
+  },
+  {
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Healthcare Practitioner",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "fieldname": "provider",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Provider",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "fieldname": "procedure_template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Procedure Template",
+   "options": "Procedure Template",
+   "reqd": 1
+  },
+  {
+   "fieldname": "care_service",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Care Service",
+   "options": "CareService template",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Rate",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nIn Progress\nCompleted\nClosed\nCancelled",
+   "reqd": 1
+  },
+  {
+   "fieldname": "schedule_section",
+   "fieldtype": "Section Break",
+   "label": "Schedule"
+  },
+  {
+   "fieldname": "scheduled_at",
+   "fieldtype": "Datetime",
+   "in_standard_filter": 1,
+   "label": "Scheduled At"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "closed_at",
+   "fieldtype": "Datetime",
+   "label": "Closed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "clinical_section",
+   "fieldtype": "Section Break",
+   "label": "Clinical"
+  },
+  {
+   "fieldname": "indication",
+   "fieldtype": "Small Text",
+   "label": "Indication"
+  },
+  {
+   "default": "0",
+   "fieldname": "consent_obtained",
+   "fieldtype": "Check",
+   "label": "Consent Obtained"
+  },
+  {
+   "default": "0",
+   "fieldname": "anesthesia_used",
+   "fieldtype": "Check",
+   "label": "Anesthesia Used"
+  },
+  {
+   "fieldname": "checklist_section",
+   "fieldtype": "Section Break",
+   "label": "Checklist"
+  },
+  {
+   "fieldname": "checklist",
+   "fieldtype": "Table",
+   "label": "Checklist",
+   "options": "Procedure Checklist Item"
+  },
+  {
+   "fieldname": "documentation_section",
+   "fieldtype": "Section Break",
+   "label": "Documentation"
+  },
+  {
+   "fieldname": "procedure_note",
+   "fieldtype": "Text Editor",
+   "label": "Procedure Note"
+  },
+  {
+   "fieldname": "findings",
+   "fieldtype": "Text Editor",
+   "label": "Findings"
+  },
+  {
+   "fieldname": "outcome",
+   "fieldtype": "Small Text",
+   "label": "Outcome"
+  },
+  {
+   "fieldname": "complications",
+   "fieldtype": "Small Text",
+   "label": "Complications"
+  },
+  {
+   "fieldname": "aftercare_instructions",
+   "fieldtype": "Text Editor",
+   "label": "Aftercare Instructions"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-19 06:50:51.788488",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Procedure",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Desk User",
+   "share": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "visit,pet,doctor,procedure_template,care_service",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "procedure_template",
+ "track_changes": 1
+}

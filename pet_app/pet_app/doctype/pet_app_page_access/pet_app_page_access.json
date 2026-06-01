@@ -1,0 +1,86 @@
+{
+ "actions": [],
+ "creation": "2026-05-15 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "page_key",
+  "label",
+  "module_key",
+  "page_doctype",
+  "enabled",
+  "paths_json",
+  "path_prefixes_json",
+  "route_names_json",
+  "roles_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "page_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Page Key",
+   "reqd": 1
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Label"
+  },
+  {
+   "fieldname": "module_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Module Key"
+  },
+  {
+   "fieldname": "page_doctype",
+   "fieldtype": "Data",
+   "label": "DocType"
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "paths_json",
+   "fieldtype": "Long Text",
+   "label": "Paths JSON"
+  },
+  {
+   "fieldname": "path_prefixes_json",
+   "fieldtype": "Long Text",
+   "label": "Path Prefixes JSON"
+  },
+  {
+   "fieldname": "route_names_json",
+   "fieldtype": "Long Text",
+   "label": "Route Names JSON"
+  },
+  {
+   "fieldname": "roles_json",
+   "fieldtype": "Long Text",
+   "label": "Roles JSON"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-15 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet App Page Access",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

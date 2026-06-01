@@ -4,6 +4,7 @@ import json
 
 import frappe
 from frappe import _
+from pet_app.api.response import standardize_response
 
 
 ACCOUNTING_ROLES = {"System Manager", "Accounts Manager", "Accounts User", "Accounting"}
@@ -83,6 +84,7 @@ def _settings_payload(doc) -> dict:
 
 
 @frappe.whitelist()
+@standardize_response
 def get_accounting_settings():
 	_require_accounting_user()
 	_ensure_settings_doctype()
@@ -91,6 +93,7 @@ def get_accounting_settings():
 
 
 @frappe.whitelist()
+@standardize_response
 def update_accounting_settings(data=None, **kwargs):
 	_require_accounting_user()
 	_ensure_settings_doctype()

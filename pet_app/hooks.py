@@ -16,8 +16,7 @@ app_license = "mit"
 # 		"name": "pet_app",
 # 		"logo": "/assets/pet_app/logo.png",
 # 		"title": "Pet App",
-# 		"route": "/pet_app",
-# 		"has_permission": "pet_app.api.permission.has_app_permission"
+# 		"route": "/pet_app"
 # 	}
 # ]
 
@@ -86,7 +85,8 @@ app_license = "mit"
 # ------------
 
 # before_install = "pet_app.install.before_install"
-# after_install = "pet_app.install.after_install"
+after_install = "pet_app.install.after_install"
+after_migrate = "pet_app.patches.enforce_iqd_defaults.ensure_iqd_defaults"
 
 # Uninstallation
 # ------------
@@ -124,6 +124,10 @@ app_license = "mit"
 # 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
 # }
 #
+permission_query_conditions = {
+    "PetCareService": "pet_app.permissions.petcareservice.get_permission_query_conditions",
+}
+
 # has_permission = {
 # 	"Event": "frappe.desk.doctype.event.event.has_permission",
 # }
@@ -135,12 +139,6 @@ app_license = "mit"
 # Document Events - Auto Folder Creation
 # ═══════════════════════════════════════════════════════════════════
 
-doc_events = {
-	"Vet Visit": {
-		"on_update": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
-		"on_trash": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
-	}
-}
 
 # Scheduled Tasks
 # ---------------
@@ -166,7 +164,7 @@ doc_events = {
 # Testing
 # -------
 
-# before_tests = "pet_app.install.before_tests"
+before_tests = "pet_app.tests.bootstrap.before_tests"
 
 # Extend DocType Class
 # ------------------------------
@@ -201,7 +199,7 @@ doc_events = {
 
 # Request Events
 # ----------------
-# before_request = ["pet_app.utils.before_request"]
+before_request = ["pet_app.api.auth_api.set_cors_for_oauth_token_endpoint"]
 # after_request = ["pet_app.utils.after_request"]
 
 # Job Events
@@ -249,9 +247,33 @@ doc_events = {
 
 
 doc_events = {
+    "User": {
+        "before_validate": "pet_app.utils.role_profiles.before_validate_user_role_profiles",
+        "before_save": "pet_app.utils.role_profiles.before_save_user_role_profiles",
+    },
+    "Vet Visit": {
+        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+        "on_update": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
+        "on_trash": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
+    },
     "Appointment": {
-        "before_insert": "pet_app.utils.appointment.link_appointment_identity",
+        "before_insert": [
+            "pet_app.utils.appointment.link_appointment_identity",
+            "pet_app.utils.mortality.validate_document_not_deceased",
+        ],
         "validate": "pet_app.utils.appointment.link_appointment_identity",
+    },
+    "Vet Case Sheet": {
+        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+    },
+    "Pet Boarding": {
+        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+    },
+    "PetCareService": {
+        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+    },
+    "Pet Procedure": {
+        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
     },
     "Sales Order": {
         "before_update_after_submit": "pet_app.api.order.before_sales_order_update",
@@ -260,6 +282,7 @@ doc_events = {
     "Sales Invoice": {
         "before_insert": "pet_app.utils.sales_invoice_guard.before_insert",
         "on_cancel": "pet_app.utils.visit_billing.on_sales_invoice_cancel",
+        "validate": "pet_app.utils.sales_invoice_guard.fix_due_date",
     },
     "Product": {
         "after_insert": "pet_app.api.product.sync_product_item",
@@ -276,7 +299,8 @@ doc_events = {
         "before_save": "pet_app.api.product.before_save"
     },
     "Item Group": {
-        "before_save": "pet_app.api.product.before_save"
+        "before_save": "pet_app.api.product.before_save",
+        "after_insert": "pet_app.pet_app.doctype.product_category.product_category.sync_product_category_for_item_group",
     },
     "Supplier": {
         "before_save": [
@@ -304,15 +328,23 @@ doc_events = {
 
 
 scheduler_events = {
+    "all": [
+        "pet_app.notifications.scheduler.enqueue_due_reminders",
+        "pet_app.notifications.retry.retry_failed_notifications",
+    ],
     "hourly": [
         "pet_app.api.product.repair_active_product_item_projections",
+        "pet_app.tasks.reminders.enqueue_due_reminders",
     ],
     "daily": [
         "pet_app.api.product.repair_all_product_item_projections",
+        "pet_app.tasks.reminders.send_due_reminders",
+        "pet_app.notifications.scheduler.create_daily_reminders",
+        "pet_app.notifications.scheduler.cleanup_old_webhook_events",
     ],
+    
 }
 
-    
 # ملاحظة مهمة:
 # الـ before_save للـ sync (auto_update_links.before_save) لازم يشتغل.
 # إذا عندك before_save وحدة بس في hooks — حوّله لـ list:
@@ -326,13 +358,19 @@ scheduler_events = {
 #     "after_rename": "pet_app.utils.auto_update_links.after_rename",
 # },
 fixtures = [
+    # DocTypes
+    {
+        "dt": "DocType",
+        "filters": [["name", "in", ["Pet App Sidebar Config"]]],
+    },
+
     # Custom Fields
     {
         "dt": "Custom Field",
         "filters": [["dt", "in", [
             "Address", "Appointment", "Communication", "Contact", "Coupon Code",
             "Driver", "Email Account", "File", "GoCardless Mandate", "Item",
-            "Item Group", "Patient", "Patient Encounter", "Payment Entry",
+            "Item Group", "Payment Entry",
             "POS Profile", "Print Settings", "Sales Invoice", "Sales Order",
             "Stock Entry", "UTM Campaign", "Web Form",
         ]]],
@@ -345,7 +383,7 @@ fixtures = [
             "Address", "Appointment", "Clinical Procedure Item", "Coupon Code",
             "Customer", "Delivery Note", "Delivery Note Item", "Driver", "Item",
             "Item Barcode", "Item Group", "Job Card", "Material Request",
-            "Packed Item", "Patient", "Patient Encounter", "Pick List",
+            "Packed Item", "Pick List",
             "POS Invoice", "POS Invoice Item", "Purchase Invoice",
             "Purchase Invoice Item", "Purchase Order", "Purchase Receipt",
             "Purchase Receipt Item", "Quotation", "Sales Invoice",
@@ -355,11 +393,6 @@ fixtures = [
         ]]],
     },
 
-    # Server Scripts
-    {
-        "dt": "Server Script",
-        "filters": [["name", "in", ["Auto Create Item For CareService"]]],
-    },
 
     # Workflow
     {

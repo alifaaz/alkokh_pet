@@ -1,0 +1,382 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:pet",
+ "creation": "2026-05-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "pet",
+  "active",
+  "primary_guardian",
+  "customer",
+  "healthcare_patient",
+  "profile_status",
+  "current_clinical_status",
+  "current_case_status",
+  "clinical_priority",
+  "risk_level",
+  "active_care_episode",
+  "current_visit",
+  "current_case_sheet",
+  "current_doctor",
+  "active_problem_summary",
+  "active_diagnosis_summary",
+  "active_treatment_summary",
+  "active_medication_summary",
+  "pending_orders_summary",
+  "treatment_plan_status",
+  "next_follow_up_date",
+  "follow_up_status",
+  "last_visit",
+  "last_completed_visit",
+  "last_visit_date",
+  "last_doctor",
+  "last_weight",
+  "last_temperature",
+  "last_heart_rate",
+  "last_respiratory_rate",
+  "last_vitals_at",
+  "microchip_no",
+  "alerts_section",
+  "allergies",
+  "chronic_conditions",
+  "special_alerts",
+  "contraindications",
+  "notes_section",
+  "diet_notes",
+  "behavior_notes",
+  "vaccination_status",
+  "deworming_status",
+  "vaccination_notes",
+  "deworming_notes",
+  "is_deceased",
+  "death_record",
+  "death_date",
+  "last_synced_from_doctype",
+  "last_synced_from_name",
+  "last_synced_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "fieldname": "primary_guardian",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Primary Guardian",
+   "options": "Guardian"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "description": "Legacy external patient link. Pet is the clinical patient in pet-app flows.",
+   "fieldname": "healthcare_patient",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Legacy External Patient",
+   "options": "Patient",
+   "read_only": 1
+  },
+  {
+   "fieldname": "profile_status",
+   "fieldtype": "Select",
+   "label": "Profile Status",
+   "options": "Active\nInactive\nArchived\nDeceased",
+   "default": "Active",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "current_clinical_status",
+   "fieldtype": "Select",
+   "label": "Current Clinical Status",
+   "options": "No Active Case\nWaiting Intake\nWaiting Doctor\nIn Consultation\nUnder Diagnosis\nPending Lab / Imaging\nUnder Treatment\nMonitoring\nFollow-up Scheduled\nFollow-up Due\nStable\nCritical\nReferred\nBoarding Medical Care\nResolved\nDeceased",
+   "default": "No Active Case",
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "current_case_status",
+   "fieldtype": "Select",
+   "label": "Current Case Status",
+   "options": "No Active Case\nOpen\nUnder Diagnosis\nPending Diagnostics\nUnder Treatment\nMonitoring\nFollow-up Scheduled\nFollow-up Due\nReferred\nResolved\nClosed\nDeceased",
+   "default": "No Active Case",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "clinical_priority",
+   "fieldtype": "Select",
+   "label": "Clinical Priority",
+   "options": "\nLow\nNormal\nImportant\nUrgent\nEmergency\nCritical"
+  },
+  {
+   "fieldname": "risk_level",
+   "fieldtype": "Select",
+   "label": "Risk Level",
+   "options": "\nLow\nMedium\nHigh\nCritical"
+  },
+  {
+   "fieldname": "active_care_episode",
+   "fieldtype": "Link",
+   "label": "Active Care Episode",
+   "options": "Pet Care Episode"
+  },
+  {
+   "fieldname": "current_visit",
+   "fieldtype": "Link",
+   "label": "Current Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "current_case_sheet",
+   "fieldtype": "Link",
+   "label": "Current Case Sheet",
+   "options": "Vet Case Sheet"
+  },
+  {
+   "fieldname": "current_doctor",
+   "fieldtype": "Link",
+   "label": "Current Doctor",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "fieldname": "active_problem_summary",
+   "fieldtype": "Small Text",
+   "label": "Active Problem Summary"
+  },
+  {
+   "fieldname": "active_diagnosis_summary",
+   "fieldtype": "Small Text",
+   "label": "Active Diagnosis Summary"
+  },
+  {
+   "fieldname": "active_treatment_summary",
+   "fieldtype": "Small Text",
+   "label": "Active Treatment Summary"
+  },
+  {
+   "fieldname": "active_medication_summary",
+   "fieldtype": "Small Text",
+   "label": "Active Medication Summary"
+  },
+  {
+   "fieldname": "pending_orders_summary",
+   "fieldtype": "Small Text",
+   "label": "Pending Orders Summary"
+  },
+  {
+   "fieldname": "treatment_plan_status",
+   "fieldtype": "Select",
+   "label": "Treatment Plan Status",
+   "options": "No Active Plan\nDraft\nActive\nPartially Completed\nWaiting Diagnostics\nWaiting Follow-up\nCompleted\nStopped\nChanged\nExpired\nCancelled",
+   "default": "No Active Plan"
+  },
+  {
+   "fieldname": "next_follow_up_date",
+   "fieldtype": "Date",
+   "label": "Next Follow-up Date"
+  },
+  {
+   "fieldname": "follow_up_status",
+   "fieldtype": "Data",
+   "label": "Follow-up Status"
+  },
+  {
+   "fieldname": "last_visit",
+   "fieldtype": "Link",
+   "label": "Last Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "last_completed_visit",
+   "fieldtype": "Link",
+   "label": "Last Completed Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "last_visit_date",
+   "fieldtype": "Datetime",
+   "label": "Last Visit Date"
+  },
+  {
+   "fieldname": "last_doctor",
+   "fieldtype": "Link",
+   "label": "Last Doctor",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "fieldname": "last_weight",
+   "fieldtype": "Float",
+   "label": "Last Weight"
+  },
+  {
+   "fieldname": "last_temperature",
+   "fieldtype": "Float",
+   "label": "Last Temperature"
+  },
+  {
+   "fieldname": "last_heart_rate",
+   "fieldtype": "Int",
+   "label": "Last Heart Rate"
+  },
+  {
+   "fieldname": "last_respiratory_rate",
+   "fieldtype": "Int",
+   "label": "Last Respiratory Rate"
+  },
+  {
+   "fieldname": "last_vitals_at",
+   "fieldtype": "Datetime",
+   "label": "Last Vitals At"
+  },
+  {
+   "fieldname": "microchip_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Microchip No"
+  },
+  {
+   "fieldname": "alerts_section",
+   "fieldtype": "Section Break",
+   "label": "Alerts"
+  },
+  {
+   "fieldname": "allergies",
+   "fieldtype": "Small Text",
+   "label": "Allergies"
+  },
+  {
+   "fieldname": "chronic_conditions",
+   "fieldtype": "Small Text",
+   "label": "Chronic Conditions"
+  },
+  {
+   "fieldname": "special_alerts",
+   "fieldtype": "Small Text",
+   "label": "Special Alerts"
+  },
+  {
+   "fieldname": "contraindications",
+   "fieldtype": "Small Text",
+   "label": "Contraindications"
+  },
+  {
+   "fieldname": "notes_section",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "diet_notes",
+   "fieldtype": "Small Text",
+   "label": "Diet Notes"
+  },
+  {
+   "fieldname": "behavior_notes",
+   "fieldtype": "Small Text",
+   "label": "Behavior Notes"
+  },
+  {
+   "fieldname": "vaccination_status",
+   "fieldtype": "Data",
+   "label": "Vaccination Status"
+  },
+  {
+   "fieldname": "deworming_status",
+   "fieldtype": "Data",
+   "label": "Deworming Status"
+  },
+  {
+   "fieldname": "vaccination_notes",
+   "fieldtype": "Small Text",
+   "label": "Vaccination Notes"
+  },
+  {
+   "fieldname": "deworming_notes",
+   "fieldtype": "Small Text",
+   "label": "Deworming Notes"
+  },
+  {
+   "fieldname": "is_deceased",
+   "fieldtype": "Check",
+   "label": "Is Deceased"
+  },
+  {
+   "fieldname": "death_record",
+   "fieldtype": "Link",
+   "label": "Death Record",
+   "options": "Pet Death Record"
+  },
+  {
+   "fieldname": "death_date",
+   "fieldtype": "Date",
+   "label": "Death Date"
+  },
+  {
+   "fieldname": "last_synced_from_doctype",
+   "fieldtype": "Link",
+   "label": "Last Synced From DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "last_synced_from_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Last Synced From Name",
+   "options": "last_synced_from_doctype"
+  },
+  {
+   "fieldname": "last_synced_at",
+   "fieldtype": "Datetime",
+   "label": "Last Synced At"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Medical Profile",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "pet",
+ "track_changes": 1
+}

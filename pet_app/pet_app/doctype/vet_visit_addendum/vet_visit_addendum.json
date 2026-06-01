@@ -1,0 +1,176 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "VVA-.YYYY.-.#####",
+ "creation": "2026-05-07 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "visit",
+  "addendum_datetime",
+  "created_at",
+  "authored_by",
+  "author",
+  "author_role",
+  "doctor",
+  "guardian",
+  "customer",
+  "pet",
+  "addendum_type",
+  "status",
+  "requires_manager_approval",
+  "approved_by",
+  "approved_at",
+  "note",
+  "reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "visit",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Vet Visit",
+   "options": "Vet Visit",
+   "reqd": 1
+  },
+  {
+   "default": "Now",
+   "fieldname": "addendum_datetime",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Addendum Datetime",
+   "reqd": 1
+  },
+  {
+   "fieldname": "authored_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Authored By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "created_at",
+   "fieldtype": "Datetime",
+   "label": "Created At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "author",
+   "fieldtype": "Link",
+   "label": "Author",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "author_role",
+   "fieldtype": "Data",
+   "label": "Author Role",
+   "read_only": 1
+  },
+  {
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "label": "Healthcare Practitioner",
+   "options": "Healthcare Practitioner",
+   "read_only": 1
+  },
+  {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "label": "Guardian",
+   "options": "Guardian",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet",
+   "read_only": 1
+  },
+  {
+   "default": "Clinical Correction",
+   "fieldname": "addendum_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Addendum Type",
+   "options": "Clinical Correction\nBilling Correction\nMedication Correction\nFollow-up Note\nInternal Note\nClinical Note\nCorrection\nClarification"
+  },
+  {
+   "default": "Submitted",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nSubmitted\nApproved\nRejected\nCancelled"
+  },
+  {
+   "fieldname": "requires_manager_approval",
+   "fieldtype": "Check",
+   "label": "Requires Manager Approval"
+  },
+  {
+   "fieldname": "approved_by",
+   "fieldtype": "Link",
+   "label": "Approved By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved_at",
+   "fieldtype": "Datetime",
+   "label": "Approved At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Text Editor",
+   "label": "Addendum Note",
+   "reqd": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-07 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Vet Visit Addendum",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "visit",
+ "track_changes": 1
+}

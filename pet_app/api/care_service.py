@@ -1,149 +1,237 @@
-import json
 import frappe
+from frappe import _
+from frappe.utils import flt
+from frappe.model.document import Document
+from pet_app.api.response import standardize_response
 
-CARE_SERVICE_ROLES = ("System Manager", "Doctor", "Guardian", "Healthcare", "Guardians")
+
+class CareserviceTemplate(Document):
+
+    def validate(self):
+        if not self.service_name:
+            frappe.throw(_("Service Name is required."))
+        _ensure_care_service_item(self)
+
+    def after_insert(self):
+        _ensure_care_service_item_price(self)
+
+    def on_update(self):
+        _ensure_care_service_item_price(self)
 
 
-def _require_care_service_access(pet_id: str):
-    if frappe.session.user == "Administrator":
+# ─────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────
+
+def _ensure_care_service_item(doc):
+    if doc.item_code and frappe.db.exists("Item", doc.item_code):
+        item = frappe.get_doc("Item", doc.item_code)
+        if item.item_name != doc.service_name:
+            item.item_name = doc.service_name
+            item.flags.ignore_permissions = True
+            item.save()
+        return item
+
+    item             = frappe.new_doc("Item")
+    item.item_code   = doc.service_name
+    item.item_name   = doc.service_name
+    item.item_group  = "Services"
+    item.stock_uom   = "Nos"
+    item.is_stock_item = 0
+
+    item.flags.ignore_permissions = True
+    item.insert()
+
+    doc.item_code = item.name
+    return item
+
+
+def _ensure_care_service_item_price(doc):
+    rate       = flt(doc.default_price)
+    item_code  = doc.item_code
+    price_list = "Standard Selling"
+    currency   = frappe.defaults.get_global_default("currency") or "IQD"
+
+    if rate <= 0 or not item_code:
         return
-    if not frappe.has_permission("Pet", doc=pet_id, ptype="read"):
-        frappe.throw("Not permitted", frappe.PermissionError)
 
-    user_roles = set(frappe.get_roles(frappe.session.user) or [])
-    if user_roles.intersection(CARE_SERVICE_ROLES):
+    filters = {
+        "item_code":  item_code,
+        "price_list": price_list,
+        "selling":    1,
+    }
+    existing_prices = frappe.get_all("Item Price", filters=filters, pluck="name")
+
+    if len(existing_prices) > 1:
+        frappe.log_error(
+            title="CARE_SERVICE_ITEM_PRICE_DUPLICATE",
+            message=f"Multiple Item Prices for {item_code} — skipped"
+        )
         return
 
-    frappe.throw("Not permitted", frappe.PermissionError)
+    existing = existing_prices[0] if existing_prices else None
+    ip = frappe.get_doc("Item Price", existing) if existing else frappe.new_doc("Item Price")
+
+    if not existing:
+        ip.item_code  = item_code
+        ip.price_list = price_list
+        ip.selling    = 1
+
+    ip.price_list_rate = rate
+    ip.currency        = currency
+
+    ip.flags.ignore_permissions = True
+    ip.save() if existing else ip.insert()
 
 
 @frappe.whitelist()
-def get_pet_and_services(pet_id, filters=None, limit_start=0, limit_page_length=20):
-    limit_start = int(limit_start or 0)
-    limit_page_length = int(limit_page_length or 20)
-    _require_care_service_access(pet_id)
-
-    # 1) derive species
-    pet = frappe.get_value("Pet", pet_id, ["animal_species"], as_dict=True)
-    if not pet:
-        frappe.throw("Pet not found")
-    animal_species = pet.animal_species
-
-    # 2) parse filters like /api/resource
-    # expected: [["service_name","like","%a%"]]
-    extra_filters = []
-    if filters:
-        if isinstance(filters, str):
-            extra_filters = json.loads(filters)
-        else:
-            extra_filters = filters
-
-    # 3) base filters for CareService
-    care_filters = [["animal_species", "=", animal_species]]
-    # add extra filters (for service_name like ... etc)
-    if extra_filters:
-        care_filters.extend(extra_filters)
-
-    # 4) pending PetCareService (no pagination)
-    pet_services = frappe.get_all(
-        "PetCareService",
-        filters={"pet_id": pet_id, "status": "pending"},
-        fields=[
-            "name",
-            "pet_service_name",
-            "pet_id",
-            "care_service_id",
-            "due_date",
-            "provider",
-            "description"
-        ],
-        order_by="due_date asc"
+@standardize_response
+def get_providers_for_category(category: str) -> list:
+    """
+    Returns Healthcare Practitioners for a category.
+    Service Provider: filtered by service_categories
+      (if empty = handles all)
+    Medical categories: return Doctors + Nurses
+    """
+    cat_doc = frappe.db.get_value(
+        "CategoryCareServices",
+        category,
+        "category_name",
     )
+    if not cat_doc:
+        return []
 
-    # 5) CareService with pagination exactly like resource
-    master_services = frappe.get_all(
-        "CareService",
-        filters=care_filters,
-        fields=[
-            "name",
-            "service_name",
-            "item_code",
-            "default_price",
-            "frequency",
-            "category_id",
-            "description"
-        ],
-        order_by="service_name asc",
-        limit_start=limit_start,
-        limit_page_length=limit_page_length
+    cat_name = (cat_doc or "").lower()
+    MEDICAL = ["lab", "radiology", "medication", "sonar", "checkup", "general"]
+    is_medical = any(k in cat_name for k in MEDICAL)
+    fields = ["name", "practitioner_name", "practitioner_type", "photo", "user_id"]
+
+    if is_medical:
+        return frappe.get_all(
+            "Healthcare Practitioner",
+            filters={
+                "disabled": 0,
+                "practitioner_type": ["in", ["Doctor", "Nurse"]],
+            },
+            fields=fields,
+            order_by="practitioner_name asc",
+        )
+
+    providers = frappe.get_all(
+        "Healthcare Practitioner",
+        filters={
+            "disabled": 0,
+            "practitioner_type": "Service Provider",
+        },
+        fields=fields,
+        order_by="practitioner_name asc",
     )
-
-    # 6) enrich pet services with care_service_name + price + category
-    care_ids = list({ps["care_service_id"] for ps in pet_services if ps.get("care_service_id")})
-    care_map = {}
-    if care_ids:
-        rows = frappe.get_all(
-            "CareService",
-            filters={"name": ["in", care_ids]},
-            fields=["name", "service_name", "default_price", "category_id"]
-        )
-        care_map = {r["name"]: r for r in rows}
-
-    # categories name map (optional)
-    cat_ids = set()
-    for cs in master_services:
-        if cs.get("category_id"):
-            cat_ids.add(cs["category_id"])
-    for r in care_map.values():
-        if r.get("category_id"):
-            cat_ids.add(r["category_id"])
-
-    category_map = {}
-    if cat_ids:
-        label_field = "category_name"
-        meta = frappe.get_meta("CategoryCareServices")
-        if not meta.get_field(label_field):
-            label_field = "name"
-        cats = frappe.get_all(
-            "CategoryCareServices",
-            filters={"name": ["in", list(cat_ids)]},
-            fields=["name"] if label_field == "name" else ["name", label_field]
-        )
-        for c in cats:
-            category_map[c["name"]] = c.get(label_field) or c["name"]
 
     result = []
+    for p in providers:
+        assigned = frappe.get_all(
+            "Healthcare Practitioner Service Category",
+            filters={
+                "parent": p.name,
+                "parenttype": "Healthcare Practitioner",
+            },
+            pluck="category",
+        )
+        if not assigned or category in assigned:
+            result.append(p)
 
-    for ps in pet_services:
-        info = care_map.get(ps.get("care_service_id"), {})
-        cat_id = info.get("category_id")
-        result.append({
-            "name": ps.get("name"),
-            "pet_service_name": ps.get("pet_service_name"),
-            "pet_id": ps.get("pet_id"),
-            "care_service_id": ps.get("care_service_id"),
-            "service_name": info.get("service_name"),
-            "price": info.get("default_price"),
-            "category_id": cat_id,
-            "category_name": category_map.get(cat_id),
-            "due_date": ps.get("due_date"),
-            "provider": ps.get("provider"),
-            "description": ps.get("description"),
-        })
+    return result
 
-    for cs in master_services:
-        cat_id = cs.get("category_id")
-        result.append({
-            "name": cs.get("name"),
-            "service_name": cs.get("service_name"),
-            "item_code": cs.get("item_code"),
-            "default_price": cs.get("default_price"),
-            "frequency": cs.get("frequency"),
-            "category_id": cat_id,
-            "category_name": category_map.get(cat_id),
-            "description": cs.get("description"),
-        })
 
-    
-    frappe.response["data"] = result
-    return
+@frappe.whitelist()
+@standardize_response
+def bulk_create_pet_care_services(entries=None, services=None):
+    import json
+
+    from frappe.utils import today
+
+    raw = entries or services
+    if not raw:
+        frappe.throw(_("No service entries provided"))
+
+    items = json.loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(items, list):
+        frappe.throw(_("services must be a list."))
+
+    created = []
+    failed = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            failed.append({"pet_id": None, "care_service_id": None, "reason": _("Invalid service entry.")})
+            continue
+        if not item.get("pet_id") or not item.get("care_service_id"):
+            failed.append(
+                {
+                    "pet_id": item.get("pet_id"),
+                    "care_service_id": item.get("care_service_id"),
+                    "reason": _("Pet and care service are required."),
+                }
+            )
+            continue
+
+        try:
+            care_service = (
+                frappe.db.get_value(
+                    "CareService template",
+                    item["care_service_id"],
+                    ["service_name", "category_id"],
+                    as_dict=True,
+                )
+                or {}
+            )
+            option = {}
+            if item.get("service_option"):
+                option = (
+                    frappe.db.get_value(
+                        "Care Service Billing Option",
+                        item.get("service_option"),
+                        ["item_code", "default_rate", "category_care_services"],
+                        as_dict=True,
+                    )
+                    or {}
+                )
+
+            svc = frappe.new_doc("PetCareService")
+            svc.pet_service_name = (
+                item.get("pet_service_name")
+                or item.get("service_name")
+                or care_service.get("service_name")
+                or item["care_service_id"]
+            )
+            svc.pet_id = item["pet_id"]
+            svc.care_service_id = item["care_service_id"]
+            svc.category = (
+                item.get("category")
+                or care_service.get("category_id")
+                or option.get("category_care_services")
+            )
+            svc.guardian_id = item.get("guardian_id")
+            svc.provider = item.get("provider")
+            svc.doctor = item.get("doctor") or item.get("practitioner")
+            svc.service_option = item.get("service_option")
+            svc.item_code = item.get("item_code") or option.get("item_code")
+            svc.status = item.get("status") or "pending"
+            if item.get("price") is not None:
+                svc.price = item.get("price")
+            elif option:
+                svc.price = option.get("default_rate")
+            svc.due_date = item.get("due_date") or today()
+            svc.insert(ignore_permissions=True)
+            frappe.db.commit()
+            created.append(svc.name)
+        except Exception as e:
+            failed.append(
+                {
+                    "pet_id": item.get("pet_id"),
+                    "care_service_id": item.get("care_service_id"),
+                    "reason": str(e),
+                }
+            )
+
+    return {"created": created, "failed": failed}

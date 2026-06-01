@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "visit",
+  "order_id",
   "pet",
   "doctor",
   "care_service",
@@ -14,6 +15,16 @@
   "item_code",
   "rate",
   "status",
+  "sample_collected_at",
+  "sample_collected_by",
+  "result_entered_by",
+  "result_entered_at",
+  "released_by",
+  "released_at",
+  "doctor_reviewed",
+  "doctor_reviewed_at",
+  "result_visibility",
+  "attachment_required",
   "report",
   "image"
  ],
@@ -26,6 +37,14 @@
    "label": "Visit",
    "options": "Vet Visit",
    "reqd": 1
+  },
+  {
+   "fieldname": "order_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Order ID",
+   "read_only": 1
   },
   {
    "fieldname": "pet",
@@ -41,8 +60,8 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Doctor",
-   "options": "Doctor"
+   "label": "Healthcare Practitioner",
+   "options": "Healthcare Practitioner"
   },
   {
    "fieldname": "care_service",
@@ -73,13 +92,76 @@
    "read_only": 1
   },
   {
-   "default": "Pending",
+   "default": "Ordered",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Status",
-   "options": "Pending\nCompleted"
+   "options": "Ordered\nScheduled\nIn Progress\nReported\nReleased\nCancelled"
+  },
+  {
+   "fieldname": "sample_collected_at",
+   "fieldtype": "Datetime",
+   "label": "Sample Collected At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sample_collected_by",
+   "fieldtype": "Link",
+   "label": "Sample Collected By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_entered_by",
+   "fieldtype": "Link",
+   "label": "Report Entered By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_entered_at",
+   "fieldtype": "Datetime",
+   "label": "Report Entered At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_by",
+   "fieldtype": "Link",
+   "label": "Released By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "released_at",
+   "fieldtype": "Datetime",
+   "label": "Released At",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "doctor_reviewed",
+   "fieldtype": "Check",
+   "label": "Practitioner Reviewed"
+  },
+  {
+   "fieldname": "doctor_reviewed_at",
+   "fieldtype": "Datetime",
+   "label": "Practitioner Reviewed At"
+  },
+  {
+   "default": "Clinical Team",
+   "fieldname": "result_visibility",
+   "fieldtype": "Select",
+   "label": "Result Visibility",
+   "options": "Clinical Team\nGuardian Visible"
+  },
+  {
+   "default": "0",
+   "fieldname": "attachment_required",
+   "fieldtype": "Check",
+   "label": "Attachment Required"
   },
   {
    "fieldname": "report",

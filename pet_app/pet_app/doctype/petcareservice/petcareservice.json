@@ -2,23 +2,31 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "PetCareService-.#####",
- "creation": "2025-12-10 12:21:00.812096",
+ "creation": "2026-05-19 05:43:09.923666",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "service_info_section",
   "pet_service_name",
   "pet_id",
+  "category",
+  "guardian_id",
   "care_service_id",
+  "service_option",
+  "item_code",
+  "price",
   "status",
   "doctor",
   "user",
   "visit",
+  "order_id",
   "start_date",
   "end_date",
   "column_break_adis",
   "due_date",
   "provider",
+  "weight",
+  "size",
   "description",
   "send_reminder",
   "amended_from"
@@ -33,7 +41,7 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "pending\ncompleted\noverdue"
+   "options": "pending\ncompleted\noverdue\ncancelled"
   },
   {
    "default": "0",
@@ -43,8 +51,9 @@
   },
   {
    "fieldname": "provider",
-   "fieldtype": "Data",
-   "label": "Provider"
+   "fieldtype": "Link",
+   "label": "Provider",
+   "options": "Healthcare Practitioner"
   },
   {
    "fieldname": "column_break_adis",
@@ -77,24 +86,49 @@
    "reqd": 1
   },
   {
+   "fieldname": "guardian_id",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Guardian",
+   "options": "Guardian"
+  },
+  {
    "fieldname": "care_service_id",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Care Service ID",
-   "options": "CareService template",
-   "reqd": 1
+   "options": "CareService template"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Billable Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "price",
+   "fieldtype": "Currency",
+   "label": "Price",
+   "non_negative": 1
   },
   {
    "fieldname": "doctor",
    "fieldtype": "Link",
-   "label": "doctor",
-   "options": "Doctor"
+   "label": "Healthcare Practitioner",
+   "options": "Healthcare Practitioner"
   },
   {
    "fieldname": "visit",
    "fieldtype": "Link",
    "label": "visit",
    "options": "Vet Visit"
+  },
+  {
+   "fieldname": "order_id",
+   "fieldtype": "Data",
+   "label": "Order ID",
+   "read_only": 1
   },
   {
    "fieldname": "amended_from",
@@ -117,21 +151,44 @@
    "label": "end date"
   },
   {
-   "fetch_from": "doctor.user",
+   "fetch_from": "doctor.user_id",
    "fieldname": "user",
    "fieldtype": "Data",
    "label": "user"
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Link",
+   "label": "Category ",
+   "options": "CategoryCareServices",
+   "reqd": 1
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight"
+  },
+  {
+   "fieldname": "size",
+   "fieldtype": "Data",
+   "label": "Size"
+  },
+  {
+   "fieldname": "service_option",
+   "fieldtype": "Link",
+   "label": "Service Option Item",
+   "options": "Care Service Billing Option"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-28 10:37:55.875662",
+ "modified": "2026-05-19 16:19:38.600326",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "PetCareService",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -149,6 +206,7 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
+ "title_field": "pet_service_name",
  "sort_field": "creation",
  "sort_order": "DESC",
  "states": []
