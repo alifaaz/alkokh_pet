@@ -24,6 +24,8 @@ ORDER_ROLES = ("System Manager", "Item Manager", "Stock Manager", "Administrator
 GUARDIAN_ORDER_ROLES = {"Guardian", "Guardians"}
 ORDER_RATE_LIMIT = 20
 ORDER_RATE_WINDOW = 60
+DELIVERY_LATITUDE_FIELDS = ("custom_delivery_latitude", "custom_delivery_lat")
+DELIVERY_LONGITUDE_FIELDS = ("custom_delivery_longitude", "custom_delivery_lng")
 
 def _check_permission():
     if frappe.session.user == "Administrator":
@@ -133,6 +135,28 @@ def _resolve_sales_identity(guardian=None, customer=None):
 
 def _round_currency(value, precision):
     return flt(rounded(flt(value), precision))
+
+
+def _set_first_existing_field(doc, fieldnames, value):
+    if value in (None, ""):
+        return None
+
+    for fieldname in fieldnames:
+        if doc.meta.has_field(fieldname):
+            doc.set(fieldname, flt(value))
+            return fieldname
+
+    frappe.logger().warning(
+        f"[ORDER] delivery coordinate skipped for {doc.doctype}: missing fields {', '.join(fieldnames)}"
+    )
+    return None
+
+
+def _set_sales_order_delivery_coordinates(doc, delivery_lat=None, delivery_lng=None):
+    return {
+        "latitude_field": _set_first_existing_field(doc, DELIVERY_LATITUDE_FIELDS, delivery_lat),
+        "longitude_field": _set_first_existing_field(doc, DELIVERY_LONGITUDE_FIELDS, delivery_lng),
+    }
 
 
 def _get_item_group_bounds(item_group, group_cache):
@@ -450,10 +474,7 @@ def place_order(customer=None, items=None, payment_method="Cash on Delivery",
     so.custom_payment_method = payment_method
     so.custom_payment_status = "Pending"
 
-    if delivery_lat:
-        so.custom_delivery_lat = flt(delivery_lat)
-    if delivery_lng:
-        so.custom_delivery_lng = flt(delivery_lng)
+    _set_sales_order_delivery_coordinates(so, delivery_lat=delivery_lat, delivery_lng=delivery_lng)
     if shipping_address_name:
         so.shipping_address_name = shipping_address_name
     so.ignore_pricing_rule = 1

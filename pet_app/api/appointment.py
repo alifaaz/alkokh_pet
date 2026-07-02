@@ -74,6 +74,30 @@ def check_in_appointment(appointment_id=None, name=None, payload=None, **kwargs)
 		return _error_response(exc)
 
 
+# Vet Case Sheet fields that are server-derived, read-only, or set explicitly below,
+# so they must not be copied verbatim from the walk-in payload.
+_CASE_SHEET_SKIP_FIELDS = {
+	"naming_series",
+	"vet_visit",
+	"appointment",
+	"species",
+	"breed",
+	"age_text",
+	"phone_number",
+}
+
+
+def _writable_case_sheet_fields() -> set[str]:
+	meta = frappe.get_meta("Vet Case Sheet")
+	return {
+		df.fieldname
+		for df in meta.fields
+		if df.fieldtype not in ("Section Break", "Column Break", "Tab Break", "HTML")
+		and not df.read_only
+		and df.fieldname not in _CASE_SHEET_SKIP_FIELDS
+	}
+
+
 @frappe.whitelist(methods=["POST"])
 def create_walkin_case_sheet(payload=None, **kwargs):
 	try:
@@ -90,26 +114,34 @@ def create_walkin_case_sheet(payload=None, **kwargs):
 			return fail(_("Pet is not linked to Guardian."), code="PERMISSION_DENIED")
 
 		customer = payload.get("customer") or get_or_create_customer_from_guardian(guardian)
-		case_sheet = frappe.get_doc(
-			{
-				"doctype": "Vet Case Sheet",
-				"status": "Waiting Practitioner",
-				"priority": payload.get("priority") or "Normal",
-				"guardian": guardian,
-				"customer": customer,
-				"animal_patient": pet,
-				"chief_complaint": payload.get("chief_complaint") or "Checkup",
-				"intake_notes": payload.get("intake_notes") or payload.get("note"),
-				"weight": payload.get("weight"),
-			}
-		)
+		practitioner = payload.get("practitioner") or payload.get("doctor")
+
+		# Copy every supplied intake field that maps to a writable Vet Case Sheet field
+		# (symptom checklist, history, daily-condition, lifestyle, etc.), then overlay
+		# the required/aliased base so explicit values win.
+		allowed = _writable_case_sheet_fields()
+		intake = {key: value for key, value in payload.items() if key in allowed and value is not None}
+
+		case_sheet_data = {
+			"doctype": "Vet Case Sheet",
+			"status": payload.get("status") or "Waiting Practitioner",
+			"priority": payload.get("priority") or "Normal",
+			"guardian": guardian,
+			"customer": customer,
+			"animal_patient": pet,
+			"chief_complaint": payload.get("chief_complaint") or "Checkup",
+			"intake_notes": payload.get("intake_notes") or payload.get("note"),
+			"practitioner": practitioner,
+		}
+		case_sheet_data.update(intake)
+		case_sheet = frappe.get_doc(case_sheet_data)
 		case_sheet.insert(ignore_permissions=True)
 		ticket = get_or_create_queue_ticket(
 			case_sheet=case_sheet.name,
 			guardian=guardian,
 			customer=case_sheet.customer,
 			pet=pet,
-			doctor=payload.get("practitioner") or payload.get("doctor"),
+			doctor=practitioner,
 			priority=case_sheet.priority,
 			room=payload.get("room"),
 			branch=payload.get("branch"),

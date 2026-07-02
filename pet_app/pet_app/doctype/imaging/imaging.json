@@ -7,10 +7,13 @@
  "engine": "InnoDB",
  "field_order": [
   "visit",
+  "source_doctype",
+  "source_name",
   "order_id",
   "pet",
   "doctor",
   "care_service",
+  "priority",
   "column_break_main",
   "item_code",
   "rate",
@@ -35,8 +38,23 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Visit",
-   "options": "Vet Visit",
-   "reqd": 1
+   "mandatory_depends_on": "eval:!doc.source_name",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "source_doctype",
+   "fieldtype": "Link",
+   "label": "Source Doctype",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_name",
+   "fieldtype": "Dynamic Link",
+   "in_standard_filter": 1,
+   "label": "Source Name",
+   "options": "source_doctype",
+   "read_only": 1
   },
   {
    "fieldname": "order_id",
@@ -172,16 +190,22 @@
    "fieldname": "image",
    "fieldtype": "Attach Image",
    "label": "Image"
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "Routine\nNormal\nHigh\nUrgent"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-25 22:13:01.630611",
+ "modified": "2026-06-22 07:39:24.913997",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Imaging",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

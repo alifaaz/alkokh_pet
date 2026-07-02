@@ -11,7 +11,7 @@ from pet_app.api.permissions import get_user_roles, user_has_full_access
 from pet_app.api.response import fail, ok
 from pet_app.utils.audit import log_event
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
-from pet_app.utils.mortality import guardian_for_pet, source_pet
+from pet_app.utils.mortality import guardian_for_pet, is_pet_deceased, source_pet
 
 
 SOURCE_DOCTYPES = {"Vet Visit", "Pet Procedure", "Pet Boarding", "PetCareService", "Appointment", "Lab", "Imaging"}
@@ -71,9 +71,17 @@ def report_pet_death(data=None, **kwargs):
 		if not pet:
 			return fail(_("Pet is required."), code="VALIDATION_ERROR")
 		_assert_pet_access(pet, write=True)
-		_validate_single_active_death_record(pet)
 		source_doctype = cstr(payload.get("source_doctype")).strip()
 		source_name = cstr(payload.get("source_name")).strip()
+		# Idempotency: once a pet is already marked deceased, a repeated report is a
+		# no-op -- return the existing record (re-running the boarding cascade so a
+		# retried call still converges) rather than erroring or duplicating.
+		if is_pet_deceased(pet):
+			existing = _existing_active_death_record(pet)
+			if existing:
+				_run_boarding_cascade_if_applicable(existing)
+				return ok({"death_record": _death_record_payload(existing)})
+		_validate_single_active_death_record(pet)
 		if source_doctype or source_name:
 			_validate_source(source_doctype, source_name, pet)
 
@@ -118,6 +126,14 @@ def report_pet_death(data=None, **kwargs):
 			doc.reload()
 		_link_source(doc)
 		log_event("pet_death.reported", reference_doctype="Pet Death Record", reference_name=doc.name, after=doc.as_dict())
+		cascade = _run_boarding_cascade_if_applicable(doc)
+		if cascade is not None:
+			log_event(
+				"pet_death.boarding_cascade",
+				reference_doctype="Pet Death Record",
+				reference_name=doc.name,
+				details=cascade,
+			)
 		return ok({"death_record": _death_record_payload(doc)})
 	except Exception as exc:
 		return _error_response(exc)
@@ -269,6 +285,24 @@ def _validate_single_active_death_record(pet: str):
 	existing = frappe.db.get_value("Pet Death Record", {"pet": pet, "status": ["!=", "Cancelled"]}, "name")
 	if existing:
 		frappe.throw(_("Pet {0} already has active death record {1}.").format(frappe.bold(pet), frappe.bold(existing)))
+
+
+def _existing_active_death_record(pet: str):
+	name = frappe.db.get_value("Pet Death Record", {"pet": pet, "status": ["!=", "Cancelled"]}, "name")
+	return frappe.get_doc("Pet Death Record", name) if name else None
+
+
+def _run_boarding_cascade_if_applicable(doc):
+	"""Run the boarding death cascade when this death record came from a boarding.
+
+	Returns the cascade summary dict, or ``None`` when not applicable. The cascade
+	is fully idempotent so it is safe to call on a retried/existing record.
+	"""
+	if doc.source_doctype != "Pet Boarding" or not doc.source_name:
+		return None
+	from pet_app.utils.boarding_death_cascade import run_boarding_death_cascade
+
+	return run_boarding_death_cascade(doc)
 
 
 def _validate_source(source_doctype: str, source_name: str, pet: str):

@@ -2,11 +2,12 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "field:breed_name",
- "creation": "2026-05-11 18:20:00.000000",
+ "creation": "2026-05-11 18:20:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "breed_name",
+  "arabic_name",
   "enabled",
   "column_break_main",
   "animal_species",
@@ -23,6 +24,11 @@
    "label": "Breed Name",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name"
   },
   {
    "default": "1",
@@ -62,7 +68,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-11 18:20:00.000000",
+ "modified": "2026-06-13 19:19:33.631582",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Breed",
@@ -79,6 +85,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

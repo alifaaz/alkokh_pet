@@ -17,15 +17,34 @@ from pet_app.workflows import clinical_state
 
 class Imaging(Document):
 	def validate(self):
-		self.set_values_from_visit()
+		if self.visit:
+			self.set_values_from_visit()
+		else:
+			self.validate_source()
 		self.set_values_from_care_service()
 		clinical_state.validate_document_transition(self)
 
 	def after_insert(self):
-		sync_clinical_record_billable_item(self, "Imaging")
+		# Visit-linked imaging auto-bills onto the Vet Visit. Source-linked
+		# imaging (e.g. ordered from Pet Boarding) is billed by its own flow.
+		if self.visit:
+			sync_clinical_record_billable_item(self, "Imaging")
 
 	def on_update(self):
-		sync_clinical_record_billable_item(self, "Imaging")
+		if self.visit:
+			sync_clinical_record_billable_item(self, "Imaging")
+
+	def validate_source(self):
+		if not (self.source_doctype and self.source_name):
+			frappe.throw(_("A Vet Visit or a source record is required."))
+		if not frappe.db.exists(self.source_doctype, self.source_name):
+			frappe.throw(
+				_("Source {0} {1} was not found.").format(
+					frappe.bold(self.source_doctype), frappe.bold(self.source_name)
+				)
+			)
+		if not self.pet:
+			frappe.throw(_("Pet is required."))
 
 	def set_values_from_visit(self):
 		if not self.visit:

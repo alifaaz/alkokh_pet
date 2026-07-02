@@ -143,6 +143,18 @@ def log_security_event(event_type: str, phone: str, message: str = ""):
 
 
 def generate_otp() -> str:
+    conf = getattr(frappe, "conf", None)
+    if conf:
+        try:
+            if conf.get("developer_mode") or conf.get("development_mode") or conf.get("test_otp"):
+                return "123456"
+        except Exception:
+            if (
+                getattr(conf, "developer_mode", False)
+                or getattr(conf, "development_mode", False)
+                or getattr(conf, "test_otp", False)
+            ):
+                return "123456"
     return "".join(str(random.randint(0, 9)) for _ in range(6))
 
 

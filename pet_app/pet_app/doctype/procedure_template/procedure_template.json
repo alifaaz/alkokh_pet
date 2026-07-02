@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "procedure_name",
+  "arabic_name",
   "code",
   "species",
   "category",
@@ -29,6 +30,14 @@
    "label": "Procedure Name",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name",
+   "translatable": 0,
+   "permlevel": 0,
+   "hidden": 0
   },
   {
    "fieldname": "code",
@@ -127,6 +136,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

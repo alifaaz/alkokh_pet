@@ -1,7 +1,8 @@
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cstr, flt, now_datetime
 from frappe.model.document import Document
+from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.response import standardize_response
 
 
@@ -17,6 +18,9 @@ class CareserviceTemplate(Document):
 
     def on_update(self):
         _ensure_care_service_item_price(self)
+
+
+SERVICE_CANCELLATION_TERMINAL_STATUSES = {"cancelled", "completed"}
 
 
 # ─────────────────────────────────────────
@@ -191,7 +195,7 @@ def bulk_create_pet_care_services(entries=None, services=None):
                     frappe.db.get_value(
                         "Care Service Billing Option",
                         item.get("service_option"),
-                        ["item_code", "default_rate", "category_care_services"],
+                        ["item_code", "default_rate", "category_care_services", "animal_type"],
                         as_dict=True,
                     )
                     or {}
@@ -235,3 +239,45 @@ def bulk_create_pet_care_services(entries=None, services=None):
             )
 
     return {"created": created, "failed": failed}
+
+
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def cancel_service(service_name: str = None, cancellation_reason: str = None):
+    service_name = cstr(service_name).strip()
+    reason = cstr(cancellation_reason).strip()
+
+    if not service_name:
+        frappe.throw(_("service_name is required."))
+    if not reason:
+        frappe.throw(_("cancellation_reason is required."))
+    if not frappe.db.exists("PetCareService", service_name):
+        frappe.throw(_("PetCareService {0} does not exist.").format(frappe.bold(service_name)))
+
+    service = frappe.get_doc("PetCareService", service_name)
+    current_status = cstr(service.get("status")).strip()
+    if current_status.casefold() in SERVICE_CANCELLATION_TERMINAL_STATUSES:
+        frappe.throw(_("Service is already {0}.").format(frappe.bold(current_status)))
+
+    user = frappe.session.user
+    service.status = "Cancelled"
+    service.cancellation_reason = reason
+    service.cancelled_at = now_datetime()
+    service.cancelled_by = frappe.db.get_value("User", frappe.session.user, "full_name") or frappe.session.user
+    service.save(ignore_permissions=True)
+    service.add_comment(
+        "Comment",
+        _("Service cancelled by {0}. Reason: {1}").format(user, reason),
+    )
+
+    return _pet_care_service_payload(service)
+
+
+def _pet_care_service_payload(service) -> dict:
+    return with_link_aliases(
+        service.as_dict(no_nulls=False),
+        pet_field="pet_id",
+        guardian_field="guardian_id",
+        doctor_field="doctor",
+        provider_field="provider",
+    )

@@ -16,9 +16,14 @@
   "item_code",
   "price",
   "status",
+  "cancellation_reason",
+  "cancelled_at",
+  "cancelled_by",
   "doctor",
   "user",
   "visit",
+  "source_doctype",
+  "source_name",
   "order_id",
   "start_date",
   "end_date",
@@ -41,7 +46,25 @@
    "fieldname": "status",
    "fieldtype": "Select",
    "label": "Status",
-   "options": "pending\ncompleted\noverdue\ncancelled"
+   "options": "pending\ncompleted\noverdue\ncancelled\nCompleted\nCancelled"
+  },
+  {
+   "fieldname": "cancellation_reason",
+   "fieldtype": "Text",
+   "label": "Cancellation Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_at",
+   "fieldtype": "Datetime",
+   "label": "Cancelled At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_by",
+   "fieldtype": "Data",
+   "label": "Cancelled By",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -123,6 +146,21 @@
    "fieldtype": "Link",
    "label": "visit",
    "options": "Vet Visit"
+  },
+  {
+   "fieldname": "source_doctype",
+   "fieldtype": "Link",
+   "label": "Source Doctype",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_name",
+   "fieldtype": "Dynamic Link",
+   "in_standard_filter": 1,
+   "label": "Source Name",
+   "options": "source_doctype",
+   "read_only": 1
   },
   {
    "fieldname": "order_id",

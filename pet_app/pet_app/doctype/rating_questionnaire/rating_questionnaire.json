@@ -12,7 +12,9 @@
   "column_break_main",
   "description",
   "questions_section",
-  "questions"
+  "questions",
+  "tags_section",
+  "tags"
  ],
  "fields": [
   {
@@ -59,12 +61,24 @@
    "fieldtype": "Table",
    "label": "Questions",
    "options": "Rating Questionnaire Question"
+  },
+  {
+   "fieldname": "tags_section",
+   "fieldtype": "Section Break",
+   "label": "Tags"
+  },
+  {
+   "description": "Tags offered to raters using this questionnaire.",
+   "fieldname": "tags",
+   "fieldtype": "Table",
+   "label": "Tags",
+   "options": "Rating Questionnaire Tag"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-19 00:00:00.000000",
+ "modified": "2026-06-13 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Rating Questionnaire",

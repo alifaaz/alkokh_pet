@@ -25,6 +25,7 @@ from pet_app.utils.practitioner import (
 	get_practitioner_for_user,
 	practitioner_exists,
 	practitioner_payload,
+	resolve_practitioner,
 )
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
@@ -2198,9 +2199,9 @@ def _convert_to_visit(doctype: str, name: str, payload: dict) -> str:
 		_apply_case_choice_payload(existing, payload)
 		return existing
 
-	doctor = payload.get("practitioner") or payload.get("doctor") or _doctor_for_user(frappe.session.user)
-	if not doctor:
-		frappe.throw(_("Healthcare Practitioner is required to convert to a visit."))
+	explicit = payload.get("practitioner") or payload.get("doctor")
+	doctor = resolve_practitioner(explicit, case_sheet)
+	require_restriction_value("practitioner", doctor)
 	visit_data = {
 		"doctype": "Vet Visit",
 		"case_sheet": case_sheet.name,

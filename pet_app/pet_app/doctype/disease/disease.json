@@ -2,13 +2,14 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "field:disease_name",
- "creation": "2026-05-02 00:00:00.000000",
+ "creation": "2026-05-02 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "disease_name",
+  "arabic_name",
   "species",
-  "category",
+  "category_a",
   "active"
  ],
  "fields": [
@@ -22,6 +23,11 @@
    "unique": 1
   },
   {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name"
+  },
+  {
    "fieldname": "species",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -29,24 +35,24 @@
    "options": "\nDog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther\nMammal\nAmphibian\nInsect\nArachnid\nCrustacean"
   },
   {
-   "fieldname": "category",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "label": "Category",
-   "options": "\nGastrointestinal\nDermatological\nRespiratory\nMusculoskeletal\nDental\nOphthalmic\nOtic\nParasitic\nInfectious\nNutritional\nEndocrine\nUrinary\nReproductive\nNeurological\nBehavioral\nPreventive Care\nPost-Surgical\nOther"
-  },
-  {
    "default": "1",
    "fieldname": "active",
    "fieldtype": "Check",
    "in_list_view": 1,
    "label": "Active"
+  },
+  {
+   "fieldname": "category_a",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Category",
+   "options": "Cardiovascular System - \u0627\u0644\u0642\u0644\u0628 \u0648\u0627\u0644\u0623\u0648\u0639\u064a\u0629 \u0627\u0644\u062f\u0645\u0648\u064a\u0629\nRespiratory System - \u0627\u0644\u062c\u0647\u0627\u0632 \u0627\u0644\u062a\u0646\u0641\u0633\u064a\nGastrointestinal System - \u0627\u0644\u062c\u0647\u0627\u0632 \u0627\u0644\u0647\u0636\u0645\u064a\nLiver & Gallbladder - \u0627\u0644\u0643\u0628\u062f \u0648\u0627\u0644\u0645\u0631\u0627\u0631\u0629\nPancreas - \u0627\u0644\u0628\u0646\u0643\u0631\u064a\u0627\u0633\nKidneys - \u0627\u0644\u0643\u0644\u0649\nUrinary System - \u0627\u0644\u062c\u0647\u0627\u0632 \u0627\u0644\u0628\u0648\u0644\u064a\nOphthalmology - \u0627\u0644\u0639\u064a\u0648\u0646\nOtology - \u0627\u0644\u0623\u0630\u0646\nOral & Dental - \u0627\u0644\u0641\u0645 \u0648\u0627\u0644\u0623\u0633\u0646\u0627\u0646 \u0648\u0627\u0644\u0644\u062b\u0629\nNose & Sinuses - \u0627\u0644\u0623\u0646\u0641 \u0648\u0627\u0644\u062c\u064a\u0648\u0628 \u0627\u0644\u0623\u0646\u0641\u064a\u0629\nDermatology - \u0627\u0644\u062c\u0644\u062f \u0648\u0627\u0644\u0641\u0631\u0627\u0621\nNails, Claws & Paws - \u0627\u0644\u0623\u0638\u0627\u0641\u0631 \u0648\u0627\u0644\u0623\u0642\u062f\u0627\u0645\nBones & Joints - \u0627\u0644\u0639\u0638\u0627\u0645 \u0648\u0627\u0644\u0645\u0641\u0627\u0635\u0644\nMuscles & Tendons - \u0627\u0644\u0639\u0636\u0644\u0627\u062a \u0648\u0627\u0644\u0623\u0648\u062a\u0627\u0631\nBrain - \u0627\u0644\u062f\u0645\u0627\u063a\nPeripheral Nervous System - \u0627\u0644\u0623\u0639\u0635\u0627\u0628 \u0627\u0644\u0637\u0631\u0641\u064a\u0629\nSpine - \u0627\u0644\u0639\u0645\u0648\u062f \u0627\u0644\u0641\u0642\u0631\u064a\nEndocrine System - \u0627\u0644\u063a\u062f\u062f \u0627\u0644\u0635\u0645\u0627\u0621\nHematology & Immunology - \u0627\u0644\u062f\u0645 \u0648\u0627\u0644\u0645\u0646\u0627\u0639\u0629\nMale Reproductive System - \u0627\u0644\u062c\u0647\u0627\u0632 \u0627\u0644\u062a\u0646\u0627\u0633\u0644\u064a \u0627\u0644\u0630\u0643\u0631\u064a\nFemale Reproductive System - \u0627\u0644\u062c\u0647\u0627\u0632 \u0627\u0644\u062a\u0646\u0627\u0633\u0644\u064a \u0627\u0644\u0623\u0646\u062b\u0648\u064a\nInfectious Diseases - \u0627\u0644\u0623\u0645\u0631\u0627\u0636 \u0627\u0644\u0645\u0639\u062f\u064a\u0629\nParasitic Diseases - \u0627\u0644\u0623\u0645\u0631\u0627\u0636 \u0627\u0644\u0637\u0641\u064a\u0644\u064a\u0629\nNutrition - \u0627\u0644\u062a\u063a\u0630\u064a\u0629\nBehavioral Medicine - \u0627\u0644\u0633\u0644\u0648\u0643\nSurgery - \u0627\u0644\u062c\u0631\u0627\u062d\u0629\nPost-Surgical Care - \u0645\u0627 \u0628\u0639\u062f \u0627\u0644\u062c\u0631\u0627\u062d\u0629\nPreventive Care - \u0627\u0644\u0631\u0639\u0627\u064a\u0629 \u0627\u0644\u0648\u0642\u0627\u0626\u064a\u0629\nEmergency & Critical Care - \u0627\u0644\u0637\u0648\u0627\u0631\u0626 \u0648\u0627\u0644\u0639\u0646\u0627\u064a\u0629 \u0627\u0644\u062d\u0631\u062c\u0629\nOther - \u0623\u062e\u0631\u0649"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-02 00:00:00.000000",
+ "modified": "2026-06-14 05:46:14.424216",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Disease",
@@ -64,11 +70,32 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
+   "write": 1
   }
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
- "search_fields": "disease_name,species,category",
+ "search_fields": "disease_name,species,category_a",
  "show_name_in_global_search": 1,
  "sort_field": "disease_name",
  "sort_order": "ASC",

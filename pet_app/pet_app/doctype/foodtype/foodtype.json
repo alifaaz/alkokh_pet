@@ -7,7 +7,9 @@
  "engine": "InnoDB",
  "field_order": [
   "type_name",
-  "description"
+  "arabic_name",
+  "description",
+  "disabled"
  ],
  "fields": [
   {
@@ -19,16 +21,27 @@
    "fieldname": "type_name",
    "fieldtype": "Data",
    "label": "Type Name"
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name"
+  },
+  {
+   "default": "0",
+   "fieldname": "disabled",
+   "fieldtype": "Check",
+   "label": "disabled"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-02 00:28:02.046071",
+ "modified": "2026-06-13 19:26:15.961497",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "FoodType",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -41,6 +54,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

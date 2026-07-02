@@ -23,6 +23,36 @@ The system is built on:
 
 The frontend controls module visibility. The backend enforces real permissions and security.
 
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Framework | `Frappe` |
+| ERP | `ERPNext` |
+| Language | `Python` |
+| Database | `MariaDB` |
+| API | Whitelisted REST APIs + OAuth 2.0 for mobile |
+
+## Installation
+
+Install the app on a Frappe site:
+
+```bash
+bench get-app pet_app <repo-url>
+bench --site <site> install-app pet_app
+bench --site <site> migrate
+```
+
+## Localization
+
+The backend supports bilingual master data across:
+
+- diseases
+- breeds
+- food brands and food types
+- medications
+- service catalog
+
 ## Architecture
 
 Permission flow:
@@ -114,6 +144,17 @@ This model supports profiles such as:
 
 ## Core Backend Flows
 
+### Mobile API Platform
+
+Mobile backend includes:
+
+- OAuth sign-up and sign-in
+- profile, pets, addresses, catalog, and orders
+- order quote, place, and reorder flows
+- favorites, reviews, and FCM devices
+- consistent `{ data }` / `{ error }` response envelope
+- Swagger / OpenAPI documentation
+
 ### Vet Flow
 
 Flow:
@@ -196,6 +237,34 @@ Security behavior:
 - controlled pricing flow
 - coupon usage hardened against concurrency abuse
 - rate limiting on order entry points
+
+### Boarding
+
+Boarding backend includes:
+
+- reservations
+- check-in and check-out
+- boarding-originated clinical orders for `Lab`, `Imaging`, and `CareService`
+- death-during-boarding cascade that settles billing and closes open clinical documents
+
+### Ratings Analytics
+
+Ratings analytics support:
+
+- performer analytics
+- entity analytics
+- tag analytics
+- sentiment analytics
+- rating trends
+
+### Dashboards
+
+Dashboard backend includes:
+
+- report-engine dashboards
+- employee-of-month
+- scoreboards
+- user performance profiles
 
 ## Security Model
 

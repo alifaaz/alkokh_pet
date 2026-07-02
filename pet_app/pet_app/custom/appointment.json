@@ -45,7 +45,7 @@
    "name": "Appointment-custom_appointment_type",
    "no_copy": 0,
    "non_negative": 0,
-	   "options": "\nvisit\nfollow_up\nshowering\nbarbering \n",
+	   "options": "\nvisit\nfollow_up\nshowering\nbarbering\nsurgery\nexamination\nlab\nradiology\nadvance\n",
    "owner": "Administrator",
    "permlevel": 0,
    "placeholder": null,

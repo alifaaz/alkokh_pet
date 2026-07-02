@@ -15,6 +15,15 @@
   "rated_by",
   "rated_at",
   "notes",
+  "performer_section",
+  "performer_doctype",
+  "performer_id",
+  "performer_name",
+  "column_break_performer",
+  "sentiment",
+  "sentiment_score",
+  "tags_section",
+  "tags",
   "answers_section",
   "answers"
  ],
@@ -83,6 +92,66 @@
    "label": "Notes"
   },
   {
+   "fieldname": "performer_section",
+   "fieldtype": "Section Break",
+   "label": "Performer"
+  },
+  {
+   "description": "The performer's doctype, e.g. Healthcare Practitioner.",
+   "fieldname": "performer_doctype",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Performer DocType",
+   "read_only": 1
+  },
+  {
+   "description": "Stable performer id. Captured at insert time.",
+   "fieldname": "performer_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Performer ID",
+   "read_only": 1
+  },
+  {
+   "description": "Denormalized display name; set on save.",
+   "fieldname": "performer_name",
+   "fieldtype": "Data",
+   "label": "Performer Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_performer",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Computed from notes on save.",
+   "fieldname": "sentiment",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Sentiment",
+   "options": "\npositive\nneutral\nnegative",
+   "read_only": 1
+  },
+  {
+   "description": "Numeric sentiment score in -1..1.",
+   "fieldname": "sentiment_score",
+   "fieldtype": "Float",
+   "label": "Sentiment Score",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tags_section",
+   "fieldtype": "Section Break",
+   "label": "Tags"
+  },
+  {
+   "fieldname": "tags",
+   "fieldtype": "Table",
+   "label": "Tags",
+   "options": "Rating Tag Selection"
+  },
+  {
    "fieldname": "answers_section",
    "fieldtype": "Section Break",
    "label": "Answers"
@@ -97,7 +166,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-19 00:00:00.000000",
+ "modified": "2026-06-13 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Rating",

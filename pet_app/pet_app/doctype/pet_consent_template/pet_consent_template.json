@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "template_name",
+  "arabic_name",
   "procedure_template",
   "version",
   "column_break_main",
@@ -22,6 +23,14 @@
    "label": "Template Name",
    "reqd": 1,
    "unique": 1
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name",
+   "translatable": 0,
+   "permlevel": 0,
+   "hidden": 0
   },
   {
    "fieldname": "procedure_template",
@@ -80,6 +89,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

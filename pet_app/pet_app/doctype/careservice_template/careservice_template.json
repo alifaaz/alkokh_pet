@@ -8,6 +8,7 @@
  "field_order": [
   "basic_info_section",
   "service_name",
+  "arabic_name",
   "frequency",
   "item_code",
   "price_list",
@@ -39,7 +40,7 @@
    "fieldname": "animal_species",
    "fieldtype": "Select",
    "label": "Animal Species",
-   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInsect\nArachnid\nCrustacean",
+   "options": "All\nMammal\nBird\nReptile\nFish\nAmphibian\nInsect\nArachnid\nCrustacean",
    "reqd": 1
   },
   {
@@ -66,6 +67,14 @@
    "in_list_view": 1,
    "label": "Service name",
    "reqd": 1
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name",
+   "translatable": 0,
+   "permlevel": 0,
+   "hidden": 0
   },
   {
    "fieldname": "item_code",
@@ -142,6 +151,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

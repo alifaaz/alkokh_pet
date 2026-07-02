@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "brand_name",
+  "arabic_name",
   "image",
   "column_break_bsnv",
   "description"
@@ -21,6 +22,14 @@
    "fieldname": "brand_name",
    "fieldtype": "Data",
    "label": "Brand Name"
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name",
+   "translatable": 0,
+   "permlevel": 0,
+   "hidden": 0
   },
   {
    "fieldname": "column_break_bsnv",
@@ -52,6 +61,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

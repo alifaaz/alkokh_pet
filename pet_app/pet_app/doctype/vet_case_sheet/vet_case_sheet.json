@@ -17,6 +17,7 @@
   "section_break_basic_info",
   "guardian",
   "customer",
+  "practitioner",
   "phone_number",
   "column_break_basic_info_1",
   "animal_patient",
@@ -163,6 +164,12 @@
    "label": "Customer",
    "options": "Customer",
    "read_only": 1
+  },
+  {
+   "fieldname": "practitioner",
+   "fieldtype": "Link",
+   "label": "Practitioner",
+   "options": "Healthcare Practitioner"
   },
   {
    "fieldname": "phone_number",

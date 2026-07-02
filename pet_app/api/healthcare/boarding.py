@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, flt, get_datetime, getdate, now_datetime, nowdate
+from frappe.utils import add_to_date, cint, cstr, flt, get_datetime, getdate, now_datetime, nowdate
 
 from erpnext.accounts.party import get_party_account
 from pet_app.api.accounting.cashier import (
@@ -29,6 +29,19 @@ ROOM_STAY_SERVICE_PREFIX = "boarding_room_stay"
 LOCK_TIMEOUT_SECONDS = 15
 BILLABLE_ITEM_STATUSES = ("Draft", "Billable", "Billed", "Cancelled")
 BILLABLE_ITEM_TYPES = ("Room Stay", "Service", "Medication", "Lab", "Product", "Other")
+
+# Clinical orders that can be raised directly from a checked-in boarding (no Vet Visit).
+ORDER_KINDS = ("lab", "radiology", "service")
+ORDER_PRIORITIES = ("Routine", "Normal", "High", "Urgent")
+DEFAULT_ORDER_PRIORITY = "Routine"
+DUPLICATE_ORDER_WINDOW_SECONDS = 120
+ORDER_KIND_DOCTYPE = {"lab": "Lab", "radiology": "Imaging", "service": "PetCareService"}
+ORDER_KIND_BILLABLE_TYPE = {"lab": "Lab", "radiology": "Imaging", "service": "Service"}
+ORDER_TERMINAL_STATUSES = {
+	"Lab": {"Released", "Completed", "Cancelled"},
+	"Imaging": {"Released", "Completed", "Cancelled"},
+	"PetCareService": {"completed", "cancelled", "Completed", "Cancelled"},
+}
 BOARDING_READ_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
 BOARDING_WRITE_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
 
@@ -539,6 +552,242 @@ def sync_billable_items(boarding_id=None, billable_items=None, name=None, boardi
 		"balance": boarding.balance,
 		"billable_items": [_serialize_billable_item(row) for row in boarding.billable_items or []],
 		"boarding": _serialize_boarding_doc(boarding),
+	}
+
+
+@frappe.whitelist()
+@standardize_response
+def create_order(
+	boarding_id=None,
+	kind=None,
+	template_id=None,
+	item_code=None,
+	care_service_id=None,
+	priority=None,
+	note=None,
+):
+	"""Raise a single lab / imaging / care-service order for a checked-in boarding.
+
+	The visit order flow is visit-scoped; boarding records only carry a pet +
+	guardian, so this is their own entry point. The frontend sends one call per
+	selected order. The created order is linked back to the boarding via
+	``source_doctype``/``source_name`` and a matching ``billable_items`` row is
+	appended so it settles through the existing checkout invoice path.
+	"""
+	_require_boarding_write_access()
+
+	boarding_name = cstr(boarding_id).strip()
+	if not boarding_name:
+		frappe.throw(_("Pet Boarding is required."))
+
+	kind = cstr(kind).strip().lower()
+	if kind not in ORDER_KINDS:
+		frappe.throw(
+			_("Invalid order kind {0}. Expected one of: {1}.").format(
+				frappe.bold(kind or ""), ", ".join(ORDER_KINDS)
+			)
+		)
+
+	template_id = cstr(template_id).strip()
+	care_service_id = cstr(care_service_id).strip()
+	item_code = cstr(item_code).strip()
+	if not template_id:
+		frappe.throw(_("template_id is required."))
+
+	priority = _normalize_order_priority(priority)
+	note = cstr(note).strip() or None
+	care_service = care_service_id or template_id
+
+	boarding = frappe.get_doc("Pet Boarding", boarding_name)
+	boarding.check_permission("write")
+	_assert_boarding_orderable(boarding)
+
+	order_doctype = ORDER_KIND_DOCTYPE[kind]
+	require_doctype_permission(order_doctype, "create")
+
+	existing = _find_recent_duplicate_order(order_doctype, boarding.name, kind, care_service)
+	if existing:
+		_log_boarding_event(
+			"BOARDING_ORDER_DUPLICATE",
+			boarding=boarding.name,
+			kind=kind,
+			order=existing.name,
+			user=frappe.session.user,
+		)
+		return _boarding_order_response(boarding, kind, existing, reused=True)
+
+	order = _create_boarding_order_doc(
+		boarding, kind, care_service=care_service, item_code=item_code, priority=priority, note=note
+	)
+	_append_boarding_order_billable(boarding, kind, order, care_service=care_service, item_code=item_code, note=note)
+	_log_boarding_event(
+		"BOARDING_ORDER_CREATED",
+		boarding=boarding.name,
+		kind=kind,
+		order=order.name,
+		user=frappe.session.user,
+	)
+
+	return _boarding_order_response(boarding, kind, order)
+
+
+def _assert_boarding_orderable(boarding):
+	if boarding.docstatus != 0:
+		frappe.throw(_("Orders can only be added to open Pet Boarding records."))
+	if boarding.sales_invoice:
+		frappe.throw(_("Pet Boarding {0} is already invoiced.").format(frappe.bold(boarding.name)))
+	if boarding.record_status == "Reserved":
+		frappe.throw(
+			_("Pet Boarding {0} is reserved and has not been checked in yet.").format(frappe.bold(boarding.name))
+		)
+	if boarding.record_status == "Checked Out":
+		frappe.throw(_("Pet Boarding {0} is already checked out.").format(frappe.bold(boarding.name)))
+	if boarding.record_status == "Cancelled":
+		frappe.throw(_("Pet Boarding {0} is cancelled.").format(frappe.bold(boarding.name)))
+	if boarding.record_status != "Checked In":
+		frappe.throw(_("Only checked-in Pet Boarding records can have orders."))
+
+
+def _normalize_order_priority(priority) -> str:
+	priority = cstr(priority).strip()
+	if not priority:
+		return DEFAULT_ORDER_PRIORITY
+	normalized = priority.title()
+	if normalized not in ORDER_PRIORITIES:
+		frappe.throw(
+			_("Invalid priority {0}. Expected one of: {1}.").format(
+				frappe.bold(priority), ", ".join(ORDER_PRIORITIES)
+			)
+		)
+	return normalized
+
+
+def _create_boarding_order_doc(boarding, kind, *, care_service, item_code, priority, note):
+	order_id = f"{boarding.name}-{kind}-{care_service}"
+	if kind == "service":
+		template = frappe.db.get_value(
+			"CareService template", care_service, ["service_name", "default_price"], as_dict=True
+		)
+		doc = frappe.get_doc(
+			{
+				"doctype": "PetCareService",
+				"pet_service_name": (template.service_name if template else None) or _("Care Service"),
+				"pet_id": boarding.pet,
+				"guardian_id": boarding.guardian,
+				"care_service_id": care_service,
+				"item_code": item_code or None,
+				"price": template.default_price if template else None,
+				"status": "pending",
+				"due_date": nowdate(),
+				"description": note,
+				"source_doctype": "Pet Boarding",
+				"source_name": boarding.name,
+				"order_id": order_id,
+			}
+		)
+	else:
+		doc = frappe.get_doc(
+			{
+				"doctype": ORDER_KIND_DOCTYPE[kind],
+				"pet": boarding.pet,
+				"care_service": care_service,
+				"item_code": item_code or None,
+				"priority": priority,
+				"status": "Ordered",
+				"source_doctype": "Pet Boarding",
+				"source_name": boarding.name,
+				"order_id": order_id,
+			}
+		)
+	doc.insert(ignore_permissions=True)
+	doc.add_comment(
+		"Comment", _("Created from Pet Boarding {0} by {1}.").format(boarding.name, frappe.session.user)
+	)
+	return doc
+
+
+def _append_boarding_order_billable(boarding, kind, order, *, care_service, item_code, note):
+	resolved_item, rate, item_name = _resolve_order_billing(order, care_service, item_code)
+	boarding.append(
+		"billable_items",
+		{
+			"item_name": item_name,
+			"item_code": resolved_item,
+			"item_type": ORDER_KIND_BILLABLE_TYPE[kind],
+			"qty": 1,
+			"rate": rate,
+			"amount": rate,
+			"status": "Billable",
+			"note": note or item_name,
+			"linked_service_id": f"{order.doctype}::{order.name}",
+			"linked_doctype": order.doctype,
+			"linked_name": order.name,
+			"order_id": order.get("order_id"),
+		},
+	)
+	boarding.run_method("_apply_billable_item_amounts")
+	boarding.run_method("_compute_totals")
+	boarding.save()
+	boarding.add_comment(
+		"Comment",
+		_("{0} order {1} added to boarding billing by {2}.").format(
+			kind.title(), order.name, frappe.session.user
+		),
+	)
+
+
+def _resolve_order_billing(order, care_service, item_code):
+	"""Resolve (item_code, rate, item_name) for the boarding billable row.
+
+	Lab/Imaging stamp item_code + rate from the Care Service during validate, so
+	we prefer those. PetCareService does not, so we fall back to the template.
+	"""
+	resolved_item = cstr(order.get("item_code")).strip() or cstr(item_code).strip()
+	rate = order.get("rate")
+	item_name = None
+	if care_service and frappe.db.exists("CareService template", care_service):
+		template = frappe.db.get_value(
+			"CareService template", care_service, ["item_code", "default_price", "service_name"], as_dict=True
+		)
+		resolved_item = resolved_item or cstr(template.item_code)
+		if rate in (None, ""):
+			rate = template.default_price
+		item_name = template.service_name
+	if not resolved_item:
+		frappe.throw(_("Unable to determine an Item Code to bill this order."))
+	item = _get_item_details(resolved_item)
+	if rate in (None, ""):
+		rate = item.get("rate")
+	return resolved_item, flt(rate or 0), item_name or item.get("item_name")
+
+
+def _find_recent_duplicate_order(order_doctype, boarding_name, kind, care_service):
+	since = add_to_date(now_datetime(), seconds=-DUPLICATE_ORDER_WINDOW_SECONDS)
+	filters = {
+		"source_doctype": "Pet Boarding",
+		"source_name": boarding_name,
+		"creation": [">=", since],
+	}
+	filters["care_service_id" if kind == "service" else "care_service"] = care_service
+	rows = frappe.get_all(order_doctype, filters=filters, fields=["name", "status"], order_by="creation desc")
+	terminal = ORDER_TERMINAL_STATUSES.get(order_doctype, set())
+	for row in rows:
+		if cstr(row.status).strip() not in terminal:
+			return frappe.get_doc(order_doctype, row.name)
+	return None
+
+
+def _boarding_order_response(boarding, kind, order, reused=False) -> dict:
+	return {
+		"success": True,
+		"order_id": order.name,
+		"kind": kind,
+		"boarding_id": boarding.name,
+		"linked_doctype": order.doctype,
+		"reused": reused,
+		"total_cost": boarding.total_cost,
+		"balance": boarding.balance,
+		"billable_items": [_serialize_billable_item(row) for row in boarding.billable_items or []],
 	}
 
 

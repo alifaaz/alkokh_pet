@@ -204,6 +204,121 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 		self.assertTrue(result["ok"])
 		self.assertEqual(frappe.db.get_value("Pet Boarding", boarding.name, "death_record"), result["data"]["death_record"]["name"])
 
+	def test_boarding_death_cascade_marks_pet_deceased_and_closes_boarding(self):
+		boarding = self._make_checked_in_boarding()
+		reason = self._make_death_reason("Boarding Incident")
+
+		result = mortality.report_pet_death(
+			pet=boarding.pet,
+			death_reason=reason.name,
+			source_doctype="Pet Boarding",
+			source_name=boarding.name,
+		)
+		self.assertTrue(result["ok"])
+		record = result["data"]["death_record"]["name"]
+
+		pet = frappe.db.get_value("Pet", boarding.pet, ["is_deceased", "status", "death_record"], as_dict=True)
+		self.assertEqual(pet.is_deceased, 1)
+		self.assertEqual(pet.status, "Deceased")
+		self.assertEqual(pet.death_record, record)
+
+		bd = frappe.db.get_value(
+			"Pet Boarding",
+			boarding.name,
+			["record_status", "status", "boarding_outcome", "death_during_boarding", "death_record"],
+			as_dict=True,
+		)
+		self.assertEqual(bd.record_status, "Checked Out")
+		self.assertEqual(bd.status, "Closed")
+		self.assertEqual(bd.boarding_outcome, "Death")
+		self.assertEqual(bd.death_during_boarding, 1)
+		self.assertEqual(bd.death_record, record)
+
+	def test_boarding_death_settles_billing_up_to_death(self):
+		boarding = self._make_checked_in_boarding(with_billable=True)
+		reason = self._make_death_reason("Natural Death")
+
+		result = mortality.report_pet_death(
+			pet=boarding.pet,
+			death_reason=reason.name,
+			death_datetime=frappe.utils.now_datetime(),
+			source_doctype="Pet Boarding",
+			source_name=boarding.name,
+		)
+		self.assertTrue(result["ok"])
+
+		bd = frappe.db.get_value(
+			"Pet Boarding", boarding.name, ["sales_invoice", "billing_status", "check_out"], as_dict=True
+		)
+		self.assertTrue(bd.sales_invoice)
+		self.assertEqual(bd.billing_status, "Invoiced")
+		self.assertTrue(bd.check_out)
+		self.assertTrue(frappe.db.exists("Sales Invoice", bd.sales_invoice))
+
+	def test_boarding_death_closes_open_clinical_docs(self):
+		# Build a complete in-progress visit (with case sheet + doctor) for a pet,
+		# then a boarding for the same pet, and an open Lab order on the visit.
+		visit = self._make_visit()
+		pet = frappe.get_doc("Pet", visit.animal_patient)
+		guardian = frappe.get_doc("Guardian", visit.guardian)
+		boarding = self._make_checked_in_boarding(guardian=guardian, pet=pet)
+		service = self._make_care_service_standard("Cascade Lab")
+		lab = frappe.get_doc(
+			{"doctype": "Lab", "visit": visit.name, "pet": pet.name, "care_service": service.name, "status": "Ordered"}
+		).insert(ignore_permissions=True)
+		reason = self._make_death_reason("Natural Death")
+
+		result = mortality.report_pet_death(
+			pet=pet.name,
+			death_reason=reason.name,
+			source_doctype="Pet Boarding",
+			source_name=boarding.name,
+		)
+		self.assertTrue(result["ok"])
+
+		self.assertEqual(frappe.db.get_value("Lab", lab.name, "status"), "Cancelled")
+		self.assertEqual(frappe.db.get_value("Vet Visit", visit.name, "status"), "Cancelled")
+		self.assertEqual(frappe.db.get_value("Vet Case Sheet", visit.case_sheet, "status"), "Closed")
+
+	def test_boarding_death_is_idempotent(self):
+		boarding = self._make_checked_in_boarding(with_billable=True)
+		reason = self._make_death_reason("Natural Death")
+
+		first = mortality.report_pet_death(
+			pet=boarding.pet, death_reason=reason.name, source_doctype="Pet Boarding", source_name=boarding.name
+		)
+		second = mortality.report_pet_death(
+			pet=boarding.pet, death_reason=reason.name, source_doctype="Pet Boarding", source_name=boarding.name
+		)
+
+		self.assertTrue(first["ok"])
+		self.assertTrue(second["ok"])
+		# Same record returned, no duplicate created.
+		self.assertEqual(first["data"]["death_record"]["name"], second["data"]["death_record"]["name"])
+		self.assertEqual(frappe.db.count("Pet Death Record", {"pet": boarding.pet, "status": ["!=", "Cancelled"]}), 1)
+		# Billing settled exactly once (not double-invoiced).
+		invoice = frappe.db.get_value("Pet Boarding", boarding.name, "sales_invoice")
+		self.assertTrue(invoice)
+		self.assertEqual(frappe.db.count("Pet Boarding", {"name": boarding.name, "sales_invoice": invoice}), 1)
+
+	def test_boarding_death_tolerates_already_closed_boarding(self):
+		# A boarding still only Reserved (never checked in) -> no invoice, but still
+		# closed and linked without erroring.
+		boarding = self._make_boarding()
+		reason = self._make_death_reason("Natural Death")
+
+		result = mortality.report_pet_death(
+			pet=boarding.pet, death_reason=reason.name, source_doctype="Pet Boarding", source_name=boarding.name
+		)
+		self.assertTrue(result["ok"])
+		record = result["data"]["death_record"]["name"]
+		bd = frappe.db.get_value(
+			"Pet Boarding", boarding.name, ["record_status", "death_record", "sales_invoice"], as_dict=True
+		)
+		self.assertEqual(bd.record_status, "Checked Out")
+		self.assertEqual(bd.death_record, record)
+		self.assertFalse(bd.sales_invoice)
+
 	def test_report_pet_death_external_without_source(self):
 		guardian, pet = self._make_guardian_pet()
 		reason = self._make_death_reason("External / Reported By Guardian")
@@ -428,6 +543,27 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True)
 
+	def _make_checked_in_boarding(self, guardian=None, pet=None, with_billable=False):
+		boarding = self._make_boarding(guardian=guardian, pet=pet)
+		boarding.record_status = "Checked In"
+		boarding.check_in = frappe.utils.add_to_date(frappe.utils.now_datetime(), days=-2)
+		boarding.customer = get_or_create_customer_from_guardian(boarding.guardian)
+		if with_billable:
+			item = self._make_item("Boarding Cascade")
+			boarding.append(
+				"billable_items",
+				{
+					"item_name": item.item_name,
+					"item_code": item.name,
+					"item_type": "Service",
+					"qty": 2,
+					"rate": 30,
+					"status": "Billable",
+				},
+			)
+		boarding.save(ignore_permissions=True)
+		return boarding
+
 	def _make_appointment(self, guardian, pet):
 		customer = get_or_create_customer_from_guardian(guardian.name)
 		return frappe.get_doc(
@@ -478,6 +614,25 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 				"item_code": item.name,
 				"default_price": 25,
 				"price_list": "Clinic",
+			}
+		).insert(ignore_permissions=True)
+
+	def _make_care_service_standard(self, label):
+		# Like _make_care_service but uses the always-present "Standard Selling"
+		# price list, so the test does not depend on a seeded "Clinic" price list.
+		suffix = frappe.generate_hash(length=8)
+		item = self._make_item(f"{label} Item")
+		category = frappe.get_doc({"doctype": "CategoryCareServices", "category_name": f"{label} Category {suffix}"}).insert(ignore_permissions=True)
+		return frappe.get_doc(
+			{
+				"doctype": "CareService template",
+				"service_name": f"{label} {suffix}",
+				"animal_species": "Mammal",
+				"frequency": "onetime",
+				"category_id": category.name,
+				"item_code": item.name,
+				"default_price": 25,
+				"price_list": "Standard Selling",
 			}
 		).insert(ignore_permissions=True)
 

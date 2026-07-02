@@ -12,7 +12,7 @@ from frappe.utils import date_diff, getdate, now_datetime
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 from pet_app.utils.medical_profile import set_visit_case_choice, update_profile_for_case_sheet, update_profile_for_visit
-from pet_app.utils.practitioner import get_practitioner_for_user
+from pet_app.utils.practitioner import get_practitioner_for_user, resolve_practitioner
 from pet_app.workflows import clinical_state
 from pet_app.api.response import standardize_response
 
@@ -231,21 +231,18 @@ def get_pet_context(pet_name: str) -> dict:
 
 @frappe.whitelist()
 @standardize_response
-def start_visit(case_sheet_name: str, doctor_case_choice: str | None = None, care_episode: str | None = None, case_choice_note: str | None = None) -> dict:
+def start_visit(case_sheet_name: str, practitioner: str | None = None, doctor_case_choice: str | None = None, care_episode: str | None = None, case_choice_note: str | None = None) -> dict:
 	if not case_sheet_name:
 		frappe.throw(_("Case Sheet is required."))
 
-	if frappe.session.user != "Administrator":
-		frappe.only_for(("Healthcare Practitioner", "Doctor", "System Manager", "Healthcare"))
 	require_doctype_permission("Vet Visit", "create")
-
-	doctor = _get_session_doctor()
-	if not doctor:
-		frappe.throw(_("Start Visit requires a user linked to a Healthcare Practitioner."))
-	require_restriction_value("practitioner", doctor)
 
 	case_sheet = frappe.get_doc("Vet Case Sheet", case_sheet_name)
 	case_sheet.check_permission("read")
+
+	doctor = resolve_practitioner(practitioner, case_sheet)
+	require_restriction_value("practitioner", doctor)
+
 	if not case_sheet.customer and case_sheet.guardian:
 		guardian = frappe.db.get_value(
 			"Guardian",
@@ -293,6 +290,7 @@ def start_visit(case_sheet_name: str, doctor_case_choice: str | None = None, car
 		},
 		postprocess=_set_visit_defaults,
 	)
+	visit.doctor = doctor
 	visit.insert()
 	if doctor_case_choice:
 		set_visit_case_choice(visit, doctor_case_choice, episode=care_episode, note=case_choice_note)
@@ -322,10 +320,7 @@ def _set_visit_defaults(source, target):
 	target.visit_type = _get_visit_type_from_case_sheet(source)
 	target.case_summary = build_case_summary(source)
 	target.weight = target.weight or source.weight
-
-	doctor = _get_session_doctor()
-	if doctor:
-		target.doctor = doctor
+	# The visit's doctor is assigned by the caller via resolve_practitioner().
 
 
 def _get_visit_type_from_case_sheet(case_sheet) -> str:

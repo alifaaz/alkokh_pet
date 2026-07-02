@@ -23,6 +23,7 @@ class CareServiceBillingOption(Document):
 		self.option_label = cstr(self.option_label).strip()
 		self.size_weight_label = cstr(self.size_weight_label).strip()
 		self.animal_species = cstr(self.animal_species).strip()
+		self.animal_type = cstr(self.get("animal_type")).strip()
 		self.item_code = cstr(self.item_code).strip()
 		if not self.category_care_services:
 			frappe.throw(_("Parent Care Service is required."))
@@ -30,6 +31,8 @@ class CareServiceBillingOption(Document):
 			frappe.throw(_("Service Name is required."))
 		if not self.option_label:
 			frappe.throw(_("Option Label is required."))
+		if not self.animal_type:
+			frappe.throw(_("Animal Type is required."))
 		if self.default_rate in (None, ""):
 			frappe.throw(_("Default Rate is required."))
 		if flt(self.default_rate) < 0:
@@ -176,6 +179,7 @@ def build_item_description(doc: CareServiceBillingOption) -> str:
 		_("Care Service: {0}").format(service_name) if service_name else None,
 		_("Size / Weight: {0}").format(doc.size_weight_label) if doc.size_weight_label else None,
 		_("Animal Species: {0}").format(doc.animal_species) if doc.animal_species else None,
+		_("Animal Type: {0}").format(doc.animal_type) if doc.animal_type else None,
 	]
 	return "\n".join(part for part in parts if part)
 

@@ -18,15 +18,16 @@ class IntegrationTestCareServiceBillingOption(IntegrationTestCase):
 		rows = frappe.get_all(
 			"Care Service Billing Option",
 			filters=[
-				["Care Service Billing Option", "parent_care_service", "=", option.parent_care_service],
+				["Care Service Billing Option", "category_care_services", "=", option.category_care_services],
 				["Care Service Billing Option", "disabled", "=", 0],
 			],
 			fields=[
 				"name",
-				"parent_care_service",
-				"care_service",
+				"category_care_services",
+				"service_title",
 				"option_label",
 				"animal_species",
+				"animal_type",
 				"size_weight_label",
 				"min_weight",
 				"max_weight",
@@ -40,7 +41,8 @@ class IntegrationTestCareServiceBillingOption(IntegrationTestCase):
 		)
 
 		self.assertTrue(rows)
-		self.assertEqual(rows[0].parent_care_service, rows[0].care_service)
+		self.assertEqual(rows[0].category_care_services, option.category_care_services)
+		self.assertEqual(rows[0].animal_type, option.animal_type)
 		self.assertTrue(rows[0].item_code)
 		self.assertTrue(rows[0].item_name)
 		self.assertFalse(rows[0].disabled)
@@ -74,9 +76,11 @@ class IntegrationTestCareServiceBillingOption(IntegrationTestCase):
 			frappe.get_doc(
 				{
 					"doctype": "Care Service Billing Option",
-					"parent_care_service": option.parent_care_service,
+					"category_care_services": option.category_care_services,
+					"service_title": option.service_title,
 					"option_label": f"Duplicate {option.option_label}",
 					"animal_species": option.animal_species,
+					"animal_type": option.animal_type,
 					"size_weight_label": option.size_weight_label,
 					"min_weight": flt(option.min_weight),
 					"max_weight": flt(option.max_weight),
@@ -91,9 +95,11 @@ class IntegrationTestCareServiceBillingOption(IntegrationTestCase):
 		doc = frappe.get_doc(
 			{
 				"doctype": "Care Service Billing Option",
-				"parent_care_service": parent.name,
+				"category_care_services": parent.name,
+				"service_title": parent.service_name,
 				"option_label": option_label or f"Billing Option {frappe.generate_hash(length=8)}",
 				"animal_species": "Mammal",
+				"animal_type": "Dog",
 				"size_weight_label": "Dog 25",
 				"min_weight": 0,
 				"max_weight": 25,

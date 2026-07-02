@@ -48,10 +48,12 @@ TRANSITIONS = {
 		"Cancelled": set(),
 	},
 	"PetCareService": {
-		"pending": {"pending", "completed", "overdue", "cancelled"},
-		"overdue": {"pending", "completed", "cancelled"},
+		"pending": {"pending", "completed", "overdue", "cancelled", "Completed", "Cancelled"},
+		"overdue": {"pending", "completed", "cancelled", "Completed", "Cancelled"},
 		"completed": set(),
 		"cancelled": set(),
+		"Completed": set(),
+		"Cancelled": set(),
 	},
 	"Pet Procedure": {
 		"Pending": {"In Progress", "Completed", "Closed", "Cancelled"},
@@ -111,7 +113,7 @@ TERMINAL_STATUSES = {
 	"Visit Order": {"Completed", "Cancelled"},
 	"Lab": {"Released", "Completed", "Cancelled"},
 	"Imaging": {"Released", "Completed", "Cancelled"},
-	"PetCareService": {"completed", "cancelled"},
+	"PetCareService": {"completed", "cancelled", "Completed", "Cancelled"},
 	"Pet Procedure": {"Closed", "Cancelled"},
 }
 

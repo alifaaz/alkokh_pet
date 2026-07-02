@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "medication_name",
+  "arabic_name",
   "code",
   "linked_item",
   "item_group",
@@ -34,6 +35,14 @@
    "in_standard_filter": 1,
    "label": "Medication Name",
    "reqd": 1
+  },
+  {
+   "fieldname": "arabic_name",
+   "fieldtype": "Data",
+   "label": "Arabic Name",
+   "translatable": 0,
+   "permlevel": 0,
+   "hidden": 0
   },
   {
    "fieldname": "code",
@@ -155,7 +164,7 @@
  "permissions": [
   {
    "create": 1,
-   "delete": 0,
+   "delete": 1,
    "email": 1,
    "export": 1,
    "print": 1,
@@ -163,6 +172,27 @@
    "report": 1,
    "role": "System Manager",
    "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Healthcare Administrator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinator",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Coordinatorr",
    "write": 1
   }
  ],

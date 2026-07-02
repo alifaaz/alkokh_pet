@@ -9,7 +9,9 @@
  "field_order": [
   "category_care_services",
   "option_label",
+  "ar_option_label",
   "animal_species",
+  "animal_type",
   "size_weight_label",
   "min_weight",
   "max_weight",
@@ -33,6 +35,15 @@
    "in_standard_filter": 1,
    "label": "Animal Species",
    "options": "\nMammal\nBird\nReptile\nAmphibian\nFish\nInsect\nArachnid\nCrustacean"
+  },
+  {
+   "fieldname": "animal_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Animal Type",
+   "options": "Dog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther",
+   "reqd": 1
   },
   {
    "fieldname": "size_weight_label",
@@ -93,12 +104,17 @@
    "fieldtype": "Data",
    "label": "Service Name",
    "reqd": 1
+  },
+  {
+   "fieldname": "ar_option_label",
+   "fieldtype": "Data",
+   "label": "Arabic Option Label"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-19 07:30:31.299026",
+ "modified": "2026-06-13 19:29:27.827188",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Care Service Billing Option",
@@ -121,7 +137,7 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
- "search_fields": "option_label,item_code,size_weight_label",
+ "search_fields": "option_label,item_code,size_weight_label,animal_type",
  "sort_field": "sort_order",
  "sort_order": "ASC",
  "states": [],

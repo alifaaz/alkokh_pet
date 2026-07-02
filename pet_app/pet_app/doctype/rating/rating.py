@@ -7,15 +7,75 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, now_datetime
 
+from pet_app.utils.rating_entities import (
+	compute_sentiment,
+	resolve_performer,
+	resolve_performer_name,
+)
+
 
 class Rating(Document):
+	def before_insert(self):
+		self._capture_performer()
+
 	def validate(self):
 		self._normalize_defaults()
 		self._validate_reference()
 		self._validate_overall_rating()
 		questionnaire = self._validate_questionnaire()
 		self._validate_answers(questionnaire)
+		self._normalize_tags(questionnaire)
+		self._refresh_performer_name()
+		self._compute_sentiment()
 		self._validate_duplicate_rating()
+
+	def _capture_performer(self):
+		"""Store the performer on the rating itself (insert-time snapshot).
+
+		Keeps provider leaderboards stable even if the entity's provider is
+		later changed. Skips resolution when the frontend already supplied one.
+		"""
+		if self.performer_id:
+			if not self.performer_doctype:
+				self.performer_doctype = resolve_performer(
+					cstr(self.reference_doctype).strip(), cstr(self.reference_name).strip()
+				)[0]
+			return
+
+		performer_doctype, performer_id = resolve_performer(
+			cstr(self.reference_doctype).strip(), cstr(self.reference_name).strip()
+		)
+		if performer_id:
+			self.performer_doctype = performer_doctype
+			self.performer_id = performer_id
+
+	def _refresh_performer_name(self):
+		self.performer_name = resolve_performer_name(self.performer_doctype, self.performer_id)
+
+	def _normalize_tags(self, questionnaire):
+		"""Normalize selected tag keys and denormalize labels from the vocabulary."""
+		if not self.tags:
+			return
+
+		vocabulary = {}
+		if questionnaire:
+			for tag in questionnaire.get("tags") or []:
+				vocabulary[cstr(tag.tag_key).strip()] = cstr(tag.tag_label).strip()
+
+		seen = set()
+		kept = []
+		for row in self.tags:
+			key = cstr(row.tag_key).strip()
+			if not key or key in seen:
+				continue
+			seen.add(key)
+			row.tag_key = key
+			row.tag_label = cstr(row.tag_label).strip() or vocabulary.get(key) or key
+			kept.append(row)
+		self.tags = kept
+
+	def _compute_sentiment(self):
+		self.sentiment, self.sentiment_score = compute_sentiment(self.notes)
 
 	def _normalize_defaults(self):
 		self.reference_doctype = cstr(self.reference_doctype).strip()
