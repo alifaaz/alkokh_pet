@@ -42,6 +42,7 @@
   "closure_reason",
   "created_by",
   "closed_by",
+  "assigned_practitioners",
   "problems",
   "medications",
   "monitoring_items"
@@ -253,6 +254,12 @@
    "fieldtype": "Link",
    "label": "Closed By",
    "options": "User"
+  },
+  {
+   "fieldname": "assigned_practitioners",
+   "fieldtype": "Table",
+   "label": "Assigned Practitioners",
+   "options": "Pet Care Episode Assigned Practitioner"
   },
   {
    "fieldname": "problems",

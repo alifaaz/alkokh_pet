@@ -227,6 +227,65 @@ class TestClinicalHardening(FrappeTestCase):
 		self.assertEqual(frappe.db.get_value("Pet Care Plan Item", plan_name, "status"), "Converted To Visit")
 		self.assertEqual(frappe.db.get_value("Vet Visit", first_convert["data"]["visit"], "care_episode"), visit.care_episode)
 
+	def test_visit_workbench_includes_all_plan_items_for_source_visit(self):
+		visit = self._make_visit()
+		workspace.perform_action("Visit", visit.name, "set_case_choice", {"doctor_case_choice": "new_case"})
+		visit.reload()
+		due_date = (datetime.now() + timedelta(days=3)).date()
+
+		def make_plan(title, **overrides):
+			data = {
+				"plan_type": "Monitoring",
+				"title": title,
+				"instructions": "Log meals",
+				"due_date": str(due_date),
+			}
+			data.update(overrides)
+			result = care_plan.add_plan_item_from_visit(visit.name, data=data)
+			self.assertTrue(result["ok"])
+			return result["data"]["created_plan_item"]["name"]
+
+		active_name = make_plan("Track appetite", due_time="09:00:00")
+		done_name = make_plan("Completed wound check")
+		cancelled_name = make_plan("Cancelled recheck")
+		self.assertTrue(care_plan.complete_plan_item(done_name, note="Resolved")["ok"])
+		self.assertTrue(care_plan.cancel_plan_item(cancelled_name, reason="Owner declined")["ok"])
+
+		other_visit = self._make_visit(frappe.get_doc("Guardian", visit.guardian), frappe.get_doc("Pet", visit.animal_patient))
+		other_plan = frappe.get_doc(
+			{
+				"doctype": "Pet Care Plan Item",
+				"pet": visit.animal_patient,
+				"guardian": visit.guardian,
+				"customer": visit.customer,
+				"care_episode": visit.care_episode,
+				"source_visit": other_visit.name,
+				"doctor": visit.doctor,
+				"plan_type": "Monitoring",
+				"title": "Other visit item",
+				"status": "Planned",
+			}
+		).insert(ignore_permissions=True)
+
+		workbench = visit_workbench.get_visit_workbench(visit.name)
+		self.assertTrue(workbench["ok"])
+		items_by_name = {row["name"]: row for row in workbench["data"]["plan_items"]}
+		self.assertEqual({active_name, done_name, cancelled_name}, set(items_by_name))
+		self.assertNotIn(other_plan.name, items_by_name)
+
+		active_item = items_by_name[active_name]
+		self.assertEqual(active_item["source_visit"], visit.name)
+		self.assertEqual(active_item["plan_type"], "Monitoring")
+		self.assertEqual(active_item["item_type"], "Monitoring")
+		self.assertEqual(active_item["title"], "Track appetite")
+		self.assertEqual(str(active_item["due_date"]), str(due_date))
+		self.assertEqual(active_item["due_datetime"], f"{due_date} 09:00:00")
+		self.assertEqual(active_item["owner_instructions"], "Log meals")
+		self.assertEqual(active_item["requires_appointment"], 0)
+		self.assertIsNone(active_item["appointment"])
+		self.assertEqual(items_by_name[done_name]["status"], "Done")
+		self.assertEqual(items_by_name[cancelled_name]["status"], "Cancelled")
+
 	def test_create_orders_is_idempotent(self):
 		visit = self._make_visit()
 		service = self._make_care_service("Clinical Hardening Lab")

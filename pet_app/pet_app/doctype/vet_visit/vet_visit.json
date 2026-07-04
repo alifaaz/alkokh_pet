@@ -28,6 +28,7 @@
   "animal_patient",
   "column_break_basic_info_1",
   "doctor",
+  "primary_practitioner",
   "doctor_name",
   "visit_type",
   "weight",
@@ -230,6 +231,13 @@
    "label": "Healthcare Practitioner",
    "options": "Healthcare Practitioner",
    "reqd": 1
+  },
+  {
+   "fieldname": "primary_practitioner",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Primary Practitioner",
+   "options": "Healthcare Practitioner"
   },
   {
    "default": "Consultation",

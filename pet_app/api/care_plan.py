@@ -22,6 +22,31 @@ from pet_app.workflows import clinical_state
 
 ACTIVE_PLAN_STATUSES = {"Planned", "Scheduled", "In Progress", "Overdue"}
 PLAN_TERMINAL_STATUSES = {"Done", "Cancelled", "Converted To Visit"}
+EPISODE_PLAN_ITEM_TYPE_MAP = {
+	"Medication": "Medication",
+	"Injection": "Medication",
+	"Deworming": "Medication",
+	"Lab Recheck": "Lab Test",
+	"Imaging Recheck": "Imaging",
+	"Procedure": "Procedure",
+	"Vaccination": "Procedure",
+	"Follow-up Visit": "Recheck",
+	"Monitoring": "Instruction",
+	"Diet Plan": "Instruction",
+	"Wound Care": "Instruction",
+	"Owner Instruction": "Instruction",
+	"Boarding Review": "Instruction",
+	"Other": "Instruction",
+}
+EPISODE_PLAN_STATUS_MAP = {
+	"Planned": "Open",
+	"In Progress": "Open",
+	"Overdue": "Open",
+	"Missed": "Open",
+	"Changed": "Open",
+	"Done": "Completed",
+	"Converted To Visit": "Converted to Visit",
+}
 APPOINTMENT_PLAN_TYPES = {"Follow-up Visit", "Lab Recheck", "Imaging Recheck", "Procedure", "Vaccination"}
 MEDICATION_PAYLOAD_KEYS = {"medication", "medication_item", "qty", "dosage", "frequency", "duration_days", "instructions"}
 CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner", "Healthcare Administrator"}
@@ -222,6 +247,42 @@ def convert_plan_item_to_visit(plan_item=None, data=None, **kwargs):
 
 
 @frappe.whitelist()
+def get_care_episode_plan(episode=None, care_episode=None, data=None, **kwargs):
+	try:
+		payload = _payload(data, kwargs)
+		episode_name = cstr(episode or care_episode or payload.get("episode") or payload.get("care_episode")).strip()
+		if not episode_name:
+			return fail(_("Care Episode is required."), code="VALIDATION_ERROR")
+		if not frappe.db.exists("Pet Care Episode", episode_name):
+			return fail(_("Care Episode {0} was not found.").format(episode_name), code="NOT_FOUND")
+
+		require_doctype_permission("Pet Care Plan Item", "read")
+		episode_doc = frappe.get_doc("Pet Care Episode", episode_name)
+		if episode_doc.get("pet"):
+			_assert_pet_access(episode_doc.pet)
+
+		rows = frappe.get_all(
+			"Pet Care Plan Item",
+			filters={"care_episode": episode_name},
+			fields=["*"],
+			order_by="creation desc",
+			ignore_permissions=True,
+		)
+		items = [_episode_plan_item_payload(row) for row in rows]
+		_enrich_episode_plan_item_display(items)
+		items.sort(key=_episode_plan_sort_key)
+		return ok(
+			{"episode": episode_name, "plan_items": items, "items": items},
+			meta={
+				"total": len(items),
+				"order": "due_date asc, due_time asc, creation desc within the same due slot; undated items last",
+				"priority_options": _select_options("Pet Care Plan Item", "priority"),
+			},
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+@frappe.whitelist()
 def list_due_plan_items(filters=None, data=None, limit_start=0, limit_page_length=50, **kwargs):
 	try:
 		require_doctype_permission("Pet Care Plan Item", "read")
@@ -282,6 +343,74 @@ def get_pet_active_plan(pet=None, pet_id=None):
 		return ok({"items": items})
 	except Exception as exc:
 		return _error_response(exc)
+
+
+def _episode_plan_item_payload(row) -> dict:
+	from pet_app.api.visit_workbench import _visit_plan_item_payload
+
+	item = _visit_plan_item_payload(row)
+	raw_status = item.get("status")
+	item["raw_status"] = raw_status
+	item["status"] = _episode_plan_status(raw_status)
+	item["item_type"] = _episode_plan_item_type(item.get("plan_type"))
+	item["owner_instructions"] = item.get("owner_instructions") or item.get("instructions")
+	item["assigned_to"] = item.get("doctor")
+	item["assigned_to_name"] = None
+	item["scheduled_date"] = None
+	return item
+
+
+def _enrich_episode_plan_item_display(items: list[dict]) -> None:
+	enrich_link_aliases(items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+	appointment_times = _appointment_scheduled_time_map(item.get("appointment") for item in items)
+	for item in items:
+		item["assigned_to"] = item.get("doctor")
+		item["assigned_to_name"] = item.get("doctor_name")
+		scheduled_time = appointment_times.get(cstr(item.get("appointment")).strip())
+		if scheduled_time:
+			item["scheduled_datetime"] = cstr(scheduled_time)
+			item["scheduled_date"] = cstr(getdate(scheduled_time))
+		elif item.get("status") == "Scheduled" and item.get("due_date"):
+			item["scheduled_date"] = item.get("due_date")
+
+
+def _appointment_scheduled_time_map(appointment_names) -> dict[str, object]:
+	names = sorted({cstr(name).strip() for name in appointment_names if cstr(name).strip()})
+	if not names:
+		return {}
+	return {
+		row.name: row.get("scheduled_time")
+		for row in frappe.get_all(
+			"Appointment",
+			filters={"name": ["in", names]},
+			fields=["name", "scheduled_time"],
+			ignore_permissions=True,
+		)
+	}
+
+
+def _episode_plan_sort_key(item: dict) -> tuple[int, str, str]:
+	return (
+		0 if item.get("due_date") else 1,
+		cstr(item.get("due_date") or "9999-12-31"),
+		cstr(item.get("due_time") or "23:59:59"),
+	)
+
+
+def _episode_plan_item_type(plan_type: str | None) -> str:
+	return EPISODE_PLAN_ITEM_TYPE_MAP.get(cstr(plan_type).strip(), "Instruction")
+
+
+def _episode_plan_status(status: str | None) -> str:
+	raw_status = cstr(status).strip()
+	return EPISODE_PLAN_STATUS_MAP.get(raw_status, raw_status or "Open")
+
+
+def _select_options(doctype: str, fieldname: str) -> list[str]:
+	field = frappe.get_meta(doctype).get_field(fieldname)
+	if not field:
+		return []
+	return [option for option in cstr(field.options).splitlines() if option]
 
 
 def _validate_visit_can_accept_plan(visit):

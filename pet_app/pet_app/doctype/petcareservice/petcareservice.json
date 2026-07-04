@@ -34,7 +34,8 @@
   "size",
   "description",
   "send_reminder",
-  "amended_from"
+  "amended_from",
+  "barcode"
  ],
  "fields": [
   {
@@ -216,13 +217,18 @@
    "fieldtype": "Link",
    "label": "Service Option Item",
    "options": "Care Service Billing Option"
+  },
+  {
+   "fieldname": "barcode",
+   "fieldtype": "Barcode",
+   "label": "Barcode"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-05-19 16:19:38.600326",
+ "modified": "2026-07-04 10:19:50.928414",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "PetCareService",
@@ -244,8 +250,8 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
- "title_field": "pet_service_name",
  "sort_field": "creation",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "pet_service_name"
 }

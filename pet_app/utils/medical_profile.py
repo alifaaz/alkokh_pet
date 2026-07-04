@@ -6,6 +6,7 @@ from frappe.utils import cstr, getdate, now_datetime, nowdate
 
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.pet_app.doctype.pet_medical_profile.pet_medical_profile import ensure_pet_medical_profile
+from pet_app.utils.case_assignment import ensure_episode_practitioner, visit_practitioner
 
 
 CASE_STATUS_FROM_EPISODE = {
@@ -66,12 +67,15 @@ def create_or_update_care_episode_from_visit(visit):
 	for fieldname, value in {
 		"current_visit": visit.name,
 		"last_visit": visit.name,
-		"primary_doctor": episode.get("primary_doctor") or visit.get("doctor"),
+		"primary_doctor": episode.get("primary_doctor") or visit_practitioner(visit),
 		"chief_complaint": episode.get("chief_complaint") or _case_sheet_complaint(visit.get("case_sheet")),
 	}.items():
 		if value and episode.get(fieldname) != value:
 			episode.set(fieldname, value)
 			changed = True
+	practitioner = visit_practitioner(visit)
+	if practitioner and ensure_episode_practitioner(episode, practitioner):
+		changed = True
 	if episode.episode_status == "Open" and visit.get("status") == "In Progress":
 		episode.episode_status = "Under Diagnosis"
 		changed = True
@@ -372,7 +376,7 @@ def _new_episode_from_visit(visit):
 			"pet": visit.animal_patient,
 			"guardian": visit.guardian,
 			"customer": visit.customer,
-			"primary_doctor": visit.doctor,
+			"primary_doctor": visit_practitioner(visit),
 			"episode_title": _first_text(_case_sheet_complaint(visit.case_sheet), visit.get("diagnosis"), _("Active Case")),
 			"episode_type": _episode_type_from_visit(visit),
 			"episode_status": "Under Diagnosis" if visit.status == "In Progress" else "Open",
@@ -486,12 +490,15 @@ def _touch_episode_from_visit(episode, visit):
 	for fieldname, value in {
 		"current_visit": visit.name,
 		"last_visit": visit.name,
-		"primary_doctor": episode.get("primary_doctor") or visit.get("doctor"),
+		"primary_doctor": episode.get("primary_doctor") or visit_practitioner(visit),
 		"chief_complaint": episode.get("chief_complaint") or _case_sheet_complaint(visit.get("case_sheet")),
 	}.items():
 		if value and episode.meta.has_field(fieldname) and episode.get(fieldname) != value:
 			episode.set(fieldname, value)
 			changed = True
+	practitioner = visit_practitioner(visit)
+	if practitioner and ensure_episode_practitioner(episode, practitioner):
+		changed = True
 	if episode.episode_status == "Open" and visit.get("status") == "In Progress":
 		episode.episode_status = "Under Diagnosis"
 		changed = True

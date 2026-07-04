@@ -35,3 +35,4 @@ pet_app.patches.backfill_pet_care_service_category
 pet_app.patches.disable_test_care_service_billing_option
 pet_app.patches.add_brand_arabic_name
 pet_app.patches.add_care_service_billing_option_animal_type
+pet_app.patches.case_assignment_schema

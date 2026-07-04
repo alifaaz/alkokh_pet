@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, get_datetime
 
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import require_doctype_permission
@@ -43,6 +43,7 @@ def get_visit_workbench(visit=None, visit_id=None, name=None):
 				"active_episode": _active_episode_payload(visit_doc),
 				"case_context": get_visit_case_context(visit_doc),
 				"active_plan_items": _plan_items(visit_doc),
+				"plan_items": _visit_plan_items(visit_doc),
 					"diagnoses": _visit_diagnoses(visit_doc),
 					"orders": _visit_orders(visit_doc),
 					"medications": _medication_rows(visit_doc),
@@ -87,6 +88,38 @@ def _plan_items(visit_doc) -> list[dict]:
 	items = [dict(row) for row in rows]
 	enrich_link_aliases(items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
 	return items
+
+
+def _visit_plan_items(visit_doc) -> list[dict]:
+	rows = frappe.get_all(
+		"Pet Care Plan Item",
+		filters={"source_visit": visit_doc.name},
+		fields=["*"],
+		order_by="due_date asc, priority desc, modified desc",
+		ignore_permissions=True,
+	)
+	items = [_visit_plan_item_payload(row) for row in rows]
+	enrich_link_aliases(items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+	return items
+
+
+def _visit_plan_item_payload(row) -> dict:
+	item = dict(row)
+	item["item_type"] = item.get("item_type") or item.get("plan_type")
+	item["owner_instructions"] = item.get("owner_instructions") or item.get("instructions")
+	item["due_datetime"] = item.get("due_datetime") or _plan_due_datetime(item)
+	return item
+
+
+def _plan_due_datetime(item: dict) -> str | None:
+	if not item.get("due_date") or not item.get("due_time"):
+		return None
+	try:
+		due_date = item.get("due_date")
+		due_time = item.get("due_time")
+		return cstr(get_datetime(f"{due_date} {due_time}"))
+	except Exception:
+		return None
 
 
 def _medical_profile_payload(pet: str | None) -> dict:

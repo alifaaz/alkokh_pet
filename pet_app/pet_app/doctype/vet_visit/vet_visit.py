@@ -112,10 +112,19 @@ class VetVisit(Document):
 		if not self.visit_type:
 			self.visit_type = "Consultation"
 
+		if self.meta.has_field("primary_practitioner") and self.primary_practitioner and not self.doctor:
+			self.doctor = self.primary_practitioner
+
 		if not self.doctor:
 			doctor = _get_session_doctor()
 			if doctor:
 				self.doctor = doctor
+
+		if self.meta.has_field("primary_practitioner"):
+			if self.doctor and not self.primary_practitioner:
+				self.primary_practitioner = self.doctor
+			elif self.primary_practitioner and not self.doctor:
+				self.doctor = self.primary_practitioner
 
 		if self.meta.has_field("follow_up_preferred_date"):
 			if self.follow_up_date and not self.follow_up_preferred_date:

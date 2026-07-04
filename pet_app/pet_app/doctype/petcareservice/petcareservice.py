@@ -26,6 +26,9 @@ def _notify_user(for_user, subject, doc_type, doc_name):
 
 
 class PetCareService(Document):
+	def before_validate(self):
+		self._set_barcode_on_create()
+
 	def validate(self):
 		self._set_guardian_from_pet()
 		self._set_category_from_links()
@@ -46,6 +49,11 @@ class PetCareService(Document):
 
 	def after_save(self):
 		self._sync_pet_weight()
+
+	def _set_barcode_on_create(self):
+		if not self.is_new() or self.barcode:
+			return
+		self.barcode = self.name
 
 	def _notify_provider(self):
 		provider = self.provider or self.doctor

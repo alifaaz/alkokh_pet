@@ -5,6 +5,8 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import getdate, nowdate
 
+from pet_app.utils.case_assignment import ensure_episode_practitioner
+
 
 ACTIVE_EPISODE_STATUSES = {
 	"Open",
@@ -48,6 +50,8 @@ class PetCareEpisode(Document):
 			self.episode_title = self.chief_complaint or _("Active Case")
 		if not self.created_by:
 			self.created_by = frappe.session.user
+		if self.primary_doctor:
+			ensure_episode_practitioner(self, self.primary_doctor)
 
 	def _validate_identity(self):
 		if self.guardian and self.pet and not frappe.db.exists("PetGuardian", {"guardian_id": self.guardian, "pet_id": self.pet}):
