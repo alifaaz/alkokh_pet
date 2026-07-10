@@ -53,6 +53,13 @@ CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner"
 GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
 
 
+def _has_plan_item_permission(ptype: str, user: str | None = None) -> bool:
+	try:
+		return bool(frappe.has_permission("Pet Care Plan Item", ptype=ptype, user=user or frappe.session.user))
+	except Exception:
+		return False
+
+
 @frappe.whitelist(methods=["POST"])
 def add_plan_item_from_visit(visit=None, data=None, **kwargs):
 	try:
@@ -738,7 +745,8 @@ def _assert_pet_access(pet: str, write=False):
 		frappe.throw(_("Pet {0} was not found.").format(frappe.bold(pet)))
 	user = frappe.session.user
 	roles = get_user_roles(user)
-	if user_has_full_access(user) or roles & CLINICAL_ROLES:
+	plan_ptype = "write" if write else "read"
+	if user_has_full_access(user) or roles & CLINICAL_ROLES or _has_plan_item_permission(plan_ptype, user):
 		return
 	guardian = frappe.db.get_value("Guardian", {"user_id": user}, "name")
 	if not write and guardian and frappe.db.exists("PetGuardian", {"guardian_id": guardian, "pet_id": pet}):
