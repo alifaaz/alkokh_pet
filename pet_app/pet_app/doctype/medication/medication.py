@@ -11,6 +11,11 @@ from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
+from pet_app.utils.price_list import get_veterinary_selling_price_list
+
+
+DOSE_OPTION_PLACEHOLDER_UOM = "Nos"
+DOSE_OPTION_PLACEHOLDER_UOM_PREFERENCES = ("Nos", "ml", "Unit", "Bottle", "Tablet")
 
 
 class Medication(Document):
@@ -31,13 +36,18 @@ class Medication(Document):
 		self.medication_name = cstr(self.medication_name).strip()
 		self.code = cstr(self.code).strip() or None
 		self.dosage_form_or_unit = cstr(self.dosage_form_or_unit).strip()
+		self.default_dispense_uom = cstr(self.default_dispense_uom).strip()
 		self.item_group = cstr(self.item_group).strip()
 		self.strength = cstr(self.strength).strip()
 		self.default_dosage = cstr(self.default_dosage).strip()
 		self.default_frequency = cstr(self.default_frequency).strip()
 		self.default_instructions = cstr(self.default_instructions).strip()
 		self.default_price = flt(self.default_price) if self.default_price not in (None, "") else None
+		self.default_conversion_factor = flt(self.default_conversion_factor) if self.default_conversion_factor not in (None, "") else None
 		self.total_dispensed_amount = flt(self.total_dispensed_amount)
+		for row in self.get("dose_options") or []:
+			row.label = cstr(row.get("label")).strip()
+			row.qty = flt(row.get("qty"))
 
 		if not self.medication_name:
 			frappe.throw(_("Medication Name is required."))
@@ -95,7 +105,7 @@ class Medication(Document):
 		if not item:
 			return
 
-		if not self.dosage_form_or_unit and item.stock_uom:
+		if item.stock_uom:
 			self.dosage_form_or_unit = item.stock_uom
 		if not self.item_group and item.item_group:
 			self.item_group = item.item_group
@@ -157,11 +167,22 @@ class Medication(Document):
 			item.standard_rate = flt(self.default_price)
 			changed = True
 
-		stock_uom = self.dosage_form_or_unit or item.stock_uom or "Nos"
+		stock_uom = item.stock_uom or self.dosage_form_or_unit or "Nos"
 		_ensure_uom(stock_uom)
-		if item.stock_uom != stock_uom:
+		if not item.stock_uom:
 			item.stock_uom = stock_uom
 			changed = True
+		if self.dosage_form_or_unit != stock_uom:
+			self.dosage_form_or_unit = stock_uom
+
+		if self.default_dispense_uom:
+			_ensure_uom(self.default_dispense_uom)
+			conversion_factor = 1 if self.default_dispense_uom == stock_uom else flt(self.default_conversion_factor)
+			if conversion_factor <= 0:
+				frappe.throw(_("Default Conversion Factor is required when Default Dispense UOM differs from Stock UOM."))
+			changed = _upsert_item_uom_conversion(item, self.default_dispense_uom, conversion_factor) or changed
+
+		self._validate_dose_options(stock_uom)
 
 		if self.item_group and item.item_group != self.item_group:
 			item.item_group = self.item_group
@@ -194,6 +215,21 @@ class Medication(Document):
 		self.reference_count = counters["reference_count"]
 		self.given_count = counters["given_count"]
 		self.total_dispensed_amount = counters["total_dispensed_amount"]
+
+
+	def _validate_dose_options(self, stock_uom: str):
+		active_rows = [row for row in self.get("dose_options") or [] if not cint(row.get("disabled"))]
+		if not active_rows:
+			return
+
+		resolve_dose_option_placeholder_uom(stock_uom)
+
+		for row in active_rows:
+			label = cstr(row.get("label")).strip() or _("Row {0}").format(row.idx)
+			qty = flt(row.get("qty"))
+			if qty <= 0:
+				frappe.throw(_("Dose Option {0} requires Stock Deduction Qty greater than zero.").format(frappe.bold(label)))
+			_validate_fractional_stock_uom(stock_uom, qty, label)
 
 
 def find_matching_item(medication_name: str, code: str | None = None) -> str | None:
@@ -249,6 +285,49 @@ def create_item_for_medication(doc: Medication) -> str:
 		upsert_item_price(item.name, flt(doc.default_price))
 
 	return item.name
+
+
+def _upsert_item_uom_conversion(item, uom: str, conversion_factor: float) -> bool:
+	for row in item.get("uoms") or []:
+		if row.uom == uom:
+			if flt(row.conversion_factor) != flt(conversion_factor):
+				row.conversion_factor = flt(conversion_factor)
+				return True
+			return False
+
+	item.append("uoms", {"uom": uom, "conversion_factor": flt(conversion_factor)})
+	return True
+
+
+def _validate_fractional_stock_uom(stock_uom: str, conversion_factor: float, label: str):
+	if not stock_uom or abs(flt(conversion_factor) - int(flt(conversion_factor))) <= 0.0000001:
+		return
+	if cint(frappe.db.get_value("UOM", stock_uom, "must_be_whole_number")):
+		frappe.throw(
+			_(
+				"Dose Option {0} deducts a fractional stock quantity ({1}) but Stock UOM {2} is marked as whole-number only."
+			).format(frappe.bold(label), frappe.bold(flt(conversion_factor)), frappe.bold(stock_uom))
+		)
+
+
+
+def resolve_dose_option_placeholder_uom(stock_uom: str | None) -> str:
+	stock_uom = cstr(stock_uom).strip()
+	for uom in DOSE_OPTION_PLACEHOLDER_UOM_PREFERENCES:
+		if uom != stock_uom and frappe.db.exists("UOM", uom):
+			return uom
+
+	filters = {"name": ["!=", stock_uom]} if stock_uom else {}
+	fallback = frappe.get_all("UOM", filters=filters, fields=["name"], order_by="name asc", limit=1)
+	if fallback:
+		return fallback[0].name
+
+	frappe.throw(
+		_(
+			"Dose options require at least one existing transaction UOM different from Stock UOM {0}. "
+			"Create or enable another UOM before using dose options."
+		).format(frappe.bold(stock_uom or _("Unknown")))
+	)
 
 
 def _ensure_uom(uom: str):
@@ -327,7 +406,7 @@ def get_medication_usage_counters(linked_item: str | None) -> dict[str, float]:
 		select
 			count(*) as reference_count,
 			count(*) as given_count,
-			coalesce(sum(coalesce(vmi.qty, 0)), 0) as total_dispensed_amount
+			coalesce(sum(case when coalesce(vmi.dispensed_qty, 0) > 0 then vmi.dispensed_qty else coalesce(vmi.qty, 0) end), 0) as total_dispensed_amount
 		from `tabVet Visit Medication Item` vmi
 		inner join `tabVet Visit` vv on vv.name = vmi.parent
 		where vmi.parenttype = 'Vet Visit'
@@ -346,17 +425,7 @@ def get_medication_usage_counters(linked_item: str | None) -> dict[str, float]:
 
 
 def _get_medication_price_list() -> str | None:
-	for price_list in ("Clinic", "Standard Selling"):
-		if frappe.db.exists("Price List", price_list):
-			return price_list
-
-	rows = frappe.get_all(
-		"Price List",
-		filters={"selling": 1, "enabled": 1},
-		pluck="name",
-		limit=1,
-	)
-	return rows[0] if rows else None
+	return get_veterinary_selling_price_list()
 
 
 def refresh_medication_usage_counters(medication_names: Iterable[str] | None = None, linked_items: Iterable[str] | None = None):

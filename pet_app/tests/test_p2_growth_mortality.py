@@ -613,13 +613,13 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 				"category_id": category.name,
 				"item_code": item.name,
 				"default_price": 25,
-				"price_list": "Clinic",
+				"price_list": "Standard Selling",
 			}
 		).insert(ignore_permissions=True)
 
 	def _make_care_service_standard(self, label):
 		# Like _make_care_service but uses the always-present "Standard Selling"
-		# price list, so the test does not depend on a seeded "Clinic" price list.
+		# price list, so the test does not depend on extra seeded price lists.
 		suffix = frappe.generate_hash(length=8)
 		item = self._make_item(f"{label} Item")
 		category = frappe.get_doc({"doctype": "CategoryCareServices", "category_name": f"{label} Category {suffix}"}).insert(ignore_permissions=True)

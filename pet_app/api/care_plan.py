@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
 
 import frappe
@@ -10,6 +11,7 @@ from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import get_user_roles, require_doctype_permission, user_has_full_access
 from pet_app.api.response import fail, ok
 from pet_app.api.workspace import _assert_record_access, _has_field, _stamp_appointment_conversion
+from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.utils.medical_profile import (
 	set_visit_case_choice,
 	sync_follow_up_from_visit,
@@ -47,8 +49,39 @@ EPISODE_PLAN_STATUS_MAP = {
 	"Done": "Completed",
 	"Converted To Visit": "Converted to Visit",
 }
+CASE_TABLE_TERMINAL_ITEM_STATES = {"completed", "cancelled", "converted_to_visit"}
+CASE_TABLE_EPISODE_FIELDS = [
+	"name",
+	"pet",
+	"guardian",
+	"customer",
+	"primary_doctor",
+	"episode_title",
+	"episode_type",
+	"episode_status",
+	"priority",
+	"severity",
+	"opened_visit",
+	"current_visit",
+	"last_visit",
+	"chief_complaint",
+	"problem_summary",
+	"diagnosis_summary",
+	"treatment_summary",
+	"primary_diagnosis",
+	"started_on",
+	"expected_end_date",
+	"resolved_on",
+	"closed_on",
+	"next_follow_up_date",
+	"follow_up_status",
+	"requires_follow_up",
+	"outcome",
+	"modified",
+	"creation",
+]
 APPOINTMENT_PLAN_TYPES = {"Follow-up Visit", "Lab Recheck", "Imaging Recheck", "Procedure", "Vaccination"}
-MEDICATION_PAYLOAD_KEYS = {"medication", "medication_item", "qty", "dosage", "frequency", "duration_days", "instructions"}
+MEDICATION_PAYLOAD_KEYS = {"medication", "medication_item", "qty", "dispense_uom", "stock_uom", "conversion_factor", "dosage", "frequency", "duration_days", "instructions", "warehouse"}
 CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner", "Healthcare Administrator"}
 GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
 
@@ -289,6 +322,55 @@ def get_care_episode_plan(episode=None, care_episode=None, data=None, **kwargs):
 	except Exception as exc:
 		return _error_response(exc)
 
+
+@frappe.whitelist()
+def get_care_episode_detail(episode=None, care_episode=None, data=None, **kwargs):
+	"""Return one episode's full case profile, shaped like a single ``get_case_follow_up_table`` case.
+
+	Keyed by episode name alone (no pet filter), so a deep link / bookmark to a case can load
+	without any pet context. The payload is exactly one element of that table's ``data.cases[]``
+	(``{case, episode, items, visits, follow_up_summary}``), built with the same helpers so the
+	frontend can reuse its existing case mapping.
+	"""
+	try:
+		payload = _payload(data, kwargs)
+		episode_name = cstr(episode or care_episode or payload.get("episode") or payload.get("care_episode")).strip()
+		if not episode_name:
+			return fail(_("Care Episode is required."), code="VALIDATION_ERROR")
+		if not frappe.db.exists("Pet Care Episode", episode_name):
+			return fail(_("Care Episode {0} was not found.").format(episode_name), code="NOT_FOUND")
+
+		require_doctype_permission("Pet Care Episode", "read")
+		require_doctype_permission("Pet Care Plan Item", "read")
+
+		rows = frappe.get_all(
+			"Pet Care Episode",
+			filters={"name": episode_name},
+			fields=CASE_TABLE_EPISODE_FIELDS,
+			ignore_permissions=True,
+		)
+		episode_row = dict(rows[0])
+
+		_assert_pet_access(episode_row.get("pet"))
+		enrich_link_aliases([episode_row], pet_field="pet", guardian_field="guardian", doctor_field="primary_doctor", include_provider=False)
+
+		items = _case_table_plan_items([episode_name], payload)
+		_enrich_case_table_items(items)
+		items = _filter_case_table_items_by_state(items, payload)
+		visits = _case_table_visits([episode_name])
+
+		case = {
+			"case": episode_row,
+			"episode": episode_row,
+			"items": items,
+			"visits": visits,
+			"follow_up_summary": _case_table_summary(episode_row, items, visits),
+		}
+		return ok(case, meta={"episode": episode_name})
+	except Exception as exc:
+		return _error_response(exc)
+
+
 @frappe.whitelist()
 def list_due_plan_items(filters=None, data=None, limit_start=0, limit_page_length=50, **kwargs):
 	try:
@@ -348,6 +430,72 @@ def get_pet_active_plan(pet=None, pet_id=None):
 		items = [dict(row) for row in rows]
 		enrich_link_aliases(items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
 		return ok({"items": items})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_case_follow_up_table(filters=None, data=None, limit_start=0, limit_page_length=50, **kwargs):
+	"""Return table-ready case rows with follow-up/action items grouped under each episode."""
+	try:
+		require_doctype_permission("Pet Care Episode", "read")
+		require_doctype_permission("Pet Care Plan Item", "read")
+		payload = _payload(filters or data, kwargs)
+		limit_start = max(cint(limit_start or payload.get("limit_start")), 0)
+		limit_page_length = max(min(cint(limit_page_length or payload.get("limit") or payload.get("limit_page_length") or 50), 200), 1)
+
+		episodes, total_cases = _case_table_episode_rows(payload, limit_start, limit_page_length)
+		if not episodes:
+			return ok(
+				{"cases": [], "rows": [], "metrics": _case_table_metrics([])},
+				meta={"total": total_cases, "limit_start": limit_start, "limit_page_length": limit_page_length},
+			)
+
+		for episode in episodes:
+			_assert_pet_access(episode.get("pet"))
+		enrich_link_aliases(episodes, pet_field="pet", guardian_field="guardian", doctor_field="primary_doctor", include_provider=False)
+
+		episode_names = [row["name"] for row in episodes]
+		items = _case_table_plan_items(episode_names, payload)
+		_enrich_case_table_items(items)
+		items = _filter_case_table_items_by_state(items, payload)
+		visits = _case_table_visits(episode_names)
+
+		items_by_episode = _group_by(items, "care_episode")
+		visits_by_episode = _group_by(visits, "care_episode")
+		require_matching_items = _case_table_has_item_filters(payload)
+
+		cases = []
+		for episode in episodes:
+			episode_items = items_by_episode.get(episode["name"], [])
+			if require_matching_items and not episode_items:
+				continue
+			episode_visits = visits_by_episode.get(episode["name"], [])
+			cases.append(
+				{
+					"case": episode,
+					"episode": episode,
+					"items": episode_items,
+					"visits": episode_visits,
+					"follow_up_summary": _case_table_summary(episode, episode_items, episode_visits),
+				}
+			)
+
+		return ok(
+			{
+				"cases": cases,
+				"rows": _case_table_flat_rows(cases),
+				"metrics": _case_table_metrics(cases),
+			},
+			meta={
+				"total": total_cases,
+				"returned": len(cases),
+				"limit_start": limit_start,
+				"limit_page_length": limit_page_length,
+				"default_active_only": True,
+				"default_include_closed_items": True,
+			},
+		)
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -418,6 +566,415 @@ def _select_options(doctype: str, fieldname: str) -> list[str]:
 	if not field:
 		return []
 	return [option for option in cstr(field.options).splitlines() if option]
+
+
+def _case_table_episode_rows(payload: dict, limit_start: int, limit_page_length: int) -> tuple[list[dict], int]:
+	filters = {}
+	for incoming, fieldname in (
+		("pet", "pet"),
+		("pet_id", "pet"),
+		("guardian", "guardian"),
+		("guardian_id", "guardian"),
+		("customer", "customer"),
+	):
+		if payload.get(incoming):
+			filters[fieldname] = payload.get(incoming)
+
+	doctor = cstr(payload.get("doctor") or payload.get("practitioner") or payload.get("primary_doctor")).strip()
+	if doctor:
+		episode_names = _case_table_episode_names_for_doctor(doctor)
+		if not episode_names:
+			return [], 0
+		filters["name"] = ["in", episode_names]
+
+	status_filter = payload.get("episode_status") or payload.get("case_status")
+	if status_filter:
+		filters["episode_status"] = ["in", _as_list(status_filter)]
+	elif _truthy(payload.get("active_only"), default=True):
+		filters["episode_status"] = ["in", list(ACTIVE_EPISODE_STATUSES)]
+
+	rows = frappe.get_all(
+		"Pet Care Episode",
+		filters=filters,
+		fields=CASE_TABLE_EPISODE_FIELDS,
+		order_by="modified desc",
+		limit_start=limit_start,
+		limit_page_length=limit_page_length,
+		ignore_permissions=True,
+	)
+	return [dict(row) for row in rows], _case_table_total(filters, payload)
+
+
+def _case_table_total(episode_filters: dict, payload: dict) -> int:
+	"""Full count of cases matching the filters, ignoring pagination.
+
+	When item-level filters are active, the main endpoint drops episodes with no matching
+	items *after* pagination, so a raw episode count would overcount. In that case we count
+	the distinct episodes that actually have a matching (and, for state filters, enriched)
+	item, so ``meta.total`` stays exact and pagination can page precisely.
+	"""
+	if not _case_table_has_item_filters(payload):
+		return frappe.db.count("Pet Care Episode", episode_filters)
+
+	episode_names = frappe.get_all(
+		"Pet Care Episode",
+		filters=episode_filters,
+		pluck="name",
+		ignore_permissions=True,
+	)
+	if not episode_names:
+		return 0
+
+	# Only the enriched follow-up state filter can't be expressed at the DB level; when it is
+	# absent, a distinct DB count over the item filters is enough (and cheaper).
+	if not (payload.get("follow_up_state") or payload.get("item_state")):
+		matching = frappe.get_all(
+			"Pet Care Plan Item",
+			filters=_case_table_plan_item_filters(episode_names, payload),
+			pluck="care_episode",
+			ignore_permissions=True,
+		)
+		return len({name for name in matching if name})
+
+	items = _case_table_plan_items(episode_names, payload)
+	_enrich_case_table_items(items)
+	items = _filter_case_table_items_by_state(items, payload)
+	return len({item.get("care_episode") for item in items if item.get("care_episode")})
+
+
+def _case_table_episode_names_for_doctor(doctor: str) -> list[str]:
+	names = set(
+		frappe.get_all(
+			"Pet Care Episode",
+			filters={"primary_doctor": doctor},
+			pluck="name",
+			ignore_permissions=True,
+		)
+	)
+	names.update(
+		name
+		for name in frappe.get_all(
+			"Pet Care Plan Item",
+			filters={"doctor": doctor, "care_episode": ["is", "set"]},
+			pluck="care_episode",
+			ignore_permissions=True,
+		)
+		if name
+	)
+	return sorted(names)
+
+
+def _case_table_plan_item_filters(episode_names: list[str], payload: dict) -> dict:
+	filters = {"care_episode": ["in", episode_names]}
+	if payload.get("doctor") or payload.get("practitioner"):
+		filters["doctor"] = payload.get("doctor") or payload.get("practitioner")
+	if payload.get("plan_type"):
+		filters["plan_type"] = ["in", _as_list(payload.get("plan_type"))]
+	if payload.get("item_status") or payload.get("plan_status"):
+		filters["status"] = ["in", _as_list(payload.get("item_status") or payload.get("plan_status"))]
+	elif not _truthy(payload.get("include_closed_items"), default=True):
+		filters["status"] = ["not in", ["Done", "Cancelled", "Converted To Visit"]]
+	if payload.get("date_from"):
+		filters["due_date"] = [">=", getdate(payload.get("date_from"))]
+	if payload.get("date_to") or payload.get("due_date"):
+		date_to = getdate(payload.get("date_to") or payload.get("due_date"))
+		if "due_date" in filters and isinstance(filters["due_date"], list) and filters["due_date"][0] == ">=":
+			filters["due_date"] = ["between", [filters["due_date"][1], date_to]]
+		else:
+			filters["due_date"] = ["<=", date_to]
+	return filters
+
+
+def _case_table_plan_items(episode_names: list[str], payload: dict) -> list[dict]:
+	if not episode_names:
+		return []
+	filters = _case_table_plan_item_filters(episode_names, payload)
+	rows = frappe.get_all(
+		"Pet Care Plan Item",
+		filters=filters,
+		fields=["*"],
+		order_by="due_date asc, due_time asc, modified desc",
+		ignore_permissions=True,
+	)
+	return [_episode_plan_item_payload(row) for row in rows]
+
+
+def _enrich_case_table_items(items: list[dict]) -> None:
+	if not items:
+		return
+	_enrich_episode_plan_item_display(items)
+	appointments = _case_table_appointment_map(item.get("appointment") for item in items)
+	linked_visit_names = set()
+	source_visit_names = set()
+	for item in items:
+		appointment = appointments.get(cstr(item.get("appointment")).strip()) or {}
+		linked_visit = item.get("converted_visit") or appointment.get("custom_linked_visit_id")
+		if linked_visit:
+			linked_visit_names.add(linked_visit)
+		if item.get("source_visit"):
+			source_visit_names.add(item.get("source_visit"))
+	visits = _case_table_visit_map(sorted(linked_visit_names | source_visit_names))
+
+	for item in items:
+		appointment = appointments.get(cstr(item.get("appointment")).strip()) or {}
+		linked_visit_name = item.get("converted_visit") or appointment.get("custom_linked_visit_id")
+		linked_visit = visits.get(linked_visit_name) if linked_visit_name else None
+		source_visit = visits.get(item.get("source_visit")) if item.get("source_visit") else None
+		item["appointment_status"] = item.get("appointment_status") or appointment.get("status")
+		item["scheduled_datetime"] = item.get("scheduled_datetime") or cstr(appointment.get("scheduled_time") or None)
+		item["linked_visit"] = linked_visit_name
+		item["linked_visit_status"] = linked_visit.get("status") if linked_visit else None
+		item["linked_visit_datetime"] = linked_visit.get("visit_datetime") if linked_visit else None
+		item["source_visit_status"] = source_visit.get("status") if source_visit else None
+		item["patient_came"] = bool(linked_visit_name)
+		item["follow_up_state"] = _case_table_item_state(item, appointment=appointment, linked_visit=linked_visit)
+		item["follow_up_label"] = _case_table_item_label(item, linked_visit=linked_visit)
+
+
+def _case_table_appointment_map(appointment_names) -> dict[str, dict]:
+	names = sorted({cstr(name).strip() for name in appointment_names if cstr(name).strip()})
+	if not names:
+		return {}
+	fields = ["name", "status", "scheduled_time"]
+	for fieldname in ("custom_linked_visit_id", "custom_converted_target", "custom_converted_at", "custom_care_plan_item"):
+		if _has_field("Appointment", fieldname):
+			fields.append(fieldname)
+	return {
+		row.name: dict(row)
+		for row in frappe.get_all(
+			"Appointment",
+			filters={"name": ["in", names]},
+			fields=fields,
+			ignore_permissions=True,
+		)
+	}
+
+
+def _case_table_visits(episode_names: list[str]) -> list[dict]:
+	if not episode_names or not _has_field("Vet Visit", "care_episode"):
+		return []
+	rows = frappe.get_all(
+		"Vet Visit",
+		filters={"care_episode": ["in", episode_names]},
+		fields=[
+			"name",
+			"care_episode",
+			"animal_patient",
+			"guardian",
+			"doctor",
+			"visit_type",
+			"status",
+			"visit_datetime",
+			"diagnosis",
+			"follow_up_required",
+			"follow_up_status",
+			"follow_up_date",
+			"follow_up_appointment_id",
+			"follow_up_visit_id",
+			"follow_up_of_visit_id",
+		],
+		order_by="visit_datetime desc, creation desc",
+		ignore_permissions=True,
+	)
+	visits = [dict(row) for row in rows]
+	enrich_link_aliases(visits, pet_field="animal_patient", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+	return visits
+
+
+def _case_table_visit_map(visit_names: list[str]) -> dict[str, dict]:
+	names = sorted({cstr(name).strip() for name in visit_names if cstr(name).strip()})
+	if not names:
+		return {}
+	rows = frappe.get_all(
+		"Vet Visit",
+		filters={"name": ["in", names]},
+		fields=["name", "status", "visit_datetime", "doctor", "visit_type"],
+		ignore_permissions=True,
+	)
+	visits = [dict(row) for row in rows]
+	enrich_link_aliases(visits, doctor_field="doctor", include_pet=False, include_guardian=False, include_provider=False)
+	return {row["name"]: row for row in visits}
+
+
+def _case_table_item_state(item: dict, *, appointment=None, linked_visit=None) -> str:
+	raw_status = cstr(item.get("raw_status") or item.get("status")).strip()
+	if raw_status == "Done":
+		return "completed"
+	if raw_status == "Cancelled":
+		return "cancelled"
+	if raw_status == "Converted To Visit" or cint(item.get("converted_to_visit")) or item.get("converted_visit") or linked_visit:
+		return "converted_to_visit"
+	if raw_status == "Missed":
+		return "missed"
+	if raw_status == "Overdue":
+		return "overdue"
+	if appointment and cstr(appointment.get("status")).strip() == "Cancelled":
+		return "cancelled"
+	if item.get("due_date"):
+		due_date = getdate(item.get("due_date"))
+		today = getdate(nowdate())
+		if due_date < today:
+			return "overdue"
+		if due_date == today:
+			return "due_today"
+	if item.get("appointment") or raw_status == "Scheduled":
+		return "scheduled"
+	if raw_status == "In Progress":
+		return "in_progress"
+	return "open"
+
+
+def _case_table_item_label(item: dict, *, linked_visit=None) -> str:
+	state = item.get("follow_up_state")
+	if state == "converted_to_visit":
+		if linked_visit and linked_visit.get("status") == "Completed":
+			return "Came / Visit Completed"
+		return "Came / Visit Opened"
+	labels = {
+		"open": "Open",
+		"in_progress": "In Progress",
+		"scheduled": "Scheduled",
+		"due_today": "Due Today",
+		"overdue": "Overdue",
+		"missed": "Missed",
+		"completed": "Done",
+		"cancelled": "Cancelled",
+	}
+	return labels.get(state, "Open")
+
+
+def _filter_case_table_items_by_state(items: list[dict], payload: dict) -> list[dict]:
+	state_filter = payload.get("follow_up_state") or payload.get("item_state")
+	if not state_filter:
+		return items
+	allowed = set(_as_list(state_filter))
+	return [item for item in items if item.get("follow_up_state") in allowed]
+
+
+def _case_table_summary(episode: dict, items: list[dict], visits: list[dict]) -> dict:
+	states = Counter(item.get("follow_up_state") or "open" for item in items)
+	next_due_date = _next_due_date(items)
+	last_visit = visits[0] if visits else None
+	return {
+		"total_items": len(items),
+		"open_items": len([item for item in items if item.get("follow_up_state") not in CASE_TABLE_TERMINAL_ITEM_STATES]),
+		"completed_items": states.get("completed", 0),
+		"cancelled_items": states.get("cancelled", 0),
+		"converted_items": states.get("converted_to_visit", 0),
+		"overdue_items": states.get("overdue", 0),
+		"due_today_items": states.get("due_today", 0),
+		"missed_items": states.get("missed", 0),
+		"next_due_date": next_due_date,
+		"next_follow_up_date": episode.get("next_follow_up_date") or next_due_date,
+		"follow_up_status": episode.get("follow_up_status"),
+		"visit_count": len(visits),
+		"last_visit": last_visit.get("name") if last_visit else episode.get("last_visit"),
+		"last_visit_status": last_visit.get("status") if last_visit else None,
+	}
+
+
+def _case_table_flat_rows(cases: list[dict]) -> list[dict]:
+	rows = []
+	for case in cases:
+		episode = case["episode"]
+		if not case["items"]:
+			rows.append(_case_table_empty_case_row(episode, case["follow_up_summary"]))
+			continue
+		for item in case["items"]:
+			row = dict(item)
+			row.update(
+				{
+					"row_type": "plan_item",
+					"case": episode.get("name"),
+					"episode": episode.get("name"),
+					"episode_title": episode.get("episode_title"),
+					"episode_status": episode.get("episode_status"),
+					"primary_doctor": episode.get("primary_doctor"),
+					"primary_doctor_name": episode.get("doctor_name"),
+					"case_started_on": episode.get("started_on"),
+					"case_next_follow_up_date": episode.get("next_follow_up_date"),
+				}
+			)
+			rows.append(row)
+	return rows
+
+
+def _case_table_empty_case_row(episode: dict, summary: dict) -> dict:
+	return {
+		"row_type": "case",
+		"case": episode.get("name"),
+		"episode": episode.get("name"),
+		"episode_title": episode.get("episode_title"),
+		"episode_status": episode.get("episode_status"),
+		"pet": episode.get("pet"),
+		"pet_name": episode.get("pet_name"),
+		"guardian": episode.get("guardian"),
+		"guardian_name": episode.get("guardian_name"),
+		"primary_doctor": episode.get("primary_doctor"),
+		"primary_doctor_name": episode.get("doctor_name"),
+		"follow_up_state": "no_items",
+		"follow_up_label": "No Plan Items",
+		"next_due_date": summary.get("next_due_date"),
+	}
+
+
+def _case_table_metrics(cases: list[dict]) -> dict:
+	states = Counter()
+	total_items = 0
+	for case in cases:
+		total_items += len(case.get("items") or [])
+		states.update(item.get("follow_up_state") or "open" for item in case.get("items") or [])
+	return {
+		"total_cases": len(cases),
+		"total_items": total_items,
+		"open_items": total_items - sum(states.get(state, 0) for state in CASE_TABLE_TERMINAL_ITEM_STATES),
+		"overdue_items": states.get("overdue", 0),
+		"due_today_items": states.get("due_today", 0),
+		"completed_items": states.get("completed", 0),
+		"cancelled_items": states.get("cancelled", 0),
+		"converted_items": states.get("converted_to_visit", 0),
+		"by_state": dict(states),
+	}
+
+
+def _next_due_date(items: list[dict]):
+	due_dates = [
+		getdate(item.get("due_date"))
+		for item in items
+		if item.get("due_date") and item.get("follow_up_state") not in CASE_TABLE_TERMINAL_ITEM_STATES
+	]
+	return min(due_dates) if due_dates else None
+
+
+def _group_by(rows: list[dict], fieldname: str) -> dict[str, list[dict]]:
+	grouped = {}
+	for row in rows:
+		key = row.get(fieldname)
+		if key:
+			grouped.setdefault(key, []).append(row)
+	return grouped
+
+
+def _case_table_has_item_filters(payload: dict) -> bool:
+	return any(payload.get(key) for key in ("plan_type", "item_status", "plan_status", "follow_up_state", "item_state", "date_from", "date_to", "due_date"))
+
+
+def _truthy(value, *, default=False) -> bool:
+	if value is None:
+		return default
+	if isinstance(value, str):
+		return value.strip().lower() not in {"0", "false", "no", "off"}
+	return bool(cint(value))
+
+
+def _as_list(value) -> list:
+	if value is None:
+		return []
+	if isinstance(value, (list, tuple, set)):
+		return [item for item in value if item]
+	if isinstance(value, str) and "," in value:
+		return [item.strip() for item in value.split(",") if item.strip()]
+	return [value]
 
 
 def _validate_visit_can_accept_plan(visit):

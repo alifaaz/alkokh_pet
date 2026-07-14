@@ -6,7 +6,7 @@ import frappe
 DEFAULT_COUNTRY = "Iraq"
 DEFAULT_CURRENCY = "IQD"
 DEFAULT_TIME_ZONE = "Asia/Baghdad"
-PRICE_LISTS = ("Clinic", "Standard Buying", "Standard Selling")
+PRICE_LISTS = ("Standard Buying", "Standard Selling")
 
 
 def execute():

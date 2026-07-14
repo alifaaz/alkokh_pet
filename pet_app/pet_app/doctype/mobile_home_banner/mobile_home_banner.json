@@ -1,0 +1,158 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "MOB-BAN-.#####",
+ "creation": "2026-07-05 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "display_order",
+  "block_section",
+  "block_type",
+  "block_id",
+  "banner_section",
+  "banner_id",
+  "image",
+  "title",
+  "subtitle",
+  "button_title",
+  "style_section",
+  "gradient_start",
+  "gradient_end",
+  "action_section",
+  "action_type",
+  "action_value"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "default": "10",
+   "fieldname": "display_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Display Order"
+  },
+  {
+   "fieldname": "block_section",
+   "fieldtype": "Section Break",
+   "label": "Block"
+  },
+  {
+   "default": "banner_carousel",
+   "fieldname": "block_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Block Type",
+   "options": "banner_carousel\nsingle_banner",
+   "reqd": 1
+  },
+  {
+   "default": "hero-banners",
+   "fieldname": "block_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Block ID"
+  },
+  {
+   "fieldname": "banner_section",
+   "fieldtype": "Section Break",
+   "label": "Banner"
+  },
+  {
+   "fieldname": "banner_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Banner ID",
+   "unique": 1
+  },
+  {
+   "fieldname": "image",
+   "fieldtype": "Attach Image",
+   "in_list_view": 1,
+   "label": "Image"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title"
+  },
+  {
+   "fieldname": "subtitle",
+   "fieldtype": "Small Text",
+   "label": "Subtitle"
+  },
+  {
+   "default": "Shop Now",
+   "fieldname": "button_title",
+   "fieldtype": "Data",
+   "label": "Button Title"
+  },
+  {
+   "fieldname": "style_section",
+   "fieldtype": "Section Break",
+   "label": "Style"
+  },
+  {
+   "default": "#FF9A56",
+   "fieldname": "gradient_start",
+   "fieldtype": "Data",
+   "label": "Gradient Start"
+  },
+  {
+   "default": "#FF5E62",
+   "fieldname": "gradient_end",
+   "fieldtype": "Data",
+   "label": "Gradient End"
+  },
+  {
+   "fieldname": "action_section",
+   "fieldtype": "Section Break",
+   "label": "Action"
+  },
+  {
+   "default": "list",
+   "fieldname": "action_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Action Type",
+   "options": "product\ncategory\nbrand\nlist\nurl"
+  },
+  {
+   "fieldname": "action_value",
+   "fieldtype": "Data",
+   "label": "Action Value"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-07-05 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Mobile Home Banner",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "display_order",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "title"
+}

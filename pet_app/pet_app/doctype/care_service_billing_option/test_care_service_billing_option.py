@@ -147,7 +147,7 @@ class IntegrationTestCareServiceBillingOption(IntegrationTestCase):
 		).insert(ignore_permissions=True, ignore_mandatory=True)
 
 	def _price_list(self):
-		for price_list in ("Clinic", "Standard Selling"):
+		for price_list in ("Standard Selling",):
 			if frappe.db.exists("Price List", price_list):
 				return price_list
 		price_list = frappe.db.get_value("Price List", {"selling": 1, "enabled": 1}, "name")

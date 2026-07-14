@@ -31,13 +31,25 @@ def _is_cod(doc) -> bool:
     return getattr(doc, "custom_payment_method", None) == "Cash on Delivery"
 
 
-def _check_permission():
-    if frappe.session.user == "Administrator":
-        return
+def _has_driver_management_role(user=None):
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    user_roles = set(frappe.get_roles(user) or [])
+    return bool(user_roles & set(DRIVER_MANAGEMENT_ROLES))
 
-    user_roles = frappe.get_roles(frappe.session.user)
-    if not any(role in user_roles for role in DRIVER_MANAGEMENT_ROLES):
-        frappe.throw(_("Not authorized"), frappe.PermissionError)
+
+def _has_driver_permission(ptype, user=None):
+    try:
+        return bool(frappe.has_permission("Driver", ptype=ptype, user=user or frappe.session.user))
+    except Exception:
+        return False
+
+
+def _check_permission(ptype="write"):
+    if _has_driver_management_role() or _has_driver_permission(ptype):
+        return
+    frappe.throw(_("Not authorized"), frappe.PermissionError)
 
 
 def _log_driver_event(driver_id, action, user_id=None, level="info", details=None):
@@ -432,7 +444,7 @@ def create_driver(
     city=None,
     country=DEFAULT_ADDRESS_COUNTRY,
 ):
-    _check_permission()
+    _check_permission("create")
     name_parts = cstr(full_name).split()
     address_payload = None
 
@@ -680,7 +692,7 @@ def _reverse_driver_entry(doc):
 @frappe.whitelist()
 @standardize_response
 def delete_driver(driver_id):
-    _check_permission()
+    _check_permission("delete")
 
     doc = frappe.get_doc("Driver", driver_id)
     cash_account = doc.custom_cash_account
@@ -782,8 +794,7 @@ def get_driver_balance(driver_id):
         frappe.throw(_("Driver not found"))
 
     if frappe.session.user != "Administrator":
-        current_roles = set(frappe.get_roles(frappe.session.user) or [])
-        can_manage = bool(current_roles & set(DRIVER_MANAGEMENT_ROLES))
+        can_manage = _has_driver_management_role() or _has_driver_permission("read")
         if not can_manage and driver.user != frappe.session.user:
             frappe.throw(_("Not authorized"), frappe.PermissionError)
 

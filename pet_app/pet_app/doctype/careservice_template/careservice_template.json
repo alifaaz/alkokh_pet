@@ -93,7 +93,6 @@
    "reqd": 1
   },
   {
-   "default": "Clinic",
    "fieldname": "price_list",
    "fieldtype": "Link",
    "label": "price list",

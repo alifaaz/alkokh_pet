@@ -14,14 +14,19 @@ from pet_app.api.accounting.cashier import (
 	_is_cash_mode,
 	_validate_account,
 )
-from pet_app.api.permissions import require_doctype_permission
+from pet_app.api.permissions import get_user_roles, require_doctype_permission, user_has_full_access
 from pet_app.api.sales import _set_optional_guardian_reference
 from pet_app.pet_app.doctype.pet_boarding.pet_boarding import (
 	ACTIVE_BOARDING_STATUSES,
 	CLOSED_BOARDING_STATUSES,
+	PENDING_ROOM_STATUS,
+	ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES,
 	get_active_boarding_for_room,
 )
+from pet_app.utils.case_assignment import DIRECT_ASSIGN_ROLES, visit_practitioner
+from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
+from pet_app.utils.price_list import get_veterinary_selling_price_list
 from pet_app.api.response import standardize_response
 
 
@@ -44,30 +49,47 @@ ORDER_TERMINAL_STATUSES = {
 }
 BOARDING_READ_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
 BOARDING_WRITE_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
+VISIT_BOARDING_ACTIVE_STATUSES = ACTIVE_BOARDING_STATUSES
+CANCELLABLE_BOARDING_STATUSES = (PENDING_ROOM_STATUS, "Reserved")
+
+
+def _has_boarding_role(*allowed_roles, user=None):
+	user = user or frappe.session.user
+	if user == "Administrator":
+		return True
+	user_roles = set(frappe.get_roles(user) or [])
+	return bool(user_roles & set(allowed_roles))
+
+
+def _has_doctype_permission(doctype: str, ptype: str) -> bool:
+	try:
+		return bool(frappe.has_permission(doctype, ptype=ptype))
+	except Exception:
+		return False
 
 
 def _require_boarding_role(*allowed_roles):
-	if frappe.session.user == "Administrator":
-		return
-	user_roles = set(frappe.get_roles(frappe.session.user) or [])
-	if user_roles.isdisjoint(set(allowed_roles)):
+	if not _has_boarding_role(*allowed_roles):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
 
 
 def _require_boarding_read_access():
-	_require_boarding_role(*BOARDING_READ_ROLES)
-	if not frappe.has_permission("Pet Boarding", ptype="read") and not frappe.has_permission("Service Room", ptype="read"):
-		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	if _has_boarding_role(*BOARDING_READ_ROLES):
+		return
+	if _has_doctype_permission("Pet Boarding", "read") or _has_doctype_permission("Service Room", "read"):
+		return
+	frappe.throw(_("Not permitted"), frappe.PermissionError)
 
 
 def _require_boarding_write_access():
-	_require_boarding_role(*BOARDING_WRITE_ROLES)
-	if not frappe.has_permission("Pet Boarding", ptype="write"):
-		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	if _has_boarding_role(*BOARDING_WRITE_ROLES) or _has_doctype_permission("Pet Boarding", "write"):
+		return
+	frappe.throw(_("Not permitted"), frappe.PermissionError)
 
 
 def _require_boarding_invoice_access():
-	_require_boarding_role(*BOARDING_WRITE_ROLES)
+	if not (_has_boarding_role(*BOARDING_WRITE_ROLES) or _has_doctype_permission("Pet Boarding", "write")):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
 	require_doctype_permission("Sales Invoice", "create")
 
 
@@ -208,6 +230,7 @@ def list_boarding_records(
 			pb.check_in,
 			pb.check_out,
 			pb.stay_days,
+			pb.stay_hours,
 			pb.total_cost,
 			pb.deposit,
 			pb.deposit_payment_entry,
@@ -215,6 +238,12 @@ def list_boarding_records(
 			pb.billing_status,
 			pb.sales_invoice,
 			pb.note,
+			pb.boarding_note,
+			pb.boarded_by,
+				pb.cancelled_by,
+				pb.cancellation_note,
+			pb.visit,
+			pb.expected_check_out,
 			pb.notes,
 			pb.docstatus,
 			pb.creation,
@@ -234,11 +263,290 @@ def list_boarding_records(
 	return {"data": [_serialize_boarding_record(row) for row in rows], "total": total}
 
 
+
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def start_visit_boarding(visit=None, note=None, expected_check_out=None, data=None, **kwargs):
+	payload = _coerce_payload(data, kwargs)
+	visit_name = cstr(payload.get("visit") or visit).strip()
+	boarding_note = cstr(payload.get("note") if "note" in payload else note).strip()
+	expected = payload.get("expected_check_out") if "expected_check_out" in payload else expected_check_out
+
+	savepoint = f"start_visit_boarding_{frappe.generate_hash(length=10)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		boarding = _start_visit_boarding_atomic(visit_name, boarding_note, expected)
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	else:
+		frappe.db.release_savepoint(savepoint)
+
+	return {
+		"success": True,
+		"boarding_id": boarding.name,
+		"record_status": boarding.record_status,
+		"status": boarding.status,
+		"boarding": _serialize_boarding_doc(boarding),
+	}
+
+
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def cancel_boarding(boarding=None, boarding_id=None, name=None, note=None, data=None, **kwargs):
+	payload = _coerce_payload(data, kwargs)
+	boarding_name = cstr(payload.get("boarding") or payload.get("boarding_id") or boarding or boarding_id or name).strip()
+	cancel_note = cstr(payload.get("note") if "note" in payload else note).strip()
+
+	savepoint = f"cancel_boarding_{frappe.generate_hash(length=10)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		cancelled = _cancel_boarding_atomic(boarding_name, cancel_note)
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	else:
+		frappe.db.release_savepoint(savepoint)
+
+	return {
+		"success": True,
+		"boarding_id": cancelled.name,
+		"record_status": cancelled.record_status,
+		"status": cancelled.status,
+		"sales_invoice": cancelled.sales_invoice,
+		"boarding": _serialize_boarding_doc(cancelled),
+	}
+
+
+def _cancel_boarding_atomic(boarding_name: str, cancel_note: str):
+	if not boarding_name:
+		frappe.throw(_("Pet Boarding is required."))
+	if not cancel_note:
+		frappe.throw(_("Cancellation note is required."))
+	if not frappe.db.exists("Pet Boarding", boarding_name):
+		frappe.throw(_("Pet Boarding {0} was not found.").format(frappe.bold(boarding_name)))
+
+	boarding = frappe.get_doc("Pet Boarding", boarding_name)
+	if boarding.docstatus != 0:
+		frappe.throw(_("Only draft/open Pet Boarding records can be cancelled."))
+	if boarding.record_status not in CANCELLABLE_BOARDING_STATUSES:
+		frappe.throw(_("Only Pending Room or Reserved boarding records can be cancelled before check-in."))
+	if boarding.sales_invoice:
+		frappe.throw(_("Pet Boarding {0} already has Sales Invoice {1}.").format(frappe.bold(boarding.name), frappe.bold(boarding.sales_invoice)))
+	if not _user_can_cancel_boarding(boarding):
+		frappe.throw(_("Only the visit doctor or a Coordinator/Admin can cancel boarding."), frappe.PermissionError)
+
+	def apply_cancel():
+		boarding.set("billable_items", [])
+		boarding.sales_invoice = None
+		boarding.billing_status = "Unbilled"
+		boarding.total_cost = 0
+		boarding.balance = 0
+		boarding.record_status = "Cancelled"
+		boarding.status = "Cancelled"
+		boarding.workflow_state = "Cancelled"
+		boarding.cancelled_by = frappe.session.user
+		boarding.cancellation_note = cancel_note
+		boarding.save(ignore_permissions=True)
+		boarding.add_comment("Comment", _("Boarding cancelled by {0}. Reason: {1}").format(frappe.session.user, cancel_note))
+		_log_boarding_event("BOARDING_CANCELLED", boarding=boarding.name, user=frappe.session.user)
+
+	if boarding.service_room:
+		with _service_room_lock(boarding.service_room):
+			apply_cancel()
+	else:
+		apply_cancel()
+
+	return boarding
+
+
+def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_check_out=None):
+	if not visit_name:
+		frappe.throw(_("Visit is required."))
+	if not boarding_note:
+		frappe.throw(_("Boarding note is required."))
+	if not frappe.db.exists("Vet Visit", visit_name):
+		frappe.throw(_("Vet Visit {0} was not found.").format(frappe.bold(visit_name)))
+
+	visit_doc = frappe.get_doc("Vet Visit", visit_name)
+	_assert_can_start_visit_boarding(visit_doc)
+
+	pet = visit_doc.get("animal_patient") or visit_doc.get("pet")
+	guardian = visit_doc.get("guardian")
+	if not pet:
+		frappe.throw(_("Visit {0} has no pet to board.").format(frappe.bold(visit_doc.name)))
+	if not guardian:
+		frappe.throw(_("Visit {0} has no guardian to board.").format(frappe.bold(visit_doc.name)))
+
+	customer = visit_doc.get("customer") or get_or_create_customer_from_guardian(guardian)
+	boarding = frappe.get_doc(
+		{
+			"doctype": "Pet Boarding",
+			"visit": visit_doc.name,
+			"pet": pet,
+			"guardian": guardian,
+			"customer": customer,
+			"boarding_type": "Treatment",
+			"record_status": PENDING_ROOM_STATUS,
+			"status": "Open",
+			"workflow_state": PENDING_ROOM_STATUS,
+			"reserved_at": now_datetime(),
+			"expected_check_out": getdate(expected_check_out) if expected_check_out else None,
+			"boarding_note": boarding_note,
+			"note": boarding_note,
+			"boarded_by": frappe.session.user,
+			"billing_status": "Unbilled",
+		}
+	)
+	boarding.insert(ignore_permissions=True)
+	boarding.add_comment("Comment", _("Visit boarding started from {0} by {1}.").format(visit_doc.name, frappe.session.user))
+	_log_boarding_event(
+		"VISIT_BOARDING_STARTED",
+		boarding=boarding.name,
+		visit=visit_doc.name,
+		user=frappe.session.user,
+	)
+	return boarding
+
+
+def can_start_visit_boarding(visit_doc) -> bool:
+	try:
+		if not visit_doc or cstr(visit_doc.get("status")) in {"Completed", "Cancelled"}:
+			return False
+		if active_boarding_for_visit(visit_doc.name):
+			return False
+		return _user_can_start_visit_boarding(visit_doc)
+	except Exception:
+		return False
+
+
+def can_cancel_visit_boarding(visit_doc) -> bool:
+	try:
+		if not visit_doc:
+			return False
+		boarding = active_boarding_for_visit(visit_doc.name)
+		if not boarding or boarding.record_status not in CANCELLABLE_BOARDING_STATUSES:
+			return False
+		return _user_can_cancel_boarding(boarding)
+	except Exception:
+		return False
+
+
+def active_boarding_for_visit(visit_name: str):
+	visit_name = cstr(visit_name).strip()
+	if not visit_name:
+		return None
+	if not frappe.get_meta("Pet Boarding").has_field("visit"):
+		return None
+	rows = frappe.get_all(
+		"Pet Boarding",
+		filters={
+			"visit": visit_name,
+			"record_status": ["in", VISIT_BOARDING_ACTIVE_STATUSES],
+			"docstatus": ["<", 2],
+		},
+		fields=[
+			"name",
+			"record_status",
+			"status",
+			"boarding_type",
+			"service_room",
+			"expected_check_out",
+			"boarding_note",
+			"boarded_by",
+			"visit",
+			"cancelled_by",
+			"cancellation_note",
+			"creation",
+		],
+		order_by="creation desc",
+		limit_page_length=1,
+	)
+	return rows[0] if rows else None
+
+
+def visit_boarding_payload(visit_doc) -> dict | None:
+	row = active_boarding_for_visit(visit_doc.name)
+	if not row:
+		return None
+	service_room_name = None
+	if row.get("service_room"):
+		service_room_name = frappe.db.get_value("Service Room", row.service_room, "room_name")
+	boarded_by_name = frappe.db.get_value("User", row.boarded_by, "full_name") if row.get("boarded_by") else None
+	return {
+		"name": row.name,
+		"status": row.record_status,
+		"boarding_type": row.boarding_type,
+		"service_room": row.service_room,
+		"service_room_name": service_room_name,
+		"expected_check_out": row.expected_check_out,
+		"boarding_note": row.boarding_note,
+		"boarded_by": row.boarded_by,
+		"boarded_by_name": boarded_by_name,
+		"created_at": row.creation,
+	}
+
+
+def _assert_can_start_visit_boarding(visit_doc):
+	if cstr(visit_doc.get("status")) in {"Completed", "Cancelled"}:
+		frappe.throw(_("Completed or cancelled visits cannot start boarding."))
+	existing = active_boarding_for_visit(visit_doc.name)
+	if existing:
+		frappe.throw(
+			_("Visit {0} already has active boarding {1} ({2}).").format(
+				frappe.bold(visit_doc.name), frappe.bold(existing.name), frappe.bold(existing.record_status)
+			)
+		)
+	if not _user_can_start_visit_boarding(visit_doc):
+		frappe.throw(_("Only the visit doctor or a Coordinator/Admin can start boarding from a visit."), frappe.PermissionError)
+
+
+def _user_can_start_visit_boarding(visit_doc) -> bool:
+	user = frappe.session.user
+	if user == "Administrator" or user_has_full_access(user):
+		return True
+	roles = set(get_user_roles(user) or [])
+	if roles & DIRECT_ASSIGN_ROLES:
+		return True
+	current = visit_practitioner(visit_doc)
+	return bool(current and get_practitioner_for_user(user, include_disabled=False) == current)
+
+
+def _user_can_cancel_boarding(boarding) -> bool:
+	user = frappe.session.user
+	if user == "Administrator" or user_has_full_access(user):
+		return True
+	roles = set(get_user_roles(user) or [])
+	if roles & DIRECT_ASSIGN_ROLES:
+		return True
+	if not boarding.get("visit"):
+		return False
+	visit_doc = frappe.get_doc("Vet Visit", boarding.visit)
+	current = visit_practitioner(visit_doc)
+	return bool(current and get_practitioner_for_user(user, include_disabled=False) == current)
+
+
+def _coerce_payload(data, kwargs) -> dict:
+	payload = {}
+	if data:
+		payload = frappe.parse_json(data) if isinstance(data, str) else data
+	if payload is None:
+		payload = {}
+	if not isinstance(payload, dict):
+		frappe.throw(_("Payload must be an object."))
+	payload = dict(payload)
+	payload.update({key: value for key, value in kwargs.items() if value is not None})
+	return payload
+
 @frappe.whitelist()
 @standardize_response
-def reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=None, boardingType=None):
+def reserve_room(roomId, petId=None, guardianId=None, checkIn=None, checkOut=None, note=None, boardingType=None, boarding_id=None, boardingId=None, name=None):
 	_require_boarding_write_access()
 	room_id = cstr(roomId).strip()
+	boarding_name = cstr(boarding_id or boardingId or name).strip()
+	if boarding_name:
+		return _reserve_existing_pending_boarding(boarding_name, room_id, checkIn=checkIn, checkOut=checkOut, note=note)
+
 	pet_id = cstr(petId).strip()
 	guardian_id = cstr(guardianId).strip()
 
@@ -283,6 +591,7 @@ def reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=No
 				"billing_status": "Unbilled",
 			}
 		)
+		_ensure_room_stay_billable_item(boarding)
 		boarding.insert()
 		boarding.add_comment("Comment", _("Boarding reserved by {0}.").format(frappe.session.user))
 		_log_boarding_event("BOARDING_RESERVED", boarding=boarding.name, room=room.name, user=frappe.session.user)
@@ -291,6 +600,60 @@ def reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=No
 		"success": True,
 		"boarding_id": boarding.name,
 		"room_id": room.name,
+		"record_status": boarding.record_status,
+		"occupancy": "Reserved",
+		"customer": boarding.customer,
+		"boarding": _serialize_boarding_doc(boarding),
+	}
+
+
+def _reserve_existing_pending_boarding(boarding_name: str, room_id: str, *, checkIn=None, checkOut=None, note=None):
+	if not room_id:
+		frappe.throw(_("Service Room is required."))
+	if not boarding_name:
+		frappe.throw(_("Pet Boarding is required."))
+
+	boarding = frappe.get_doc("Pet Boarding", boarding_name)
+	boarding.check_permission("write")
+	if boarding.docstatus != 0:
+		frappe.throw(_("Only draft/open Pet Boarding records can be assigned a room."))
+	if boarding.record_status != PENDING_ROOM_STATUS:
+		frappe.throw(_("Only Pending Room boarding records can be assigned a room from this action."))
+	if boarding.service_room:
+		frappe.throw(_("Pet Boarding {0} already has room {1}.").format(frappe.bold(boarding.name), frappe.bold(boarding.service_room)))
+
+	with _service_room_lock(room_id):
+		room = _get_service_room(room_id)
+		if room.status != "Active":
+			frappe.throw(_("Service Room {0} is inactive.").format(frappe.bold(room_id)))
+		existing = get_active_boarding_for_room(room.name)
+		if existing:
+			frappe.throw(
+				_("Service Room {0} already has active boarding {1} ({2}).").format(
+					frappe.bold(room.name), frappe.bold(existing.name), frappe.bold(existing.record_status)
+				)
+			)
+		boarding.service_room = room.name
+		boarding.record_status = "Reserved"
+		boarding.status = "Open"
+		boarding.workflow_state = "Reserved"
+		if checkIn:
+			boarding.check_in = _coerce_datetime(checkIn)
+		if checkOut:
+			boarding.expected_check_out = getdate(checkOut)
+		if note:
+			boarding.note = cstr(note)
+		_ensure_room_stay_billable_item(boarding)
+		boarding.run_method("_apply_billable_item_amounts")
+		boarding.run_method("_compute_totals")
+		boarding.save()
+		boarding.add_comment("Comment", _("Room {0} assigned by {1}.").format(room.name, frappe.session.user))
+		_log_boarding_event("BOARDING_ROOM_ASSIGNED", boarding=boarding.name, room=room.name, user=frappe.session.user)
+
+	return {
+		"success": True,
+		"boarding_id": boarding.name,
+		"room_id": boarding.service_room,
 		"record_status": boarding.record_status,
 		"occupancy": "Reserved",
 		"customer": boarding.customer,
@@ -371,59 +734,69 @@ def check_out_boarding(boarding_id):
 	with _service_room_lock(boarding.service_room):
 		boarding.check_out = now_datetime()
 		boarding.customer = get_or_create_customer_from_guardian(boarding.guardian)
-		_ensure_room_stay_billable_item(boarding)
-		boarding.run_method("_apply_billable_item_amounts")
 		boarding.run_method("_compute_stay_days")
+		_ensure_room_stay_billable_item(boarding, add_if_missing=False)
+		boarding.run_method("_apply_billable_item_amounts")
 		boarding.run_method("_compute_totals")
 
 		invoice_items = _build_sales_invoice_items(boarding)
-		if not invoice_items:
-			frappe.throw(_("Add at least one billable item before checkout."))
+		invoice_total = sum(flt(row.get("qty")) * flt(row.get("rate")) for row in invoice_items)
+		invoice = None
+		guardian_field = None
 
-		invoice = frappe.get_doc(
-			{
-				"doctype": "Sales Invoice",
-				"customer": boarding.customer,
-				"posting_date": getdate(boarding.check_out),
-				"due_date": getdate(boarding.check_out),
-				"items": invoice_items,
-				"remarks": _("Pet Boarding {0} checkout.").format(boarding.name),
-			}
-		)
-		guardian_field = _set_optional_guardian_reference(invoice, boarding.guardian)
-		invoice.flags.from_custom_flow = True
-		invoice.insert()
-		invoice.add_comment(
-			"Comment",
-			_("Boarding checkout invoice created from Pet Boarding {0} by {1}.").format(
-				boarding.name, frappe.session.user
-			),
-		)
+		if invoice_items and invoice_total > 0:
+			invoice = frappe.get_doc(
+				{
+					"doctype": "Sales Invoice",
+					"customer": boarding.customer,
+					"posting_date": getdate(boarding.check_out),
+					"due_date": getdate(boarding.check_out),
+					"selling_price_list": get_veterinary_selling_price_list(),
+					"ignore_pricing_rule": 1,
+					"items": invoice_items,
+					"remarks": _("Pet Boarding {0} checkout.").format(boarding.name),
+				}
+			)
+			guardian_field = _set_optional_guardian_reference(invoice, boarding.guardian)
+			invoice.flags.from_custom_flow = True
+			invoice.insert()
+			invoice.add_comment(
+				"Comment",
+				_("Boarding checkout invoice created from Pet Boarding {0} by {1}.").format(
+					boarding.name, frappe.session.user
+				),
+			)
 
 		for row in boarding.billable_items or []:
 			if row.status != "Cancelled":
 				row.status = "Billed"
 
-		boarding.sales_invoice = invoice.name
-		boarding.billing_status = "Invoiced"
+		boarding.sales_invoice = invoice.name if invoice else None
+		boarding.billing_status = "Invoiced" if invoice else "Unbilled"
 		boarding.record_status = "Checked Out"
 		boarding.status = "Closed"
 		boarding.workflow_state = "Closed"
 		boarding.save()
-		boarding.add_comment(
-			"Comment",
-			_("Boarding checked out and invoiced with Sales Invoice {0} by {1}.").format(
-				invoice.name, frappe.session.user
-			),
-		)
+		if invoice:
+			boarding.add_comment(
+				"Comment",
+				_("Boarding checked out and invoiced with Sales Invoice {0} by {1}.").format(
+					invoice.name, frappe.session.user
+				),
+			)
+		else:
+			boarding.add_comment(
+				"Comment",
+				_("Boarding checked out with no billable charges by {0}.").format(frappe.session.user),
+			)
 		_log_boarding_event(
 			"BOARDING_CHECKED_OUT",
 			boarding=boarding.name,
-			sales_invoice=invoice.name,
+			sales_invoice=invoice.name if invoice else None,
 			user=frappe.session.user,
 		)
 
-		if boarding.meta.is_submittable and boarding.docstatus == 0:
+		if invoice and boarding.meta.is_submittable and boarding.docstatus == 0:
 			boarding.submit()
 
 	return {
@@ -433,7 +806,7 @@ def check_out_boarding(boarding_id):
 		"record_status": boarding.record_status,
 		"status": boarding.status,
 		"occupancy": "Available",
-		"sales_invoice": invoice.name,
+		"sales_invoice": invoice.name if invoice else None,
 		"customer": boarding.customer,
 		"guardian_reference_field": guardian_field,
 		"total_cost": boarding.total_cost,
@@ -830,7 +1203,7 @@ def _get_active_boardings_by_room(room_names: list[str]) -> dict:
 		"Pet Boarding",
 		filters={
 			"service_room": ["in", room_names],
-			"record_status": ["in", ACTIVE_BOARDING_STATUSES],
+			"record_status": ["in", ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES],
 			"docstatus": ["<", 2],
 		},
 		fields=[
@@ -847,6 +1220,7 @@ def _get_active_boardings_by_room(room_names: list[str]) -> dict:
 			"check_in",
 			"check_out",
 			"stay_days",
+			"stay_hours",
 			"total_cost",
 			"deposit",
 			"deposit_payment_entry",
@@ -854,6 +1228,12 @@ def _get_active_boardings_by_room(room_names: list[str]) -> dict:
 			"billing_status",
 			"sales_invoice",
 			"note",
+			"boarding_note",
+			"boarded_by",
+			"cancelled_by",
+			"cancellation_note",
+			"visit",
+			"expected_check_out",
 			"notes",
 			"docstatus",
 			"modified",
@@ -942,7 +1322,9 @@ def _serialize_boarding_doc(boarding) -> dict:
 		"reserved_at": boarding.reserved_at,
 		"check_in": boarding.check_in,
 		"check_out": boarding.check_out,
+		"expected_check_out": boarding.get("expected_check_out"),
 		"stay_days": boarding.stay_days,
+		"stay_hours": boarding.get("stay_hours"),
 		"total_cost": boarding.total_cost,
 		"deposit": boarding.deposit,
 		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
@@ -950,6 +1332,11 @@ def _serialize_boarding_doc(boarding) -> dict:
 		"billing_status": boarding.billing_status,
 		"sales_invoice": boarding.sales_invoice,
 		"note": boarding.note,
+		"boarding_note": boarding.get("boarding_note"),
+		"boarded_by": boarding.get("boarded_by"),
+			"cancelled_by": boarding.get("cancelled_by"),
+			"cancellation_note": boarding.get("cancellation_note"),
+		"visit": boarding.get("visit"),
 		"notes": boarding.notes,
 		"docstatus": boarding.docstatus,
 		"billable_items": [_serialize_billable_item(row) for row in boarding.billable_items or []],
@@ -981,7 +1368,9 @@ def _serialize_boarding_record(row) -> dict:
 		"reserved_at": row.reserved_at,
 		"check_in": row.check_in,
 		"check_out": row.check_out,
+		"expected_check_out": row.get("expected_check_out"),
 		"stay_days": row.stay_days,
+		"stay_hours": row.get("stay_hours"),
 		"total_cost": row.total_cost,
 		"deposit": row.deposit,
 		"deposit_payment_entry": row.get("deposit_payment_entry"),
@@ -989,6 +1378,11 @@ def _serialize_boarding_record(row) -> dict:
 		"billing_status": row.billing_status,
 		"sales_invoice": row.sales_invoice,
 		"note": row.note,
+		"boarding_note": row.get("boarding_note"),
+		"boarded_by": row.get("boarded_by"),
+			"cancelled_by": row.get("cancelled_by"),
+			"cancellation_note": row.get("cancellation_note"),
+		"visit": row.get("visit"),
 		"notes": row.notes,
 		"docstatus": row.docstatus,
 		"creation": row.get("creation"),
@@ -1168,29 +1562,35 @@ def _coerce_datetime(value):
 	return get_datetime(value)
 
 
-def _ensure_room_stay_billable_item(boarding):
+def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 	boarding.run_method("_compute_stay_days")
-	stay_days = flt(boarding.stay_days or 1)
-	item_code = _get_room_stay_item_code(boarding.boarding_type)
-	item = _get_item_details(item_code)
-	if flt(item.get("rate")) <= 0:
-		frappe.throw(_("Price is not configured for boarding item {0}.").format(frappe.bold(item_code)))
-
+	stay_hours = flt(boarding.get("stay_hours") or 1)
 	linked_service_id = _room_stay_service_id(boarding.boarding_type)
 	existing_row = None
 	for row in boarding.billable_items or []:
 		if row.linked_service_id == linked_service_id:
 			existing_row = row
 			break
-		if row.item_type == "Room Stay" and row.item_code == item_code:
-			existing_row = row
-			break
+
+	if not existing_row and not add_if_missing:
+		return
+
+	item_code = _get_room_stay_item_code(boarding.boarding_type)
+	item = _get_item_details(item_code)
+	if flt(item.get("rate")) <= 0:
+		frappe.throw(_("Price is not configured for boarding item {0}.").format(frappe.bold(item_code)))
+
+	if not existing_row:
+		for row in boarding.billable_items or []:
+			if row.item_type == "Room Stay" and row.item_code == item_code:
+				existing_row = row
+				break
 
 	if existing_row:
 		existing_row.item_name = existing_row.item_name or item.get("item_name")
 		existing_row.item_code = item_code
 		existing_row.item_type = "Room Stay"
-		existing_row.qty = stay_days
+		existing_row.qty = stay_hours
 		existing_row.rate = flt(existing_row.rate or item.get("rate"))
 		existing_row.status = "Billable" if existing_row.status == "Draft" else existing_row.status or "Billable"
 		existing_row.linked_service_id = linked_service_id
@@ -1202,7 +1602,7 @@ def _ensure_room_stay_billable_item(boarding):
 			"item_name": item.get("item_name"),
 			"item_code": item_code,
 			"item_type": "Room Stay",
-			"qty": stay_days,
+			"qty": stay_hours,
 			"rate": item.get("rate"),
 			"status": "Billable",
 			"note": _("Auto-added {0} boarding room stay.").format(boarding.boarding_type),
@@ -1216,7 +1616,7 @@ def _get_room_stay_item_code(boarding_type: str) -> str:
 	item_code = frappe.db.get_single_value("Pet Boarding Settings", fieldname)
 	if not item_code:
 		frappe.throw(
-			_("Configure {0} in Pet Boarding Settings before checkout.").format(
+			_("Configure {0} in Pet Boarding Settings before creating room charges.").format(
 				_("Treatment Boarding Item") if boarding_type == "Treatment" else _("Travel Boarding Item")
 			)
 		)
@@ -1259,7 +1659,7 @@ def _get_item_details(item_code: str) -> dict:
 
 	rate = frappe.db.get_value(
 		"Item Price",
-		{"item_code": item_code, "price_list": "Standard Selling", "selling": 1},
+		{"item_code": item_code, "price_list": get_veterinary_selling_price_list(), "selling": 1},
 		"price_list_rate",
 	)
 	if rate is None:

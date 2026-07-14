@@ -358,12 +358,6 @@ scheduler_events = {
 #     "after_rename": "pet_app.utils.auto_update_links.after_rename",
 # },
 fixtures = [
-    # DocTypes
-    {
-        "dt": "DocType",
-        "filters": [["name", "in", ["Pet App Sidebar Config"]]],
-    },
-
     # Custom Fields
     {
         "dt": "Custom Field",

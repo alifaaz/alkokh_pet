@@ -61,7 +61,7 @@ def get_medication_usage_forecast(days=30):
 	try:
 		rows = frappe.db.sql(
 			"""
-			select coalesce(m.medication_item, med.linked_item) item_code, sum(coalesce(m.dispensed_qty, m.qty, 0)) qty
+			select coalesce(m.medication_item, med.linked_item) item_code, sum(case when coalesce(m.dispensed_qty, 0) > 0 then m.dispensed_qty else coalesce(m.qty, 0) end) qty
 			from `tabVet Visit Medication Item` m
 			left join `tabMedication` med on med.name = m.medication
 			inner join `tabVet Visit` v on v.name = m.parent

@@ -23,6 +23,8 @@ from pet_app.utils.rating_entities import get_title, resolve_entity_name
 
 USER_ADMIN_ROLES = {"Administrator", "Users", "System Manager", "Pet App Admin"}
 DOCTOR_ROLES = {"Doctor", "Physician"}
+DOCTOR_PAGE_ROLES = {"Visits Page", "Case Sheets Page"}
+SERVICE_PROVIDER_PAGE_ROLES = {"Service Provider Page"}
 TERMINAL_STATUSES = {
     "cancelled",
     "canceled",
@@ -246,7 +248,12 @@ def _resolve_target_user(user_id):
 def _can_inspect_other_users(user):
     if user == "Administrator":
         return True
-    return bool(get_user_roles(user) & USER_ADMIN_ROLES)
+    if get_user_roles(user) & USER_ADMIN_ROLES:
+        return True
+    try:
+        return bool(frappe.has_permission("User", ptype="read", user=user))
+    except Exception:
+        return False
 
 
 def _get_identity(user):
@@ -725,13 +732,17 @@ def _visit_orders(visit_names, from_date, to_date):
 
 
 def _is_doctor(practitioner, roles):
-    return cstr(practitioner.get("practitioner_type")).lower() == "doctor" or bool(set(roles) & DOCTOR_ROLES)
+    role_set = set(roles)
+    return cstr(practitioner.get("practitioner_type")).lower() == "doctor" or bool(
+        role_set & (DOCTOR_ROLES | DOCTOR_PAGE_ROLES)
+    )
 
 
 def _is_service_provider(practitioner, roles):
     if cstr(practitioner.get("practitioner_type")).lower() == "service provider":
         return True
-    if set(roles) & SERVICE_PROVIDER_ROLES:
+    role_set = set(roles)
+    if role_set & (SERVICE_PROVIDER_ROLES | SERVICE_PROVIDER_PAGE_ROLES):
         return True
     practitioner_id = practitioner.get("id")
     if practitioner_id and _doctype_exists("Healthcare Practitioner Service Category"):

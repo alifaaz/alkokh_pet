@@ -32,3 +32,55 @@ class TestMobileCatalogConfig(FrappeTestCase):
 			self.assertIn("id", first)
 			self.assertIn("name", first)
 			self.assertIn("enabled", first)
+
+	def test_home_v2_uses_frontend_block_contract(self):
+		response = catalog.home_v2()
+
+		self.assertTrue(response["ok"], response)
+		data = response["data"]
+		self.assertEqual(data["version"], 2)
+		self.assertIn("updated_at", data)
+		self.assertEqual(data["cache_ttl_seconds"], 300)
+		self.assertIn(data["locale"], {"en", "ar"})
+		self.assertIsInstance(data["filters"], list)
+		self.assertIsInstance(data["blocks"], list)
+		self.assertEqual(data["filters"][0]["key"], "all")
+
+		for block in data["blocks"]:
+			self.assertIn("id", block)
+			self.assertIn("type", block)
+			self.assertIn("data", block)
+			self.assertNotIn("sort_order", block)
+
+	def test_unknown_home_product_list_is_rejected(self):
+		response = catalog.list_products(**{"list": "does-not-exist"})
+
+		self.assertNotIn("ok", response)
+		self.assertEqual(response["error"]["code"], "catalog.request_invalid")
+
+	def test_unknown_home_filter_is_rejected(self):
+		response = catalog.list_products(**{"filter": "horse"})
+
+		self.assertNotIn("ok", response)
+		self.assertEqual(response["error"]["code"], "catalog.request_invalid")
+
+	def test_product_filter_and_tag_helpers_use_mobile_contract(self):
+		dog_row = {
+			"name": "PROD-DOG",
+			"product_name": "Adult Dog Food",
+			"category": "Dog Food",
+			"tags": "dog,dry-food,best-seller",
+		}
+		hotdog_row = {
+			"name": "PROD-HOTDOG",
+			"product_name": "Snack",
+			"category": "Treats",
+			"tags": "hotdog,best-seller",
+		}
+
+		self.assertEqual(catalog._product_filter(dog_row), "dog")
+		self.assertTrue(catalog._product_matches_filter(dog_row, "dog"))
+		self.assertTrue(catalog._product_matches_filter(dog_row, "all"))
+		self.assertTrue(catalog._product_matches_tag(dog_row, "best-seller"))
+		self.assertTrue(catalog._product_matches_tag(dog_row, "DOG"))
+		self.assertFalse(catalog._product_matches_tag(hotdog_row, "dog"))

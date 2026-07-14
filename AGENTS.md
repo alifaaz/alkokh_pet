@@ -18,13 +18,15 @@ Important rules:
 - `Service Room` is a normal CRUD DocType.
 - Do not add occupancy, availability toggles, or pricing fields to `Service Room`.
 - `Service Room` must not have `daily_rate`.
-- Room occupancy is derived from active `Pet Boarding` records only.
-- Active boarding states are `Reserved` and `Checked In`.
+- Room occupancy is derived from room-assigned active `Pet Boarding` records only.
+- Visit-active boarding states are `Pending Room`, `Reserved`, and `Checked In`.
+- Room-assigned active boarding states are `Reserved` and `Checked In`.
 - Closed/history states are `Checked Out` and `Cancelled`.
+- `Pending Room` has no assigned room and does not affect room occupancy.
 - `Reserved` maps to room occupancy `Reserved`.
 - `Checked In` maps to room occupancy `Occupied`.
 - No active boarding maps to room occupancy `Available`.
-- Prevent more than one active boarding per room.
+- Prevent more than one room-assigned active boarding per room.
 - Checkout must close the boarding and release the room by moving the boarding out of active states.
 
 Guardian/customer relationships:

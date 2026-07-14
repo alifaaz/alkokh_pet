@@ -54,8 +54,20 @@ class TestMedication(FrappeTestCase):
 		doc.item_group = updated_group
 		doc.save()
 
-		self.assertEqual(frappe.db.get_value("Item", doc.linked_item, "stock_uom"), "Unit")
+		self.assertEqual(frappe.db.get_value("Item", doc.linked_item, "stock_uom"), "Nos")
+		self.assertEqual(doc.dosage_form_or_unit, "Nos")
 		self.assertEqual(frappe.db.get_value("Item", doc.linked_item, "item_group"), updated_group)
+
+		item = frappe.get_doc("Item", doc.linked_item)
+		if not any(row.uom == "Unit" for row in item.get("uoms") or []):
+			item.append("uoms", {"uom": "Unit", "conversion_factor": 1})
+		item.stock_uom = "Unit"
+		item.save(ignore_permissions=True)
+		doc.reload()
+		doc.save()
+
+		self.assertEqual(frappe.db.get_value("Item", doc.linked_item, "stock_uom"), "Unit")
+		self.assertEqual(doc.dosage_form_or_unit, "Unit")
 
 	def test_linked_item_hydrates_medication_unit_and_item_group(self):
 		item_group = self._ensure_item_group("Test Medication Hydrate Group")

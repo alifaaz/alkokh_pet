@@ -6,11 +6,13 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cstr, flt, getdate, now_datetime
+from frappe.utils import cint, cstr, flt, getdate, now_datetime
 
-from pet_app.api.permissions import require_doctype_permission
+from pet_app.api.permissions import require_doctype_permission, require_restriction_value
+from pet_app.pet_app.doctype.medication.medication import resolve_dose_option_placeholder_uom
 from pet_app.pet_app.doctype.vet_case_sheet.vet_case_sheet import build_case_summary
 from pet_app.utils.medical_profile import sync_latest_vitals, sync_treatment_from_visit, update_profile_for_visit
+from pet_app.utils.price_list import get_veterinary_selling_price_list
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
@@ -88,6 +90,8 @@ class VetVisit(Document):
 		self._sync_latest_vital_signs()
 		self._validate_sales_invoice_lock()
 		self._validate_billing_lock()
+		self._apply_prescribed_medication_dose_options()
+		self._audit_prescribed_medication_changes()
 		self._sync_prescribed_medications_billables()
 		self._sync_care_services_billables()
 		self._validate_billable_item_rows()
@@ -364,6 +368,93 @@ class VetVisit(Document):
 	def _apply_row_pricing(self):
 		self.total_billable_amount = apply_billable_item_amounts(self)
 
+	def _apply_prescribed_medication_dose_options(self):
+		for row in self.get("prescribed_medications") or []:
+			dose_option = cstr(row.get("dose_option")).strip()
+			if not dose_option:
+				continue
+
+			option = frappe.db.get_value(
+				"Medication Dose Option",
+				dose_option,
+				["name", "parent", "label", "qty", "disabled"],
+				as_dict=True,
+			)
+			if not option:
+				frappe.throw(_("Dose Option {0} was not found.").format(frappe.bold(dose_option)))
+			if cint(option.disabled):
+				frappe.throw(_("Dose Option {0} is disabled.").format(frappe.bold(option.label or option.name)))
+
+			medication = cstr(row.get("medication")).strip()
+			if medication and medication != option.parent:
+				frappe.throw(
+					_("Dose Option {0} does not belong to Medication {1}.").format(
+						frappe.bold(option.label or option.name), frappe.bold(medication)
+					)
+				)
+			if not medication:
+				row.medication = option.parent
+
+			medication_item = cstr(row.get("medication_item")).strip()
+			linked_item = frappe.db.get_value("Medication", option.parent, "linked_item")
+			if linked_item and medication_item and medication_item != linked_item:
+				frappe.throw(
+					_("Dose Option {0} belongs to Item {1}, not {2}.").format(
+						frappe.bold(option.label or option.name), frappe.bold(linked_item), frappe.bold(medication_item)
+					)
+				)
+			if linked_item and not medication_item:
+				row.medication_item = linked_item
+				medication_item = linked_item
+
+			if row.get("qty") in (None, ""):
+				row.qty = 1
+			else:
+				dose_count = flt(row.get("qty"))
+				if dose_count < 1:
+					frappe.throw(
+						_("Medication row {0} uses Dose Option {1}; Qty must be at least 1 because it represents the dose count.").format(
+							row.idx, frappe.bold(option.label or option.name)
+						)
+					)
+				row.qty = dose_count
+
+			stock_deduction_qty = flt(option.qty)
+			if stock_deduction_qty <= 0:
+				frappe.throw(_("Dose Option {0} does not have a valid Stock Deduction Qty. Save the Medication master first.").format(frappe.bold(option.label or option.name)))
+
+			stock_uom = frappe.db.get_value("Item", medication_item, "stock_uom") if medication_item else None
+			placeholder_uom = resolve_dose_option_placeholder_uom(stock_uom)
+			row.dispense_uom = placeholder_uom
+			row.stock_uom = stock_uom
+			row.conversion_factor = stock_deduction_qty
+
+	def _audit_prescribed_medication_changes(self):
+		previous = self.get_doc_before_save()
+		previous_rows = {row.name: row for row in previous.get("prescribed_medications") or [] if row.name} if previous else {}
+		timestamp = None
+
+		for row in self.get("prescribed_medications") or []:
+			before = previous_rows.get(row.name) if row.name else None
+			quantity_changed = False
+			rate_changed = False
+
+			if before:
+				quantity_changed = flt(before.get("qty")) != flt(row.get("qty"))
+				rate_changed = flt(before.get("rate")) != flt(row.get("rate"))
+			else:
+				quantity_changed = row.get("qty") not in (None, "") and not row.get("quantity_modified_by")
+				rate_changed = row.get("rate") not in (None, "") and not row.get("rate_modified_by")
+
+			if quantity_changed and row.meta.has_field("quantity_modified_by"):
+				timestamp = timestamp or now_datetime()
+				row.quantity_modified_by = frappe.session.user
+				row.quantity_modified_at = timestamp
+			if rate_changed and row.meta.has_field("rate_modified_by"):
+				timestamp = timestamp or now_datetime()
+				row.rate_modified_by = frappe.session.user
+				row.rate_modified_at = timestamp
+
 	def _sync_prescribed_medications_billables(self):
 		active_linked_ids = set()
 
@@ -526,9 +617,10 @@ class VetVisit(Document):
 					frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
 
 	def _get_medication_rate(self, item) -> float:
+		price_list = get_veterinary_selling_price_list()
 		rate = frappe.db.get_value(
 			"Item Price",
-			{"item_code": item.name, "price_list": "Clinic", "selling": 1},
+			{"item_code": item.name, "price_list": price_list, "selling": 1},
 			"price_list_rate",
 		)
 		if rate is None:
@@ -615,8 +707,26 @@ def _get_session_doctor() -> str | None:
 	return get_practitioner_for_user(frappe.session.user)
 
 
-def _require_visit_role(roles):
-	if frappe.session.user == "Administrator":
+def _has_legacy_visit_role(roles) -> bool:
+	return bool(set(frappe.get_roles(frappe.session.user) or []) & set(roles))
+
+
+def _has_doctype_permission(doctype: str, ptype: str) -> bool:
+	try:
+		return bool(frappe.has_permission(doctype, ptype=ptype, user=frappe.session.user))
+	except Exception:
+		return False
+
+
+def _doc_has_permission(doc, ptype: str) -> bool:
+	try:
+		return bool(doc.has_permission(ptype))
+	except Exception:
+		return False
+
+
+def _require_visit_role(roles, *, allow_docperm=False):
+	if frappe.session.user == "Administrator" or _has_legacy_visit_role(roles) or allow_docperm:
 		return
 	frappe.only_for(roles)
 
@@ -624,7 +734,10 @@ def _require_visit_role(roles):
 @frappe.whitelist()
 @standardize_response
 def get_item_billing_details(item_code: str) -> dict:
-	_require_visit_role(VISIT_READ_ROLES)
+	_require_visit_role(
+		VISIT_READ_ROLES,
+		allow_docperm=_has_doctype_permission("Item", "read") and _has_doctype_permission("Item Price", "read"),
+	)
 	if not item_code:
 		return {}
 
@@ -634,7 +747,7 @@ def get_item_billing_details(item_code: str) -> dict:
 
 	rate = frappe.db.get_value(
 		"Item Price",
-		{"item_code": item_code, "price_list": "Standard Selling", "selling": 1},
+		{"item_code": item_code, "price_list": get_veterinary_selling_price_list(), "selling": 1},
 		"price_list_rate",
 	)
 	if rate is None:
@@ -651,11 +764,15 @@ def get_item_billing_details(item_code: str) -> dict:
 @frappe.whitelist()
 @standardize_response
 def get_care_service_billing_details(care_service_name: str) -> dict:
-	_require_visit_role(VISIT_READ_ROLES)
 	if not care_service_name:
+		_require_visit_role(
+			VISIT_READ_ROLES,
+			allow_docperm=_has_doctype_permission("CareService template", "read") or _has_doctype_permission("CareService", "read"),
+		)
 		return {}
 
 	service = get_care_service_doc(care_service_name)
+	_require_visit_role(VISIT_READ_ROLES, allow_docperm=_doc_has_permission(service, "read"))
 
 	return {
 		"care_service": service.name,
@@ -669,9 +786,28 @@ def get_care_service_billing_details(care_service_name: str) -> dict:
 @frappe.whitelist()
 @standardize_response
 def create_sales_invoice(visit_name: str) -> dict:
-	_require_visit_role(VISIT_BILLING_ROLES)
+	_require_visit_role(VISIT_BILLING_ROLES, allow_docperm=True)
+	result = _create_sales_invoice_for_visit(visit_name)
+	visit = result["visit"]
+	sales_invoice = result["sales_invoice"]
+
+	_mark_visit_invoiced(visit, sales_invoice, result["total_billable_amount"])
+	visit.add_comment(
+		"Comment",
+		_("Draft Sales Invoice {0} created for this visit by {1}.").format(sales_invoice.name, frappe.session.user),
+	)
+
+	return {
+		"sales_invoice": sales_invoice.name,
+		"customer": visit.customer,
+		"total_billable_amount": result["total_billable_amount"],
+		"guardian_reference_field": result["guardian_reference_field"],
+	}
+
+
+def _create_sales_invoice_for_visit(visit_name: str) -> dict:
+	_require_visit_role(VISIT_BILLING_ROLES, allow_docperm=True)
 	require_doctype_permission("Sales Invoice", "create")
-	require_doctype_permission("Sales Invoice", "submit")
 	if not visit_name:
 		frappe.throw(_("Vet Visit is required."))
 
@@ -692,6 +828,7 @@ def create_sales_invoice(visit_name: str) -> dict:
 		_validate_visit_ready_for_invoice(visit)
 
 	items, total_amount = get_billable_invoice_items(visit)
+	updates_stock = any(item.get("warehouse") for item in items)
 
 	sales_invoice = frappe.get_doc(
 		{
@@ -700,7 +837,8 @@ def create_sales_invoice(visit_name: str) -> dict:
 			"posting_date": getdate(),
 			"due_date": getdate(),
 			"ignore_pricing_rule": 1,
-			"selling_price_list": _get_clinic_price_list(),
+			"selling_price_list": get_veterinary_selling_price_list(),
+			"update_stock": 1 if updates_stock else 0,
 			"items": items,
 		}
 	)
@@ -713,10 +851,9 @@ def create_sales_invoice(visit_name: str) -> dict:
 				break
 	sales_invoice.flags.from_custom_flow = True
 	sales_invoice.insert()
-	sales_invoice.submit()
 	sales_invoice.add_comment(
 		"Comment",
-		_("Sales Invoice created from Vet Visit {0} by {1}.").format(visit.name, frappe.session.user),
+		_("Draft Sales Invoice created from Vet Visit {0} by {1}.").format(visit.name, frappe.session.user),
 	)
 	log_visit_billing_event(
 		"INVOICE_CREATED",
@@ -726,6 +863,15 @@ def create_sales_invoice(visit_name: str) -> dict:
 		total_billable_amount=total_amount,
 	)
 
+	return {
+		"visit": visit,
+		"sales_invoice": sales_invoice,
+		"total_billable_amount": total_amount,
+		"guardian_reference_field": guardian_field,
+	}
+
+
+def _mark_visit_invoiced(visit, sales_invoice, total_amount: float):
 	for row in visit.billable_items or []:
 		if row.status != "Cancelled":
 			row.status = "Billed"
@@ -735,17 +881,6 @@ def create_sales_invoice(visit_name: str) -> dict:
 	visit.total_billable_amount = total_amount
 	visit.flags.ignore_billing_lock = True
 	visit.save()
-	visit.add_comment(
-		"Comment",
-		_("Sales Invoice {0} created for this visit by {1}.").format(sales_invoice.name, frappe.session.user),
-	)
-
-	return {
-		"sales_invoice": sales_invoice.name,
-		"customer": visit.customer,
-		"total_billable_amount": total_amount,
-		"guardian_reference_field": guardian_field,
-	}
 
 
 def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
@@ -753,6 +888,7 @@ def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
 		frappe.throw(_("Add at least one billable item before invoicing."))
 
 	items = []
+	medication_rows = {row.name: row for row in visit.get("prescribed_medications") or [] if row.name}
 	total_amount = 0
 	for row in visit.billable_items or []:
 		if row.status == "Cancelled":
@@ -773,15 +909,15 @@ def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
 		row.item_name = row.item_name or frappe.db.get_value("Item", row.item_code, "item_name") or row.item_code
 		total_amount += amount
 
-		items.append(
-			{
-				"item_code": row.item_code,
-				"qty": qty,
-				"rate": rate,
-				"amount": amount,
-				"description": row.item_name or row.item_code,
-			}
-		)
+		invoice_item = {
+			"item_code": row.item_code,
+			"qty": qty,
+			"rate": rate,
+			"amount": amount,
+			"description": row.item_name or row.item_code,
+		}
+		invoice_item.update(_get_stock_invoice_context(row, medication_rows))
+		items.append(invoice_item)
 
 	if not items:
 		frappe.throw(_("Add at least one active billable item before invoicing."))
@@ -789,6 +925,98 @@ def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
 		frappe.throw(_("Total billable amount must be greater than zero before invoicing."))
 
 	return items, total_amount
+
+
+def _get_stock_invoice_context(billable_row, medication_rows: dict) -> dict:
+	item = frappe.db.get_value(
+		"Item",
+		billable_row.item_code,
+		["name", "is_stock_item", "stock_uom"],
+		as_dict=True,
+	)
+	if not item or not cint(item.is_stock_item):
+		return {}
+
+	medication_row = _get_billable_medication_row(billable_row, medication_rows)
+	warehouse = None
+	medication_defaults = {}
+	if medication_row:
+		medication_defaults = _get_medication_invoice_defaults(medication_row)
+		warehouse = cstr(medication_row.get("warehouse")).strip()
+		if not warehouse:
+			warehouse = medication_defaults.get("default_warehouse")
+	if not warehouse:
+		warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+	if not warehouse:
+		medication_label = (
+			cstr(medication_row.get("medication") if medication_row else "").strip()
+			or cstr(billable_row.get("item_name")).strip()
+			or item.name
+		)
+		frappe.throw(
+			_(
+				"Warehouse is required to invoice medication {0}. Set a Warehouse on the prescription row, "
+				"Medication Default Warehouse, or Stock Settings Default Warehouse."
+			).format(frappe.bold(medication_label))
+		)
+	require_restriction_value("warehouse", warehouse)
+
+	stock_uom = cstr(item.stock_uom).strip()
+	uom = stock_uom
+	conversion_factor = 1 if stock_uom else 0
+
+	if medication_row:
+		stock_uom = cstr(medication_row.get("stock_uom") or stock_uom).strip()
+		uom = cstr(medication_row.get("dispense_uom") or medication_defaults.get("default_dispense_uom") or uom).strip()
+		conversion_factor = flt(medication_row.get("conversion_factor"))
+		if conversion_factor <= 0:
+			conversion_factor = flt(medication_defaults.get("default_conversion_factor"))
+		if conversion_factor <= 0 and uom and stock_uom and uom == stock_uom:
+			conversion_factor = 1
+
+	context = {"warehouse": warehouse}
+	if uom:
+		context["uom"] = uom
+	if stock_uom:
+		context["stock_uom"] = stock_uom
+	if conversion_factor > 0:
+		context["conversion_factor"] = flt(conversion_factor)
+	if medication_row and medication_row.get("batch_no"):
+		context["batch_no"] = medication_row.get("batch_no")
+		context["use_serial_batch_fields"] = 1
+	return context
+
+
+def _get_medication_invoice_defaults(medication_row) -> dict:
+	medication = cstr(medication_row.get("medication")).strip()
+	if medication:
+		defaults = frappe.db.get_value(
+			"Medication",
+			medication,
+			["default_warehouse", "default_dispense_uom", "default_conversion_factor"],
+			as_dict=True,
+		)
+		if defaults:
+			return defaults
+
+	medication_item = cstr(medication_row.get("medication_item")).strip()
+	if medication_item:
+		return frappe.db.get_value(
+			"Medication",
+			{"linked_item": medication_item},
+			["default_warehouse", "default_dispense_uom", "default_conversion_factor"],
+			as_dict=True,
+		) or {}
+
+	return {}
+
+
+def _get_billable_medication_row(billable_row, medication_rows: dict):
+	linked_service_id = cstr(billable_row.get("linked_service_id"))
+	prefix = "medication::"
+	if not linked_service_id.startswith(prefix):
+		return None
+	return medication_rows.get(linked_service_id[len(prefix):])
 
 
 def _validate_visit_ready_for_invoice(visit):
@@ -834,11 +1062,6 @@ def _get_locked_visit_for_invoice(visit_name: str):
 		)
 	return frappe.get_doc("Vet Visit", visit_name)
 
-
-def _get_clinic_price_list() -> str:
-	if frappe.db.exists("Price List", "Clinic"):
-		return "Clinic"
-	frappe.throw(_("Clinic Price List is required for veterinary invoices."))
 
 
 def _visit_has_locked_changes(visit, previous) -> bool:

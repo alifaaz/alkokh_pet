@@ -7,6 +7,8 @@ from frappe.utils import cint, cstr, get_datetime
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import fail, ok
+from pet_app.api.healthcare.boarding import can_cancel_visit_boarding, can_start_visit_boarding, visit_boarding_payload
+from pet_app.api.visit_referral import can_refer_visit, visit_referrals_payload
 from pet_app.api.workspace import (
 	_assert_record_access,
 	_billing_snapshot,
@@ -14,6 +16,7 @@ from pet_app.api.workspace import (
 	_visit_diagnoses,
 	_visit_follow_up,
 	_visit_orders,
+	_linked_records_for_visit,
 )
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.utils.medical_profile import get_visit_case_context
@@ -33,6 +36,7 @@ def get_visit_workbench(visit=None, visit_id=None, name=None):
 		_assert_record_access("Vet Visit", visit_name)
 
 		visit_doc = frappe.get_doc("Vet Visit", visit_name)
+		linked_records = _linked_records_for_visit(visit_doc.name)
 		return ok(
 			{
 				"visit": _visit_payload(visit_doc),
@@ -44,15 +48,18 @@ def get_visit_workbench(visit=None, visit_id=None, name=None):
 				"case_context": get_visit_case_context(visit_doc),
 				"active_plan_items": _plan_items(visit_doc),
 				"plan_items": _visit_plan_items(visit_doc),
-					"diagnoses": _visit_diagnoses(visit_doc),
-					"orders": _visit_orders(visit_doc),
-					"medications": _medication_rows(visit_doc),
-					"billables": [_billable_row(row) for row in _active_billable_rows(visit_doc)],
-					"cancelled_billables": [_billable_row(row) for row in _cancelled_billable_rows(visit_doc)],
-					"followups": _visit_follow_up(visit_doc),
-					"consults": _visit_consult_requests(visit_doc),
-					"billing": _billing_snapshot(visit_doc),
-					"permissions": _workbench_permissions(visit_doc),
+				"diagnoses": _visit_diagnoses(visit_doc),
+				"orders": _visit_orders(visit_doc, linked_records=linked_records),
+				"linked_records": linked_records,
+				"medications": _medication_rows(visit_doc),
+				"billables": [_billable_row(row) for row in _active_billable_rows(visit_doc)],
+				"cancelled_billables": [_billable_row(row) for row in _cancelled_billable_rows(visit_doc)],
+				"followups": _visit_follow_up(visit_doc),
+				"consults": _visit_consult_requests(visit_doc),
+				"referrals": visit_referrals_payload(visit_doc),
+				"boarding": visit_boarding_payload(visit_doc),
+				"billing": _billing_snapshot(visit_doc),
+				"permissions": _workbench_permissions(visit_doc),
 			}
 		)
 	except Exception as exc:
@@ -171,13 +178,29 @@ def _medication_rows(visit_doc) -> list[dict]:
 			"medication": row.get("medication"),
 			"medication_item": row.get("medication_item"),
 			"qty": row.get("qty"),
+			"dispense_uom": row.get("dispense_uom"),
+			"stock_uom": row.get("stock_uom"),
+			"conversion_factor": row.get("conversion_factor"),
 			"rate": row.get("rate"),
 			"amount": row.get("amount"),
 			"dosage": row.get("dosage"),
 			"frequency": row.get("frequency"),
 			"duration_days": row.get("duration_days"),
 			"instructions": row.get("instructions"),
+			"warehouse": row.get("warehouse"),
 			"dispense_status": row.get("dispense_status"),
+			"dispensed_qty": row.get("dispensed_qty"),
+			"return_qty": row.get("return_qty"),
+			"dispensed_by": row.get("dispensed_by"),
+			"dispensed_at": row.get("dispensed_at"),
+			"returned_by": row.get("returned_by"),
+			"returned_at": row.get("returned_at"),
+			"batch_no": row.get("batch_no"),
+			"expiry_date": row.get("expiry_date"),
+			"quantity_modified_by": row.get("quantity_modified_by"),
+			"quantity_modified_at": row.get("quantity_modified_at"),
+			"rate_modified_by": row.get("rate_modified_by"),
+			"rate_modified_at": row.get("rate_modified_at"),
 		}
 		for row in visit_doc.get("prescribed_medications") or []
 	]
@@ -229,6 +252,9 @@ def _workbench_permissions(visit_doc) -> dict:
 		"can_add_plan_item": (not billed and not cancelled) and _can_doctype("Pet Care Plan Item", "create"),
 		"can_schedule_plan_item": _can_doctype("Pet Care Plan Item", "write") and _can_doctype("Appointment", "create"),
 		"can_convert_plan_item_to_visit": _can_doctype("Pet Care Plan Item", "write") and _can_doctype("Vet Visit", "create"),
+		"can_refer_visit": can_refer_visit(visit_doc),
+		"can_start_boarding": can_start_visit_boarding(visit_doc),
+			"can_cancel_boarding": can_cancel_visit_boarding(visit_doc),
 		"is_billed": cint(billed),
 		"is_cancelled": cint(cancelled),
 	}

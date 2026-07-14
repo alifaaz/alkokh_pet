@@ -6,11 +6,13 @@ import frappe
 from frappe import _
 from frappe.utils import cstr
 
+from pet_app.api.permissions import get_user_roles, user_has_full_access
 from pet_app.api.response import fail, ok
+from pet_app.api.visit_referral import create_visit_referral as _create_visit_referral
 from pet_app.utils.case_assignment import (
 	DEFAULT_TEAM_ROLE,
+	DIRECT_ASSIGN_ROLES,
 	SUPERVISOR_ROLES,
-	assert_can_assign_visit_doctor,
 	assert_can_manage_episode_team,
 	current_user_team_practitioner,
 	ensure_episode_practitioner,
@@ -97,7 +99,9 @@ def assign_visit_doctor(visit=None, practitioner=None, data=None, **kwargs):
 		if not practitioner_name:
 			return fail(_("Practitioner is required."), code="VALIDATION_ERROR")
 
-		assert_can_assign_visit_doctor(episode_doc)
+		permission_error = _direct_assign_permission_error()
+		if permission_error:
+			return fail(permission_error, code="PERMISSION_DENIED")
 		validate_doctor_practitioner(practitioner_name)
 
 		previous_practitioner = visit_practitioner(visit_doc)
@@ -114,6 +118,14 @@ def assign_visit_doctor(visit=None, practitioner=None, data=None, **kwargs):
 		result["previous_practitioner"] = previous_practitioner
 		result["added_to_team"] = bool(added_to_team)
 		return ok(result)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def create_visit_referral(visit=None, to_practitioner=None, note=None, data=None, **kwargs):
+	try:
+		return _create_visit_referral(visit=visit, to_practitioner=to_practitioner, note=note, data=data, **kwargs)
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -232,6 +244,17 @@ def _visit_blocker_payload(row: dict) -> dict:
 		"primary_practitioner": row.get("primary_practitioner") or row.get("doctor"),
 		"doctor": row.get("doctor"),
 	}
+
+
+def _direct_assign_permission_error():
+	if user_has_full_access():
+		return None
+	roles = get_user_roles()
+	if roles & DIRECT_ASSIGN_ROLES:
+		return None
+	if "Doctor" in roles:
+		return _("Doctors must transfer visits using referral with a note.")
+	return _("Not permitted to assign visit doctor.")
 
 
 def _episode_doc(episode_name: str | None):

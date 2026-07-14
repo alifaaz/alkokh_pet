@@ -18,6 +18,7 @@ TEAM_FIELD = "assigned_practitioners"
 VISIT_PRIMARY_FIELD = "primary_practitioner"
 DEFAULT_TEAM_ROLE = "Treating Doctor"
 SUPERVISOR_ROLES = {"Visit Admin", "System Manager", "Pet App Admin", "Healthcare Administrator"}
+DIRECT_ASSIGN_ROLES = {"Coordinator", "Visit Admin", "Healthcare Administrator", "Pet App Admin", "System Manager"}
 OPEN_VISIT_STATUSES = {"Draft", "In Progress", "Follow-up Needed"}
 
 

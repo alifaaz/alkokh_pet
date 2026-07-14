@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import frappe
 from frappe import _
-from frappe.utils import flt, now_datetime, cstr
+from frappe.utils import cstr, flt, now_datetime
 
+from pet_app.api.link_aliases import enrich_link_aliases
 from pet_app.api.permissions import require_restriction_value
 from pet_app.api.response import fail, ok
-from pet_app.api.link_aliases import enrich_link_aliases
 
 
 PENDING_STATUSES = ("", "Prescribed", "Pending Dispense", "Partially Dispensed")
@@ -40,10 +39,15 @@ def list_pending_dispense(visit=None, warehouse=None, limit=50):
 				m.medication,
 				m.medication_item,
 				m.qty,
+				m.dispense_uom,
+				m.stock_uom,
+				m.conversion_factor,
 				m.dispensed_qty,
 				m.return_qty,
 				m.dispense_status,
 				m.warehouse,
+				m.batch_no,
+				m.expiry_date,
 				m.dosage,
 				m.frequency,
 				m.duration_days,
@@ -85,8 +89,8 @@ def dispense_visit_medication(visit=None, row_name=None, medication_row=None, qt
 			return fail(_("Medication row was not found."), code="NOT_FOUND")
 		if row.dispense_status in FINAL_STATUSES:
 			return fail(_("Medication row cannot be dispensed from its current status."), code="INVALID_STATUS")
-		target_warehouse = _resolve_warehouse(row, warehouse or payload.get("warehouse"))
-		require_restriction_value("warehouse", target_warehouse)
+
+		target_warehouse = _resolve_warehouse(row, warehouse or payload.get("warehouse"), required=False)
 		if dispense_qty <= 0:
 			dispense_qty = max(flt(row.qty) - flt(row.dispensed_qty), 0)
 		if dispense_qty <= 0:
@@ -94,17 +98,31 @@ def dispense_visit_medication(visit=None, row_name=None, medication_row=None, qt
 		if flt(row.dispensed_qty) + dispense_qty > flt(row.qty):
 			return fail(_("Dispensed Qty cannot exceed prescribed Qty."), code="VALIDATION_ERROR")
 
-		row.warehouse = target_warehouse
+		now = now_datetime()
+		source_status = row.dispense_status
+		if target_warehouse:
+			row.warehouse = target_warehouse
+		_apply_invoice_metadata(row, payload)
 		row.dispensed_qty = flt(row.dispensed_qty) + dispense_qty
 		row.dispensed_by = frappe.session.user
-		row.dispensed_at = now_datetime()
-		row.batch_no = payload.get("batch_no") or row.batch_no
-		row.expiry_date = payload.get("expiry_date") or row.expiry_date
-		row.stock_entry = payload.get("stock_entry") or row.stock_entry
+		row.dispensed_at = now
 		row.dispense_status = "Dispensed" if flt(row.dispensed_qty) >= flt(row.qty) else "Partially Dispensed"
+		target_status = row.dispense_status
+		doc.flags.ignore_billing_lock = True
 		doc.save(ignore_permissions=True)
-		return ok({"medication": _row_payload(row), "visit": doc.name})
+		ledger = _create_dispense_ledger(
+			operation="Dispense",
+			visit=doc.name,
+			row=row,
+			qty=dispense_qty,
+			source_status=source_status,
+			target_status=target_status,
+			notes=payload.get("notes") or payload.get("note"),
+		)
+		payload_row = _row_payload(row)
+		return ok({"medication": payload_row, "visit": doc.name, "ledger": ledger.name})
 	except Exception as exc:
+		frappe.db.rollback()
 		return _error_response(exc)
 
 
@@ -122,31 +140,44 @@ def return_dispensed_medication(visit=None, row_name=None, medication_row=None, 
 		row = _find_medication_row(doc, row_id)
 		if not row:
 			return fail(_("Medication row was not found."), code="NOT_FOUND")
-		if row.warehouse:
-			require_restriction_value("warehouse", row.warehouse)
 		if return_qty <= 0:
 			return fail(_("Return Qty must be greater than zero."), code="VALIDATION_ERROR")
 		if flt(row.return_qty) + return_qty > flt(row.dispensed_qty):
 			return fail(_("Return Qty cannot exceed dispensed Qty."), code="VALIDATION_ERROR")
+
+		now = now_datetime()
+		source_status = row.dispense_status
 		row.return_qty = flt(row.return_qty) + return_qty
+		row.returned_by = frappe.session.user
+		row.returned_at = now
 		row.dispense_status = "Returned" if flt(row.return_qty) >= flt(row.dispensed_qty) else "Partially Dispensed"
+		target_status = row.dispense_status
+		doc.flags.ignore_billing_lock = True
 		doc.save(ignore_permissions=True)
-		return ok({"medication": _row_payload(row), "visit": doc.name})
+		ledger = _create_dispense_ledger(
+			operation="Return",
+			visit=doc.name,
+			row=row,
+			qty=return_qty,
+			source_status=source_status,
+			target_status=target_status,
+			notes=payload.get("notes") or payload.get("note"),
+		)
+		payload_row = _row_payload(row)
+		return ok({"medication": payload_row, "visit": doc.name, "ledger": ledger.name})
 	except Exception as exc:
+		frappe.db.rollback()
 		return _error_response(exc)
 
 
-def _resolve_warehouse(row, requested=None):
-	warehouse = cstr(requested or row.warehouse).strip()
+def _resolve_warehouse(row, requested=None, required=True):
+	warehouse = cstr(requested or row.get("warehouse")).strip()
 	if warehouse:
+		require_restriction_value("warehouse", warehouse)
 		return warehouse
-	if row.medication:
-		warehouse = frappe.db.get_value("Medication", row.medication, "default_warehouse")
-	if not warehouse:
-		warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
-	if not warehouse:
-		frappe.throw(_("Warehouse is required to dispense medication."))
-	return warehouse
+	if required:
+		frappe.throw(_("Warehouse is required for medication billing."))
+	return None
 
 
 def _find_medication_row(doc, row_id):
@@ -156,21 +187,63 @@ def _find_medication_row(doc, row_id):
 	return None
 
 
+def _apply_invoice_metadata(row, payload: dict):
+	dispense_uom = cstr(payload.get("uom") or payload.get("dispense_uom")).strip()
+	if dispense_uom:
+		row.dispense_uom = dispense_uom
+	stock_uom = cstr(payload.get("stock_uom")).strip()
+	if stock_uom:
+		row.stock_uom = stock_uom
+	if payload.get("conversion_factor") not in (None, ""):
+		row.conversion_factor = flt(payload.get("conversion_factor"))
+	batch_no = cstr(payload.get("batch_no")).strip()
+	if batch_no:
+		row.batch_no = batch_no
+	if payload.get("expiry_date"):
+		row.expiry_date = payload.get("expiry_date")
+
+
+def _create_dispense_ledger(operation, visit, row, qty, source_status, target_status, notes=None):
+	ledger = frappe.new_doc("Medication Dispense Ledger")
+	ledger.operation = operation
+	ledger.visit = visit
+	ledger.medication_row = row.name
+	ledger.medication = row.medication
+	ledger.medication_item = row.medication_item
+	ledger.warehouse = row.get("warehouse")
+	ledger.qty = qty
+	ledger.uom = row.get("dispense_uom")
+	ledger.batch_no = row.get("batch_no")
+	ledger.expiry_date = row.get("expiry_date")
+	ledger.performed_by = frappe.session.user
+	ledger.performed_at = now_datetime()
+	ledger.source_status = source_status
+	ledger.target_status = target_status
+	ledger.notes = cstr(notes).strip() or None
+	ledger.flags.ignore_permissions = True
+	ledger.insert()
+	return ledger
+
+
 def _row_payload(row) -> dict:
 	return {
 		"name": row.name,
 		"medication": row.medication,
 		"medication_item": row.medication_item,
 		"qty": row.qty,
+		"dispense_uom": row.get("dispense_uom"),
+		"stock_uom": row.get("stock_uom"),
+		"conversion_factor": row.get("conversion_factor"),
 		"warehouse": row.warehouse,
 		"dispense_status": row.dispense_status,
 		"dispensed_qty": row.dispensed_qty,
 		"return_qty": row.return_qty,
 		"dispensed_by": row.dispensed_by,
 		"dispensed_at": row.dispensed_at,
+		"returned_by": row.get("returned_by"),
+		"returned_at": row.get("returned_at"),
 		"batch_no": row.batch_no,
 		"expiry_date": row.expiry_date,
-		"stock_entry": row.stock_entry,
 	}
 
 

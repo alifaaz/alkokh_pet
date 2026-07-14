@@ -20,7 +20,6 @@ ITEM_GROUPS = (
 )
 
 PRICE_LISTS = (
-	{"price_list_name": "Clinic", "selling": 1, "buying": 0},
 	{"price_list_name": "Standard Selling", "selling": 1, "buying": 0},
 )
 
@@ -378,7 +377,7 @@ def ensure_item_prices(item_code: str, rate: float):
 		return
 
 	currency = _default_currency()
-	for price_list in ("Clinic", "Standard Selling"):
+	for price_list in ("Standard Selling",):
 		if not frappe.db.exists("Price List", price_list):
 			continue
 
@@ -449,7 +448,7 @@ def ensure_care_services():
 		doc.frequency = row["frequency"]
 		doc.category_id = category.name
 		doc.default_price = flt(row["default_price"])
-		doc.price_list = "Clinic" if frappe.db.exists("Price List", "Clinic") else None
+		doc.price_list = "Standard Selling" if frappe.db.exists("Price List", "Standard Selling") else None
 		doc.description = row.get("description")
 		doc.specimen = row.get("specimen")
 		doc.modality = row.get("modality")
