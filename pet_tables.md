@@ -152,14 +152,12 @@ naming_series | Data | Required | BRD-.####
 pet | Link (Pet) | Required |
 owner | Link (Customer) | Required | Fetched from Pet (read-only)
 mobile | Data | | Fetched from Customer (read-only)
-check_in_date | Date | Required |
-check_in_time | Time | |
-check_out_date | Date | Required |
-check_out_time | Time | |
-number_of_days | Int | | Auto-calculated
-boarding_type | Select | Required | Standard/Deluxe/VIP
-daily_rate | Currency | Required |
-total_cost | Currency | | days × rate (computed)
+check_in | Datetime | | Set at check-in
+check_out | Datetime | | Set at check-out
+stay_hours | Float | | Elapsed hours, rounded up, minimum 1
+stay_days | Float | | Elapsed 24-hour days, rounded up, minimum 1
+boarding_type | Select | Required | Travel/Treatment
+total_cost | Currency | | Sum of non-cancelled billable rows
 deposit_amount | Currency | | Advance payment
 balance_due | Currency | | Computed
 status | Select | Required | Pending Room/Reserved/Checked In/Checked Out/Cancelled

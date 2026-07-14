@@ -242,7 +242,7 @@ This feature does not merge boarding charges into the visit invoice. The complet
 
 Room-stay pricing is added when a room is reserved or assigned, not by pushing rows onto the visit. The configured room item comes from `Pet Boarding Settings.travel_boarding_item` or `Pet Boarding Settings.treatment_boarding_item`. Its rate is resolved from the configured veterinary selling price list via `pet_app.utils.price_list.get_veterinary_selling_price_list()` and falls back to `Item.standard_rate` if no `Item Price` exists. The default configured price list is `Standard Selling`.
 
-Room stay is billed per hour: `qty = stay_hours`, rounded up to the next whole hour, minimum 1. The auto row uses `linked_service_id = "boarding_room_stay:<boarding_type>"` to remain idempotent and update in place. The provisional row created at room assignment uses `qty = 1` until check-out recomputes the final elapsed duration from full check-in/check-out datetimes.
+Room stay is billed per elapsed 24-hour day: `qty = stay_days`, where `stay_hours` remains the underlying duration measurement and `stay_days = ceil(stay_hours / 24)`, minimum 1. The auto row uses `linked_service_id = "boarding_room_stay:<boarding_type>"` to remain idempotent and update in place. The provisional row created at room assignment uses the current duration and check-out recomputes the final elapsed duration from full check-in/check-out datetimes.
 
 A zero-cost boarding is valid. If checkout has no non-cancelled invoice items, or the computed invoice total is zero, `check_out_boarding` closes the boarding without creating a Sales Invoice. The response returns `sales_invoice: null`.
 
