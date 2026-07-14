@@ -2,6 +2,27 @@
 
 This app is a Frappe/ERPNext custom app. Keep changes aligned with Frappe DocType metadata, controller hooks, and whitelisted method contracts already used in `pet_app`.
 
+## Contract Ownership
+
+A backend contract lives in the backend repo, with the code it describes. Exactly one home. Frontend and SDK docs are CONSUMERS -- they link or summarize, they never hold authority. A contract outside version control is not a contract, it is a note on someone's laptop.
+
+Canonical backend contracts live in this app's `docs/` directory:
+
+- `docs/VISIT_BOARDING_CONTRACT.md`
+- `docs/VISIT_WORKBENCH_RESULT_FILES_CONTRACT.md`
+- `docs/MEDICATION_BILLING_CONTRACT.md`
+- `docs/MOBILE_API_README.md`
+- `docs/VISIT_REFERRAL_CONTRACT.md`
+
+## Backend Guardrails
+
+- Backend APIs remain the authority even when the frontend hides UI. Enforce access through Frappe roles, DocPerm, User Permission, and explicit backend checks.
+- Use exact Frappe DocType and field names. Do not invent aliases in contracts or API docs.
+- `Guardian` links to ERPNext `Customer` through `Guardian.customer_id`; pets link to guardians through `PetGuardian`.
+- Clinical workflows are Pet-native. Do not reintroduce a legacy Patient bridge.
+- Billing must flow through backend-owned entry points. Billed clinical or boarding source rows should be treated as locked after invoice creation.
+- Whitelisted API methods should use the standard response envelope unless a protocol integration requires a raw response.
+
 ## Healthcare Boarding Flow
 
 The boarding backend lives in:
@@ -11,7 +32,8 @@ The boarding backend lives in:
 - `pet_app/pet_app/doctype/service_room/`
 - `pet_app/pet_app/doctype/pet_billable_item/`
 - `pet_app/pet_app/doctype/pet_boarding_settings/`
-- `docs/boarding-frontend.md`
+- `docs/VISIT_BOARDING_CONTRACT.md`
+- `docs/boarding-frontend.md` (frontend consumer/handoff)
 
 Important rules:
 
@@ -44,6 +66,7 @@ Billing:
 - Room-stay item mapping comes from `Pet Boarding Settings`:
   - `Travel` uses `travel_boarding_item`.
   - `Treatment` uses `treatment_boarding_item`.
+- `Pet Boarding Settings.default_boarding_type` defaults to `Travel`; clients must read it and must not invent `Treatment` client-side.
 - Checkout creates `Sales Invoice` lines from final `billable_items`.
 
 API contracts:
