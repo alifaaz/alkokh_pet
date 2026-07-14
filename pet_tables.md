@@ -162,7 +162,7 @@ daily_rate | Currency | Required |
 total_cost | Currency | | days × rate (computed)
 deposit_amount | Currency | | Advance payment
 balance_due | Currency | | Computed
-status | Select | Required | Reserved/Checked In/Checked Out/Cancelled
+status | Select | Required | Pending Room/Reserved/Checked In/Checked Out/Cancelled
 cage_number | Data | | Assigned cage/kennel
 special_instructions | Text | | Diet, medications, handling notes
 food_provided | Check | | Using clinic food or owner's

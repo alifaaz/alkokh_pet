@@ -104,8 +104,8 @@ Important folders:
 | DocType | Kind | Key fields / notes |
 |---|---|---|
 | `Service Room` | DocType | `room_code`, `room_name`, `room_type`, `status`, `image`, `notes`. |
-| `Pet Boarding` | Submittable | `service_room`, `pet`, `guardian`, `customer`, `boarding_type`, `record_status` (`Reserved`, `Checked In`, `Checked Out`, `Cancelled`), `status`, timestamps, stay days, totals/deposit/balance, `billing_status`, `sales_invoice`, `billable_items`, notes. |
-| `Pet Boarding Settings` | Single | `travel_boarding_item`, `treatment_boarding_item`, `default_boarding_type`. |
+| `Pet Boarding` | Submittable | `service_room`, `pet`, `guardian`, `customer`, `boarding_type`, `record_status` (`Pending Room`, `Reserved`, `Checked In`, `Checked Out`, `Cancelled`), `status`, timestamps, `stay_hours`, legacy/display `stay_days`, totals/deposit/balance, `billing_status`, `sales_invoice`, `billable_items`, notes. |
+| `Pet Boarding Settings` | Single | `travel_boarding_item`, `treatment_boarding_item`, `default_boarding_type` (`Travel` by backend default; frontend must read it, not invent `Treatment`). |
 | `Pet Billable Item` | Child | Shared billing row: `item_name`, `item_code`, `item_type`, `qty`, `rate`, `amount`, `status`, linked refs, `order_id`. |
 | Patch-created boarding updates | DocTypes | `Pet Boarding Daily Log`, `Pet Boarding Feeding Schedule`, `Pet Boarding Medication Schedule`, `Pet Boarding Incident Report`, `Pet Boarding Media Update`. Used by owner update APIs. |
 
@@ -568,10 +568,10 @@ Boarding:
 
 - Room must be active.
 - Pet and Guardian must be linked.
-- Only one active (`Reserved` or `Checked In`) boarding record per room.
+- Only one room-assigned active (`Reserved` or `Checked In`) boarding record per room; `Pending Room` is visit-active but has no assigned room.
 - `Checked Out` sets boarding status `Closed`.
 - Boarding can only be submitted after checkout and invoice creation.
-- Totals are computed from non-cancelled billable rows; stay days are at least 1 after check-in.
+- Totals are computed from non-cancelled billable rows; room-stay billing uses elapsed `stay_hours`, rounded up to a minimum of 1 after check-in. `stay_days` remains legacy/display metadata.
 
 Marketplace/order:
 
@@ -683,7 +683,7 @@ const CLOSED_EPISODE_STATUSES = ["Resolved", "Closed", "Deceased", "Cancelled"]
 Boarding:
 
 ```ts
-const BOARDING_RECORD_STATUSES = ["Reserved", "Checked In", "Checked Out", "Cancelled"]
+const BOARDING_RECORD_STATUSES = ["Pending Room", "Reserved", "Checked In", "Checked Out", "Cancelled"]
 const BOARDING_STATUSES = ["Open", "Closed", "Cancelled"]
 const BOARDING_BILLING_STATUSES = ["Unbilled", "Invoiced"]
 ```

@@ -321,6 +321,7 @@ Important fields/concepts:
 
 Record statuses:
 
+- Pending Room
 - Reserved
 - Checked In
 - Checked Out
@@ -328,7 +329,8 @@ Record statuses:
 
 Occupancy mapping:
 
-- No active boarding: Available.
+- No room-assigned active boarding: Available.
+- Pending Room boarding: visit-active, no room occupancy yet.
 - Reserved boarding: Reserved.
 - Checked In boarding: Occupied.
 - Checked Out or Cancelled: history only, room is available again.

@@ -15,6 +15,10 @@
   "default_price",
   "section_break_prescription_defaults",
   "dosage_form_or_unit",
+  "default_dispense_uom",
+  "default_conversion_factor",
+  "section_break_dose_options",
+  "dose_options",
   "strength",
   "default_dosage",
   "default_frequency",
@@ -87,6 +91,29 @@
    "label": "Dosage Form or Unit",
    "ignore_user_permissions": 1,
    "options": "UOM"
+  },
+  {
+   "fieldname": "default_dispense_uom",
+   "fieldtype": "Link",
+   "label": "Default Dispense UOM",
+   "options": "UOM"
+  },
+  {
+   "default": "1",
+   "fieldname": "default_conversion_factor",
+   "fieldtype": "Float",
+   "label": "Default Conversion Factor"
+  },
+  {
+   "fieldname": "section_break_dose_options",
+   "fieldtype": "Section Break",
+   "label": "Dose Options"
+  },
+  {
+   "fieldname": "dose_options",
+   "fieldtype": "Table",
+   "label": "Dose Options",
+   "options": "Medication Dose Option"
   },
   {
    "fieldname": "strength",

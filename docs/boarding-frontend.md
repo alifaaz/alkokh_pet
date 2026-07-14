@@ -41,7 +41,8 @@ Response:
 
 Occupancy mapping:
 
-- No active boarding: `Available`
+- No room-assigned active boarding: `Available`
+- Active `record_status = Pending Room`: no room occupancy until a room is assigned
 - Active `record_status = Reserved`: `Reserved`
 - Active `record_status = Checked In`: `Occupied`
 
@@ -75,7 +76,7 @@ Payload:
 }
 ```
 
-`boardingType` is optional and defaults from `Pet Boarding Settings`.
+`boardingType` is optional and defaults from `Pet Boarding Settings.default_boarding_type`. The backend default is `Travel`; clients must read the setting and must not invent `Treatment` when the value is absent.
 
 Response:
 

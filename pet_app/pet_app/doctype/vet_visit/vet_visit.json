@@ -78,7 +78,8 @@
   "follow_up_of_visit_id",
   "consults_tab",
   "section_break_consults",
-  "consult_requests"
+  "consult_requests",
+  "referrals"
  ],
  "fields": [
   {
@@ -504,6 +505,12 @@
    "fieldtype": "Table",
    "label": "Consult Requests",
    "options": "Visit Consult Request"
+  },
+  {
+   "fieldname": "referrals",
+   "fieldtype": "Table",
+   "label": "Visit Referrals",
+   "options": "Visit Referral"
   },
   {
    "fetch_from": "guardian.full_name",

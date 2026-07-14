@@ -4,7 +4,7 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 
-from pet_app.api import care_plan, case_assignment
+from pet_app.api import care_plan, case_assignment, visit_workbench
 from pet_app.utils.case_assignment import ensure_episode_practitioner
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 
@@ -15,6 +15,7 @@ class TestCaseAssignment(FrappeTestCase):
 		super().setUpClass()
 		frappe.reload_doc("pet_app", "doctype", "pet_care_episode_assigned_practitioner")
 		frappe.reload_doc("pet_app", "doctype", "pet_care_episode")
+		frappe.reload_doc("pet_app", "doctype", "visit_referral")
 		frappe.reload_doc("pet_app", "doctype", "vet_visit")
 
 	def setUp(self):
@@ -66,7 +67,7 @@ class TestCaseAssignment(FrappeTestCase):
 		self.assertNotIn(other.name, _team_practitioners(removed))
 		self.assertEqual(removed["data"]["visits"][0]["primary_practitioner"], other.name)
 
-	def test_assign_visit_doctor_auto_adds_to_team_and_syncs_legacy_doctor(self):
+	def test_assign_visit_doctor_is_admin_only_and_syncs_legacy_doctor(self):
 		primary = self._make_doctor()
 		new_doctor = self._make_doctor()
 		episode = self._make_episode(primary)
@@ -74,7 +75,12 @@ class TestCaseAssignment(FrappeTestCase):
 
 		frappe.set_user(primary.user_id)
 		result = case_assignment.assign_visit_doctor(visit=visit.name, practitioner=new_doctor.name)
+		self.assertFalse(result["ok"], msg=result)
+		self.assertEqual(result["meta"]["code"], "PERMISSION_DENIED")
+		self.assertIn("referral", result["errors"][0]["message"].lower())
 
+		frappe.set_user("Administrator")
+		result = case_assignment.assign_visit_doctor(visit=visit.name, practitioner=new_doctor.name)
 		self.assertTrue(result["ok"], msg=result)
 		self.assertTrue(result["data"]["added_to_team"])
 		self.assertIn(new_doctor.name, _team_practitioners(result))
@@ -86,6 +92,86 @@ class TestCaseAssignment(FrappeTestCase):
 		)
 		self.assertEqual(visit_values.doctor, new_doctor.name)
 		self.assertEqual(visit_values.primary_practitioner, new_doctor.name)
+
+	def test_visit_referral_immediately_reassigns_and_workbench_serializes(self):
+		primary = self._make_doctor()
+		target = self._make_doctor()
+		episode = self._make_episode(primary)
+		visit = self._make_visit(episode, primary, status="In Progress")
+		empty_visit = self._make_visit(episode, primary, status="In Progress", day_offset=1)
+
+		frappe.set_user(primary.user_id)
+		before_workbench = visit_workbench.get_visit_workbench(visit=visit.name)
+		self.assertTrue(before_workbench["ok"], msg=before_workbench)
+		self.assertTrue(before_workbench["data"]["permissions"]["can_refer_visit"])
+
+		created = case_assignment.create_visit_referral(
+			visit=visit.name,
+			to_practitioner=target.name,
+			note="Please take over this visit.",
+		)
+
+		self.assertTrue(created["ok"], msg=created)
+		referral = created["data"]["referral"]
+		self.assertEqual(referral["note"], "Please take over this visit.")
+		self.assertEqual(referral["from_practitioner"], primary.name)
+		self.assertEqual(referral["to_practitioner"], target.name)
+		self.assertEqual(referral["referred_by"], primary.user_id)
+		self.assertTrue(referral["referred_at"])
+		self.assertNotIn("status", referral)
+		self.assertNotIn("response_note", referral)
+
+		visit_values = frappe.db.get_value("Vet Visit", visit.name, ["doctor", "primary_practitioner"], as_dict=True)
+		self.assertEqual(visit_values.doctor, target.name)
+		self.assertEqual(visit_values.primary_practitioner, target.name)
+		episode_doc = frappe.get_doc("Pet Care Episode", episode.name)
+		team_rows = {row.practitioner: row.role for row in episode_doc.get("assigned_practitioners")}
+		self.assertEqual(team_rows[target.name], "Treating Doctor")
+
+		pending_workbench = visit_workbench.get_visit_workbench(visit=visit.name)
+		empty_workbench = visit_workbench.get_visit_workbench(visit=empty_visit.name)
+		self.assertTrue(pending_workbench["ok"], msg=pending_workbench)
+		self.assertTrue(empty_workbench["ok"], msg=empty_workbench)
+		self.assertEqual(pending_workbench["data"]["referrals"][0]["name"], referral["name"])
+		self.assertEqual(pending_workbench["data"]["referrals"][0]["referred_by"], primary.user_id)
+		self.assertEqual(empty_workbench["data"]["referrals"], [])
+
+		blocked_assign = case_assignment.assign_visit_doctor(visit=visit.name, practitioner=primary.name)
+		self.assertFalse(blocked_assign["ok"], msg=blocked_assign)
+		self.assertEqual(blocked_assign["meta"]["code"], "PERMISSION_DENIED")
+		self.assertIn("referral", blocked_assign["errors"][0]["message"].lower())
+
+	def test_admin_referral_records_previous_doctor_and_referred_by(self):
+		primary = self._make_doctor()
+		target = self._make_doctor()
+		episode = self._make_episode(primary)
+		visit = self._make_visit(episode, primary, status="In Progress")
+
+		frappe.set_user("Administrator")
+		created = case_assignment.create_visit_referral(
+			visit=visit.name,
+			to_practitioner=target.name,
+			note="Admin transfer reason.",
+		)
+
+		self.assertTrue(created["ok"], msg=created)
+		referral = created["data"]["referral"]
+		self.assertEqual(referral["from_practitioner"], primary.name)
+		self.assertEqual(referral["to_practitioner"], target.name)
+		self.assertEqual(referral["referred_by"], "Administrator")
+		visit_values = frappe.db.get_value("Vet Visit", visit.name, ["doctor", "primary_practitioner"], as_dict=True)
+		self.assertEqual(visit_values.doctor, target.name)
+		self.assertEqual(visit_values.primary_practitioner, target.name)
+
+		notifications = frappe.get_all(
+			"Notification Log",
+			filters={"document_type": "Vet Visit", "document_name": visit.name},
+			fields=["for_user", "subject"],
+			ignore_permissions=True,
+		)
+		notified_users = {row.for_user for row in notifications}
+		self.assertIn(primary.user_id, notified_users)
+		self.assertIn(target.user_id, notified_users)
 
 	def test_get_episode_care_team_returns_visitless_team_and_day_history(self):
 		primary = self._make_doctor()
@@ -195,7 +281,67 @@ class TestCaseAssignment(FrappeTestCase):
 		self.assertEqual(items_by_name[converted.name]["status"], "Converted to Visit")
 		self.assertEqual(result["data"]["plan_items"][-1]["name"], converted.name)
 
-	def test_permission_gates_block_outsider_and_supervisor_visit_assignment(self):
+	def test_get_case_follow_up_table_groups_case_items_and_states(self):
+		primary = self._make_doctor()
+		episode = self._make_episode(primary)
+		day_one = self._make_visit(episode, primary, day_offset=0)
+		day_two = self._make_visit(episode, primary, day_offset=1)
+		follow_up_visit = self._make_visit(episode, primary, day_offset=2)
+		frappe.db.set_value("Vet Visit", follow_up_visit.name, "status", "Completed", update_modified=False)
+
+		overdue = self._make_plan_item(
+			episode,
+			day_one,
+			primary,
+			plan_type="Lab Recheck",
+			title="Overdue CBC",
+			due_date="2000-01-01",
+		)
+		done = self._make_plan_item(
+			episode,
+			day_two,
+			primary,
+			plan_type="Owner Instruction",
+			status="Done",
+			title="Diet done",
+		)
+		came = self._make_plan_item(
+			episode,
+			day_two,
+			primary,
+			plan_type="Follow-up Visit",
+			status="Converted To Visit",
+			title="Owner came for recheck",
+			converted_visit=follow_up_visit.name,
+		)
+
+		result = care_plan.get_case_follow_up_table(filters={"pet": episode.pet})
+
+		self.assertTrue(result["ok"], msg=result)
+		self.assertEqual(result["data"]["metrics"]["total_cases"], 1)
+		self.assertEqual(result["data"]["metrics"]["total_items"], 3)
+		self.assertEqual(result["data"]["metrics"]["overdue_items"], 1)
+		self.assertEqual(result["data"]["metrics"]["completed_items"], 1)
+		self.assertEqual(result["data"]["metrics"]["converted_items"], 1)
+		case = result["data"]["cases"][0]
+		self.assertEqual(case["episode"]["name"], episode.name)
+		self.assertEqual(case["follow_up_summary"]["visit_count"], 3)
+
+		items_by_name = {row["name"]: row for row in case["items"]}
+		self.assertEqual(items_by_name[overdue.name]["follow_up_state"], "overdue")
+		self.assertEqual(items_by_name[done.name]["follow_up_state"], "completed")
+		self.assertEqual(items_by_name[came.name]["follow_up_state"], "converted_to_visit")
+		self.assertTrue(items_by_name[came.name]["patient_came"])
+		self.assertEqual(items_by_name[came.name]["linked_visit"], follow_up_visit.name)
+		self.assertEqual(items_by_name[came.name]["linked_visit_status"], "Completed")
+		self.assertEqual(items_by_name[came.name]["follow_up_label"], "Came / Visit Completed")
+
+		overdue_only = care_plan.get_case_follow_up_table(filters={"pet": episode.pet, "follow_up_state": "overdue"})
+		self.assertTrue(overdue_only["ok"], msg=overdue_only)
+		self.assertEqual(len(overdue_only["data"]["cases"]), 1)
+		self.assertEqual([row["name"] for row in overdue_only["data"]["cases"][0]["items"]], [overdue.name])
+
+	def test_permission_gates_block_outsider_and_allow_visit_admin_assignment(self):
 		primary = self._make_doctor()
 		target = self._make_doctor()
 		outsider = self._make_doctor()
@@ -217,8 +363,7 @@ class TestCaseAssignment(FrappeTestCase):
 
 		frappe.set_user(supervisor.user_id)
 		supervisor_assign = case_assignment.assign_visit_doctor(visit=visit.name, practitioner=target.name)
-		self.assertFalse(supervisor_assign["ok"], msg=supervisor_assign)
-		self.assertEqual(supervisor_assign["meta"]["code"], "PERMISSION_DENIED")
+		self.assertTrue(supervisor_assign["ok"], msg=supervisor_assign)
 
 	def _make_episode(self, primary_doctor):
 		guardian, pet = self._make_guardian_pet()
@@ -266,6 +411,7 @@ class TestCaseAssignment(FrappeTestCase):
 		due_date=None,
 		due_time=None,
 		instructions=None,
+		converted_visit=None,
 	):
 		data = {
 			"doctype": "Pet Care Plan Item",
@@ -287,6 +433,8 @@ class TestCaseAssignment(FrappeTestCase):
 			data["requires_appointment"] = 1
 		if status == "Converted To Visit":
 			data["converted_to_visit"] = 1
+		if converted_visit:
+			data["converted_visit"] = converted_visit
 		return frappe.get_doc(data).insert(ignore_permissions=True)
 
 	def _add_to_team(self, episode, doctor, role="Treating Doctor"):

@@ -22,12 +22,25 @@ from pet_app.api.response import standardize_response
 PRODUCT_ROLES = ("System Manager", "Item Manager", "Stock Manager", "Administrator", "E-commerce")
 
 
-def _check_permission():
-    if frappe.session.user == "Administrator":
+def _has_product_role(user=None):
+    user = user or frappe.session.user
+    if user == "Administrator":
+        return True
+    user_roles = set(frappe.get_roles(user) or [])
+    return bool(user_roles & set(PRODUCT_ROLES))
+
+
+def _has_product_permission(ptype, user=None):
+    try:
+        return bool(frappe.has_permission("Product", ptype=ptype, user=user or frappe.session.user))
+    except Exception:
+        return False
+
+
+def _check_permission(ptype="read"):
+    if _has_product_role() or _has_product_permission(ptype):
         return
-    user_roles = frappe.get_roles(frappe.session.user)
-    if not any(r in user_roles for r in PRODUCT_ROLES):
-        frappe.throw(_("Not authorized"), frappe.PermissionError)
+    frappe.throw(_("Not authorized"), frappe.PermissionError)
 
 
 def _sanitize_order_by(order_by: str) -> str:
@@ -719,7 +732,7 @@ PRODUCT_FIELDS = [
 @frappe.whitelist(allow_guest=False)
 @standardize_response
 def publish_product(product_id=None, **kwargs):
-    _check_permission()
+    _check_permission("write" if product_id else "create")
 
     try:
         # ── capture qty before anything ──
@@ -873,7 +886,7 @@ def restock_product(product_id, qty, warehouse=None, item_variant=None):
       "item_variant": "RC-001-1kg"   ← مطلوب فقط إذا has_variants
     }
     """
-    _check_permission()
+    _check_permission("write")
     require_doctype_permission("Stock Entry", "create")
     require_doctype_permission("Stock Entry", "submit")
 
@@ -938,7 +951,7 @@ def get_stock_info(product_id, warehouse=None):
     GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001
     GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001&warehouse=Stores - K
     """
-    _check_permission()
+    _check_permission("read")
 
     doc = frappe.get_doc("Product", product_id)
     wh  = _resolve_allowed_warehouse(warehouse)
@@ -1031,7 +1044,7 @@ def get_products(filters=None, fields=None, order_by="creation desc",
                  limit_start=0, limit_page_length=20,
                  search_term=None):
     import json
-    _check_permission()
+    _check_permission("read")
 
     _filters = json.loads(filters) if isinstance(filters, str) else (filters or [])
     _fields  = json.loads(fields)  if isinstance(fields,  str) else (fields or [

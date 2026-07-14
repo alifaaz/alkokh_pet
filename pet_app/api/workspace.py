@@ -8,6 +8,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, flt, getdate, now_datetime, nowdate
 
+from pet_app.api.healthcare.boarding import active_boarding_for_visit
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import get_user_roles, require_restriction_value, user_has_full_access
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
@@ -29,8 +30,10 @@ from pet_app.utils.practitioner import (
 )
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
+	STRICT_MODE,
 	cancel_visit_billable_item_by_link,
 )
+from pet_app.pet_app.doctype.vet_visit.vet_visit import _create_sales_invoice_for_visit, _mark_visit_invoiced
 from pet_app.workflows import clinical_state
 from pet_app.api.response import standardize_response
 
@@ -70,6 +73,12 @@ SOURCE_LABELS = {
 	"Payment Entry": "Payment",
 }
 
+DIAGNOSTIC_RESULT_FILE_FIELDS = {
+	"Lab": ("result_file",),
+	"Imaging": ("image", "report_file"),
+}
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
 # Workspace authorization must stay on DocPerm-backed operational roles.
 # Page/sidebar-only roles belong in page access settings, not here.
 DOCTOR_WRITE_ROLES = {"Doctor", "Visit Admin"}
@@ -84,6 +93,12 @@ MANAGEMENT_ROLES = {"System Manager", "Pet App Admin"}
 SERVICE_PROVIDER_ROLES = {"Service Provider Manager", "Service Provider", "Groomer", "Nursing User"}
 
 GUARDIAN_ROLES = set()
+
+COORDINATOR_PAGE_ROLES = {"Healthcare Coordinator Page"}
+DOCTOR_PAGE_ROLES = {"Visits Page", "Case Sheets Page"}
+DIAGNOSTIC_PAGE_ROLES = {"Labs Page", "Radiology Page"}
+ACCOUNTING_PAGE_ROLES = {"POS Page", "Sales Invoices Page", "Payment Entries Page"}
+SERVICE_PAGE_ROLES = {"Service Provider Page"}
 
 WORKSPACE_ROLES = DOCTOR_ROLES | COORDINATOR_ROLES | DIAGNOSTIC_ROLES | ACCOUNTING_ROLES | MANAGEMENT_ROLES | SERVICE_PROVIDER_ROLES
 WORKSPACE_WRITE_ROLES = (
@@ -416,13 +431,13 @@ def _allowed_workspace_modes(roles: set[str], user: str) -> set[str]:
 		return set(WORKSPACE_MODES)
 
 	allowed_modes = {"service"}
-	if roles & COORDINATOR_ROLES:
+	if roles & (COORDINATOR_ROLES | COORDINATOR_PAGE_ROLES):
 		allowed_modes.add("coordinator")
-	if _doctor_for_user(user) or roles & DOCTOR_ROLES:
+	if _doctor_for_user(user) or roles & (DOCTOR_ROLES | DOCTOR_PAGE_ROLES):
 		allowed_modes.add("doctor")
-	if roles & DIAGNOSTIC_ROLES:
+	if roles & (DIAGNOSTIC_ROLES | DIAGNOSTIC_PAGE_ROLES):
 		allowed_modes.add("diagnostics")
-	if roles & ACCOUNTING_ROLES:
+	if roles & (ACCOUNTING_ROLES | ACCOUNTING_PAGE_ROLES):
 		allowed_modes.add("accounting")
 	return allowed_modes
 
@@ -433,6 +448,23 @@ def _normalize_source_type(source_type: str) -> str:
 	if not doctype or not frappe.db.exists("DocType", doctype):
 		frappe.throw(_("Unsupported source type: {0}").format(source_type))
 	return doctype
+
+
+def _has_workspace_doctype_permission(doctype: str, write: bool = False, user: str | None = None) -> bool:
+	try:
+		return bool(frappe.has_permission(doctype, ptype="write" if write else "read", user=user or frappe.session.user))
+	except Exception:
+		return False
+
+
+def _has_legacy_or_doctype_permission(
+	roles: set[str],
+	legacy_roles: set[str],
+	doctype: str,
+	write: bool,
+	user: str,
+) -> bool:
+	return bool(roles & legacy_roles) or _has_workspace_doctype_permission(doctype, write, user)
 
 
 def _assert_record_access(doctype: str, name: str, write: bool = False, action: str | None = None):
@@ -453,27 +485,40 @@ def _assert_record_access(doctype: str, name: str, write: bool = False, action: 
 	accounting_roles = ACCOUNTING_WRITE_ROLES if write else ACCOUNTING_ROLES
 	management_roles = MANAGEMENT_ROLES
 	workspace_roles = WORKSPACE_WRITE_ROLES if write else WORKSPACE_ROLES
-	if not roles & workspace_roles:
+	has_source_access = _has_workspace_doctype_permission(doctype, write, user)
+	if not (roles & workspace_roles or has_source_access):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
 
 	doctor = _doctor_for_user(user)
-	doctor_can_access = not write or bool(roles & doctor_roles)
+	doctor_can_access = not write or bool(roles & doctor_roles) or has_source_access
 	if doctype == "Vet Visit":
 		visit_doctor = frappe.db.get_value("Vet Visit", name, "doctor")
 		if visit_doctor and doctor and visit_doctor == doctor and doctor_can_access:
 			return
 		if doctor and doctor_can_access and _visit_has_consult_for_doctor(name, doctor):
 			return
-		if roles & (coordinator_roles | diagnostic_roles | accounting_roles | management_roles):
+		if _has_legacy_or_doctype_permission(
+			roles,
+			coordinator_roles | diagnostic_roles | accounting_roles | management_roles,
+			doctype,
+			write,
+			user,
+		):
 			return
 	elif doctype == "Vet Case Sheet":
-		if roles & (doctor_roles | coordinator_roles | management_roles):
+		if _has_legacy_or_doctype_permission(roles, doctor_roles | coordinator_roles | management_roles, doctype, write, user):
 			return
 	elif doctype in {"Lab", "Imaging"}:
 		record_doctor = _get_optional_value(doctype, name, "doctor")
 		if record_doctor and doctor and record_doctor == doctor and doctor_can_access:
 			return
-		if roles & (diagnostic_roles | coordinator_roles | management_roles):
+		if _has_legacy_or_doctype_permission(
+			roles,
+			diagnostic_roles | coordinator_roles | management_roles,
+			doctype,
+			write,
+			user,
+		):
 			return
 	elif doctype == "PetCareService":
 		row = frappe.db.get_value(
@@ -483,13 +528,27 @@ def _assert_record_access(doctype: str, name: str, write: bool = False, action: 
 			as_dict=True,
 		)
 		practitioner = _doctor_for_user(user)
-		if row and (row.get("provider") in {user, doctor, practitioner} or row.get("user") == user):
+		if row and (row.get("provider") in {user, doctor, practitioner} or row.get("user") == user) and (
+			roles & workspace_roles or has_source_access
+		):
 			return
 		if row and row.get("doctor") and doctor and row.get("doctor") == doctor and doctor_can_access:
 			return
-		if roles & (coordinator_roles | management_roles):
+		if _has_legacy_or_doctype_permission(
+			roles,
+			coordinator_roles | management_roles,
+			doctype,
+			write,
+			user,
+		):
 			return
-		if "Service Provider Manager" in roles:
+		if _has_legacy_or_doctype_permission(
+			roles,
+			{"Service Provider Manager"},
+			doctype,
+			write,
+			user,
+		):
 			return
 	elif doctype == "Pet Procedure":
 		row = frappe.db.get_value(
@@ -498,17 +557,23 @@ def _assert_record_access(doctype: str, name: str, write: bool = False, action: 
 			_fields("Pet Procedure", ["provider", "doctor"]),
 			as_dict=True,
 		)
-		if row and row.get("provider") == user:
+		if row and row.get("provider") == user and (roles & workspace_roles or has_source_access):
 			return
 		if row and row.get("doctor") and doctor and row.get("doctor") == doctor and doctor_can_access:
 			return
-		if roles & (coordinator_roles | management_roles):
+		if _has_legacy_or_doctype_permission(
+			roles,
+			coordinator_roles | management_roles,
+			doctype,
+			write,
+			user,
+		):
 			return
 	elif doctype == "Appointment":
-		if roles & (coordinator_roles | doctor_roles | management_roles):
+		if _has_legacy_or_doctype_permission(roles, coordinator_roles | doctor_roles | management_roles, doctype, write, user):
 			return
 	elif doctype in {"Sales Invoice", "Payment Entry"}:
-		if roles & (accounting_roles | management_roles):
+		if _has_legacy_or_doctype_permission(roles, accounting_roles | management_roles, doctype, write, user):
 			return
 
 	frappe.throw(_("Not permitted"), frappe.PermissionError)
@@ -1042,6 +1107,7 @@ def _visit_aggregate(visit_name: str) -> dict:
 	guardian = _guardian_payload(visit.guardian)
 	doctor = _doctor_payload(visit.doctor)
 	billing = _billing_snapshot(visit)
+	linked_records = _linked_records_for_visit(visit.name)
 
 	return {
 		"summary": {
@@ -1090,13 +1156,13 @@ def _visit_aggregate(visit_name: str) -> dict:
 			"follow_up": _visit_follow_up(visit),
 			"consult_requests": _visit_consult_requests(visit),
 			"diagnoses": _visit_diagnoses(visit),
-			"orders": _visit_orders(visit),
+			"orders": _visit_orders(visit, linked_records=linked_records),
 		"addenda": _visit_addenda(visit.name),
-		"linked_records": _linked_records_for_visit(visit.name),
+		"linked_records": linked_records,
 		"notes": _comments_for("Vet Visit", visit.name),
 		"attachments": _attachments_for("Vet Visit", visit.name),
 		"billing": billing,
-		"timeline": _timeline_for_visit(visit),
+		"timeline": _timeline_for_visit(visit, linked_records=linked_records),
 		"raw": {"doctype": visit.doctype, "name": visit.name},
 	}
 
@@ -1232,12 +1298,12 @@ def _visit_addenda(visit_name: str) -> list[dict]:
 	return addenda
 
 
-def _visit_orders(visit) -> list[dict]:
+def _visit_orders(visit, linked_records=None) -> list[dict]:
 	rows = []
 	if _has_field("Vet Visit", "orders"):
 		for row in visit.get("orders") or []:
 			rows.append(_visit_order_row(row))
-	linked = _synthesized_orders_from_records(visit.name, {row.get("order_id") for row in rows if row.get("order_id")})
+	linked = _synthesized_orders_from_records(visit.name, {row.get("order_id") for row in rows if row.get("order_id")}, linked_records=linked_records)
 	rows.extend(linked)
 	return rows
 
@@ -1297,15 +1363,34 @@ def _visit_order_row(row) -> dict:
 
 def _linked_records_for_visit(visit_name: str) -> list[dict]:
 	records = []
+	diagnostic_rows = {}
 	for doctype in ("Lab", "Imaging"):
 		rows = frappe.get_all(
 			doctype,
 			filters={"visit": visit_name},
-			fields=_fields(doctype, ["name", "visit", "order_id", "pet", "doctor", "care_service", "item_code", "status", "modified"]),
+			fields=_fields(
+				doctype,
+				[
+					"name",
+					"visit",
+					"order_id",
+					"pet",
+					"doctor",
+					"care_service",
+					"item_code",
+					"status",
+					"modified",
+					*DIAGNOSTIC_RESULT_FILE_FIELDS.get(doctype, ()),
+				],
+			),
 			order_by="modified desc",
 			ignore_permissions=True,
 		)
-		for row in rows:
+		diagnostic_rows[doctype] = rows
+
+	result_files = _diagnostic_result_files(diagnostic_rows)
+	for doctype in ("Lab", "Imaging"):
+		for row in diagnostic_rows.get(doctype) or []:
 			records.append(
 				{
 					"source_type": SOURCE_LABELS[doctype],
@@ -1315,6 +1400,7 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 					"order_id": row.get("order_id"),
 					"title": _care_service_label(row.get("care_service")) or row.name,
 					"modified": row.get("modified"),
+					"result_files": result_files.get(doctype, {}).get(row.name, []),
 				}
 			)
 
@@ -1388,9 +1474,62 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 	return records
 
 
-def _synthesized_orders_from_records(visit_name: str, known_order_ids: set[str]) -> list[dict]:
+def _diagnostic_result_files(diagnostic_rows: dict[str, list]) -> dict[str, dict[str, list[dict]]]:
+	files_by_doctype = {}
+	seen_by_doctype = {}
+	for doctype, rows in diagnostic_rows.items():
+		names = [row.name for row in rows if row.get("name")]
+		files_by_doctype[doctype] = {name: [] for name in names}
+		seen_by_doctype[doctype] = {name: set() for name in names}
+		if not names:
+			continue
+
+		file_rows = frappe.get_all(
+			"File",
+			filters={"attached_to_doctype": doctype, "attached_to_name": ["in", names]},
+			fields=["name", "file_url", "file_name", "attached_to_name"],
+			order_by="creation asc",
+			ignore_permissions=True,
+		)
+		for file_row in file_rows:
+			attached_to_name = file_row.get("attached_to_name")
+			if attached_to_name in files_by_doctype[doctype]:
+				_append_result_file(files_by_doctype[doctype][attached_to_name], seen_by_doctype[doctype][attached_to_name], file_row)
+
+		for row in rows:
+			for fieldname in _fields(doctype, list(DIAGNOSTIC_RESULT_FILE_FIELDS.get(doctype, ()))):
+				_append_result_file(files_by_doctype[doctype][row.name], seen_by_doctype[doctype][row.name], {"file_url": row.get(fieldname)})
+	return files_by_doctype
+
+
+def _append_result_file(target: list[dict], seen_urls: set[str], source) -> None:
+	file_url = cstr(source.get("file_url")).strip()
+	if not file_url or file_url in seen_urls:
+		return
+	seen_urls.add(file_url)
+	file_name = cstr(source.get("file_name")).strip() or _file_name_from_url(file_url)
+	target.append(
+		{
+			"name": source.get("name") or file_url,
+			"file_url": file_url,
+			"file_name": file_name,
+			"is_image": _is_image_file(file_url),
+		}
+	)
+
+
+def _file_name_from_url(file_url: str) -> str:
+	return cstr(file_url).split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+
+
+def _is_image_file(file_url: str) -> bool:
+	path = cstr(file_url).split("?", 1)[0].lower()
+	return any(path.endswith(extension) for extension in IMAGE_FILE_EXTENSIONS)
+
+
+def _synthesized_orders_from_records(visit_name: str, known_order_ids: set[str], linked_records=None) -> list[dict]:
 	orders = []
-	for record in _linked_records_for_visit(visit_name):
+	for record in (linked_records if linked_records is not None else _linked_records_for_visit(visit_name)):
 		order_id = record.get("order_id") or f"{record.get('source_doctype')}::{record.get('name')}"
 		if order_id in known_order_ids:
 			continue
@@ -1578,6 +1717,18 @@ def _create_orders(visit_name: str, payload: dict):
 
 
 def _complete_case(visit_name: str, payload: dict):
+	savepoint = f"complete_visit_{frappe.generate_hash(length=10)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		_complete_case_atomic(visit_name, payload)
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	else:
+		frappe.db.release_savepoint(savepoint)
+
+
+def _complete_case_atomic(visit_name: str, payload: dict):
 	visit = frappe.get_doc("Vet Visit", visit_name)
 	if cstr(visit.get("status")).strip() == "Completed":
 		return
@@ -1588,17 +1739,51 @@ def _complete_case(visit_name: str, payload: dict):
 			_save_diagnoses(visit_name, payload)
 	visit = frappe.get_doc("Vet Visit", visit_name)
 	clinical_state.assert_action_allowed(visit, "complete_case")
+	_assert_no_active_visit_boarding(visit)
 	if not visit.diagnosis:
 		diagnosis_text = _primary_diagnosis_text([row.as_dict() for row in visit.get("diagnoses") or []])
 		if diagnosis_text:
 			visit.diagnosis = diagnosis_text
 	if not visit.doctor_notes and visit.get("instructions"):
 		visit.doctor_notes = visit.get("instructions")
-	clinical_state.transition_status(visit, "Completed", action="complete_case")
-	visit.save(ignore_permissions=True)
-	sync_completed_visit(visit, outcome=payload.get("outcome") if payload else None)
-	_sync_queue_ticket_for_visit(visit, status="Completed", timestamp_field="completed_at")
-	visit.add_comment("Comment", _("Case completed by {0}.").format(frappe.session.user))
+	_validate_visit_completion_requirements(visit)
+
+	invoice_result = _create_sales_invoice_for_visit(visit.name)
+	sales_invoice = invoice_result.get("sales_invoice")
+	if not sales_invoice or not sales_invoice.get("name"):
+		frappe.throw(_("Draft Sales Invoice could not be created for this visit."))
+	invoice_visit = invoice_result["visit"]
+	for fieldname in ("diagnosis", "doctor_notes"):
+		if visit.get(fieldname) and not invoice_visit.get(fieldname):
+			invoice_visit.set(fieldname, visit.get(fieldname))
+	clinical_state.transition_status(invoice_visit, "Completed", action="complete_case")
+	_mark_visit_invoiced(invoice_visit, invoice_result["sales_invoice"], invoice_result["total_billable_amount"])
+	sync_completed_visit(invoice_visit, outcome=payload.get("outcome") if payload else None)
+	_sync_queue_ticket_for_visit(invoice_visit, status="Completed", timestamp_field="completed_at")
+	invoice_visit.add_comment("Comment", _("Case completed by {0}.").format(frappe.session.user))
+
+
+def _assert_no_active_visit_boarding(visit):
+	boarding = active_boarding_for_visit(visit.name)
+	if boarding:
+		frappe.throw(
+			_("Cannot complete visit {0} while Pet Boarding {1} is {2}.").format(
+				frappe.bold(visit.name), frappe.bold(boarding.name), frappe.bold(boarding.record_status)
+			)
+		)
+
+
+def _validate_visit_completion_requirements(visit):
+	if not visit.illness:
+		frappe.throw(_("Illness is required before completing the visit."))
+	if not visit.diagnosis:
+		frappe.throw(_("Diagnosis is required before completing the visit."))
+	if not visit.treatment_plan:
+		frappe.throw(_("Treatment Plan is required before completing the visit."))
+	if not visit.doctor_notes:
+		frappe.throw(_("Clinical Note is required before completing the visit."))
+	if STRICT_MODE:
+		visit._validate_no_pending_clinical_records()
 
 
 def _cancel_medication(visit_name: str, payload: dict):
@@ -2534,12 +2719,12 @@ def _attachments_for(doctype: str, name: str) -> list[dict]:
 	return [dict(row) for row in rows]
 
 
-def _timeline_for_visit(visit) -> list[dict]:
+def _timeline_for_visit(visit, linked_records=None) -> list[dict]:
 	events = [
 		{"type": "created", "at": visit.creation, "label": _("Visit created"), "source_doctype": "Vet Visit", "name": visit.name},
 		{"type": "status", "at": visit.modified, "label": _("Visit status: {0}").format(visit.status), "source_doctype": "Vet Visit", "name": visit.name},
 	]
-	for record in _linked_records_for_visit(visit.name):
+	for record in (linked_records if linked_records is not None else _linked_records_for_visit(visit.name)):
 		events.append(
 			{
 				"type": "linked_record",

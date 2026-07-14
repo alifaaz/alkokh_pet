@@ -38,18 +38,28 @@ class TestClinicalP1Flows(FrappeTestCase):
 		self.assertTrue(saved["ok"])
 		self.assertEqual(frappe.db.count("Vet Case Sheet Response", {"case_sheet": visit.case_sheet, "field_key": "triage_note"}), 1)
 
-	def test_medication_dispense_return_and_warehouse_restriction(self):
+	def test_medication_dispense_return_are_status_only_and_warehouse_restricted(self):
 		visit = self._make_visit_with_medication()
 		row = visit.prescribed_medications[0]
 		warehouse = self._make_warehouse("Allowed")
+		stock_entries_before = frappe.db.count("Stock Entry")
 
 		dispensed = pharmacy.dispense_visit_medication(visit=visit.name, row_name=row.name, qty=1, warehouse=warehouse)
-		self.assertTrue(dispensed["ok"])
+		self.assertTrue(dispensed["ok"], dispensed)
 		self.assertEqual(dispensed["data"]["medication"]["dispense_status"], "Partially Dispensed")
+		self.assertEqual(dispensed["data"]["medication"]["dispensed_qty"], 1)
+		self.assertEqual(frappe.db.count("Stock Entry"), stock_entries_before)
+		ledger = frappe.db.get_value("Medication Dispense Ledger", dispensed["data"]["ledger"], ["operation", "warehouse"], as_dict=True)
+		self.assertEqual(ledger.operation, "Dispense")
+		self.assertEqual(ledger.warehouse, warehouse)
 
 		returned = pharmacy.return_dispensed_medication(visit=visit.name, row_name=row.name, qty=1)
-		self.assertTrue(returned["ok"])
+		self.assertTrue(returned["ok"], returned)
 		self.assertEqual(returned["data"]["medication"]["dispense_status"], "Returned")
+		self.assertEqual(returned["data"]["medication"]["return_qty"], 1)
+		self.assertEqual(frappe.db.count("Stock Entry"), stock_entries_before)
+		ledger = frappe.db.get_value("Medication Dispense Ledger", returned["data"]["ledger"], "operation")
+		self.assertEqual(ledger, "Return")
 
 		user = self._make_user("p1.warehouse", roles=["Desk User"])
 		frappe.get_doc(
@@ -62,8 +72,9 @@ class TestClinicalP1Flows(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True)
 		visit = self._make_visit_with_medication()
+		wrong_warehouse = self._make_warehouse("Wrong")
 		frappe.set_user(user.name)
-		blocked = pharmacy.dispense_visit_medication(visit=visit.name, row_name=visit.prescribed_medications[0].name, qty=1, warehouse="Wrong Warehouse - P1")
+		blocked = pharmacy.dispense_visit_medication(visit=visit.name, row_name=visit.prescribed_medications[0].name, qty=1, warehouse=wrong_warehouse)
 		self.assertFalse(blocked["ok"])
 		self.assertEqual(blocked["meta"]["code"], "PERMISSION_ERROR")
 
@@ -269,7 +280,7 @@ class TestClinicalP1Flows(FrappeTestCase):
 
 	def _make_visit_with_medication(self):
 		visit = self._make_visit()
-		item = self._make_item("P1 Medication Item")
+		item = self._make_stock_item("P1 Medication Item")
 		visit.append(
 			"prescribed_medications",
 			{
@@ -377,7 +388,7 @@ class TestClinicalP1Flows(FrappeTestCase):
 				"category_id": category.name,
 				"item_code": item.name,
 				"default_price": 25,
-				"price_list": "Clinic",
+				"price_list": "Standard Selling",
 			}
 		).insert(ignore_permissions=True)
 
@@ -405,15 +416,41 @@ class TestClinicalP1Flows(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True, ignore_mandatory=True)
 
-	def _make_warehouse(self, label):
-		name = f"{label} Warehouse {frappe.generate_hash(length=6)} - P1"
+	def _make_stock_item(self, label):
+		suffix = frappe.generate_hash(length=8)
+		item_group = self._leaf_item_group()
 		return frappe.get_doc(
 			{
-				"doctype": "Warehouse",
-				"warehouse_name": name,
-				"is_group": 0,
+				"doctype": "Item",
+				"item_code": f"{label} {suffix}",
+				"item_name": f"{label} {suffix}",
+				"item_group": item_group,
+				"stock_uom": "Nos",
+				"is_stock_item": 1,
+				"is_sales_item": 1,
+				"is_purchase_item": 1,
+				"standard_rate": 10,
 			}
-		).insert(ignore_permissions=True, ignore_mandatory=True).name
+		).insert(ignore_permissions=True, ignore_mandatory=True)
+
+	def _leaf_item_group(self):
+		groups = frappe.get_all("Item Group", filters={"is_group": 0}, pluck="name", limit=1)
+		return groups[0] if groups else "All Item Groups"
+
+	def _default_company(self):
+		company = frappe.defaults.get_global_default("company")
+		if company:
+			return company
+		rows = frappe.get_all("Company", fields=["name"], limit=1)
+		return rows[0].name if rows else None
+
+	def _make_warehouse(self, label):
+		name = f"{label} Warehouse {frappe.generate_hash(length=6)} - P1"
+		data = {"doctype": "Warehouse", "warehouse_name": name, "is_group": 0}
+		company = self._default_company()
+		if company:
+			data["company"] = company
+		return frappe.get_doc(data).insert(ignore_permissions=True, ignore_mandatory=True).name
 
 	def _make_user(self, prefix, roles):
 		suffix = frappe.generate_hash(length=8)

@@ -757,12 +757,12 @@ class TestClinicalHardening(FrappeTestCase):
 		).insert(ignore_permissions=True, ignore_mandatory=True)
 
 	def _ensure_clinic_price_list(self):
-		if frappe.db.exists("Price List", "Clinic"):
-			return "Clinic"
+		if frappe.db.exists("Price List", "Standard Selling"):
+			return "Standard Selling"
 		return frappe.get_doc(
 			{
 				"doctype": "Price List",
-				"price_list_name": "Clinic",
+				"price_list_name": "Standard Selling",
 				"enabled": 1,
 				"selling": 1,
 				"currency": "USD",

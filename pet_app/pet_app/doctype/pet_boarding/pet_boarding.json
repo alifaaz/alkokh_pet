@@ -15,6 +15,7 @@
   "pet_name",
   "column_break_room",
   "boarding_type",
+  "visit",
   "record_status",
   "status",
   "workflow_state",
@@ -22,7 +23,9 @@
   "reserved_at",
   "check_in",
   "check_out",
+  "expected_check_out",
   "stay_days",
+  "stay_hours",
   "billing_section",
   "total_cost",
   "deposit",
@@ -34,6 +37,10 @@
   "billable_items",
   "notes_section",
   "note",
+  "boarding_note",
+  "boarded_by",
+  "cancelled_by",
+  "cancellation_note",
   "checkout_notes",
   "amended_from",
   "notes"
@@ -50,7 +57,7 @@
    "in_list_view": 1,
    "label": "Service Room",
    "options": "Service Room",
-   "reqd": 1
+   "mandatory_depends_on": "eval:![\"Pending Room\", \"Cancelled\"].includes(doc.record_status)"
   },
   {
    "fieldname": "pet",
@@ -95,7 +102,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Record Status",
-   "options": "Reserved\nChecked In\nChecked Out\nCancelled",
+   "options": "Pending Room\nReserved\nChecked In\nChecked Out\nCancelled",
    "reqd": 1
   },
   {
@@ -142,6 +149,12 @@
    "fieldname": "stay_days",
    "fieldtype": "Float",
    "label": "Stay Days",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stay_hours",
+   "fieldtype": "Float",
+   "label": "Stay Hours",
    "read_only": 1
   },
   {
@@ -243,6 +256,43 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "s"
+  },
+  {
+   "fieldname": "visit",
+   "fieldtype": "Link",
+   "label": "Visit",
+   "options": "Vet Visit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "boarding_note",
+   "fieldtype": "Text",
+   "label": "Boarding Note"
+  },
+  {
+   "fieldname": "boarded_by",
+   "fieldtype": "Link",
+   "label": "Boarded By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_by",
+   "fieldtype": "Link",
+   "label": "Cancelled By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancellation_note",
+   "fieldtype": "Small Text",
+   "label": "Cancellation Note",
+   "read_only": 1
+  },
+  {
+   "fieldname": "expected_check_out",
+   "fieldtype": "Date",
+   "label": "Expected Check Out"
   }
  ],
  "grid_page_length": 50,

@@ -176,7 +176,7 @@ Important backend detail: `_service_items()` and `_unassigned_service_items()` u
   "category_name": "Lab",
   "item_code": "CBC",
   "default_price": 25.0,
-  "price_list": "Clinic",
+  "price_list": "Standard Selling",
   "disabled": 0,
   "specimen": "Blood",
   "estimated_turnaround": "2 hours",
@@ -429,7 +429,7 @@ Use a `CareService template` from category `Lab`.
     "category_name": "Lab",
     "item_code": "CBC",
     "default_price": 25.0,
-    "price_list": "Clinic",
+    "price_list": "Standard Selling",
     "specimen": "Blood",
     "estimated_turnaround": "2 hours"
   }
@@ -548,7 +548,7 @@ Use a `CareService template` from category `Imaging` or `Radiology`.
     "category_name": "Imaging",
     "item_code": "XRAY-CHEST",
     "default_price": 45.0,
-    "price_list": "Clinic",
+    "price_list": "Standard Selling",
     "modality": "X-Ray",
     "body_part": "Chest",
     "estimated_turnaround": "1 hour"
@@ -667,7 +667,7 @@ Use a `CareService template` from a service category such as `Service`, `Groomin
     "category_name": "Grooming",
     "item_code": "FULL-GROOMING",
     "default_price": 30.0,
-    "price_list": "Clinic",
+    "price_list": "Standard Selling",
     "service_area": "Grooming",
     "frequency": "onetime"
   }
@@ -825,7 +825,7 @@ The procedure charge starts from a `CareService template`, usually category `Pro
     "category_name": "Procedure",
     "item_code": "PROC-WOUND-MINOR",
     "default_price": 65.0,
-    "price_list": "Clinic",
+    "price_list": "Standard Selling",
     "frequency": "onetime"
   }
 }

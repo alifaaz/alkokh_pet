@@ -5,6 +5,8 @@ from frappe import _
 from frappe.utils import flt
 from frappe.model.document import Document
 
+from pet_app.utils.price_list import get_veterinary_selling_price_list
+
 
 class CareServicetemplate(Document):
 
@@ -14,7 +16,7 @@ class CareServicetemplate(Document):
             frappe.throw(_("Service Name is required."))
 
         if not self.price_list:
-            self.price_list = "Clinic"
+            self.price_list = get_veterinary_selling_price_list()
 
         self._validate_active_category()
         self._validate_duplicate_service()
@@ -60,7 +62,7 @@ class CareServicetemplate(Document):
     def _ensure_item_price(self):
         rate       = flt(self.default_price)
         item_code  = self.item_code
-        price_list = self.price_list or "Clinic"
+        price_list = self.price_list or get_veterinary_selling_price_list()
         currency   = frappe.defaults.get_global_default("currency") or "IQD"
 
         if rate <= 0 or not item_code:

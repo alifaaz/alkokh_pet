@@ -6,12 +6,16 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import date_diff, flt, get_datetime, now_datetime
+from math import ceil
+
+from frappe.utils import flt, get_datetime, now_datetime
 
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 
 
-ACTIVE_BOARDING_STATUSES = ("Reserved", "Checked In")
+PENDING_ROOM_STATUS = "Pending Room"
+ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES = ("Reserved", "Checked In")
+ACTIVE_BOARDING_STATUSES = (PENDING_ROOM_STATUS, *ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES)
 CLOSED_BOARDING_STATUSES = ("Checked Out", "Cancelled")
 
 
@@ -52,6 +56,8 @@ class PetBoarding(Document):
 
 	def _validate_room(self):
 		if not self.service_room:
+			if self.record_status not in (PENDING_ROOM_STATUS, "Cancelled"):
+				frappe.throw(_("Service Room is required unless boarding is Pending Room or Cancelled."))
 			return
 
 		room = frappe.db.get_value("Service Room", self.service_room, ["name", "status"], as_dict=True)
@@ -92,7 +98,7 @@ class PetBoarding(Document):
 		frappe.throw(_("Invalid boarding record status {0}.").format(self.record_status))
 
 	def _validate_single_active_room_boarding(self):
-		if self.record_status not in ACTIVE_BOARDING_STATUSES or not self.service_room:
+		if self.record_status not in ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES or not self.service_room:
 			return
 
 		existing = get_active_boarding_for_room(self.service_room, exclude_name=self.name)
@@ -116,13 +122,20 @@ class PetBoarding(Document):
 				row.status = "Billable"
 
 	def _compute_stay_days(self):
+		self._compute_stay_duration()
+
+	def _compute_stay_duration(self):
 		if not self.check_in:
 			self.stay_days = 0
+			self.stay_hours = 0
 			return
 
-		end_datetime = self.check_out or now_datetime()
-		days = date_diff(get_datetime(end_datetime).date(), get_datetime(self.check_in).date())
-		self.stay_days = max(days, 1)
+		start_datetime = get_datetime(self.check_in)
+		end_datetime = get_datetime(self.check_out or now_datetime())
+		elapsed_seconds = max((end_datetime - start_datetime).total_seconds(), 0)
+		stay_hours = max(ceil(elapsed_seconds / 3600), 1)
+		self.stay_hours = stay_hours
+		self.stay_days = max(ceil(stay_hours / 24), 1)
 
 	def _compute_totals(self):
 		total = 0
@@ -141,7 +154,7 @@ def get_active_boarding_for_room(service_room: str, exclude_name: str | None = N
 
 	filters = {
 		"service_room": service_room,
-		"record_status": ["in", ACTIVE_BOARDING_STATUSES],
+		"record_status": ["in", ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES],
 		"docstatus": ["<", 2],
 	}
 	if exclude_name:

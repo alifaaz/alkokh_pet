@@ -8,6 +8,8 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
+from pet_app.utils.price_list import get_veterinary_selling_price_list
+
 
 class CareServiceBillingOption(Document):
 	def validate(self):
@@ -201,17 +203,9 @@ def get_billing_option_item_group(doc: CareServiceBillingOption) -> str:
 
 def get_billing_option_price_list(doc: CareServiceBillingOption) -> str | None:
 	parent_price_list = frappe.db.get_value("CareService template", doc.category_care_services, "price_list")
-	for price_list in (parent_price_list, "Clinic", "Standard Selling"):
-		if is_enabled_selling_price_list(price_list):
-			return price_list
-
-	rows = frappe.get_all(
-		"Price List",
-		filters={"selling": 1, "enabled": 1},
-		pluck="name",
-		limit=1,
-	)
-	return rows[0] if rows else None
+	if is_enabled_selling_price_list(parent_price_list):
+		return parent_price_list
+	return get_veterinary_selling_price_list()
 
 
 def is_enabled_selling_price_list(price_list: str | None) -> bool:

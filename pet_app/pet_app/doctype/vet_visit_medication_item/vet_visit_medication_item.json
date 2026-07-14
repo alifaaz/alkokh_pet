@@ -7,8 +7,12 @@
  "engine": "InnoDB",
  "field_order": [
   "medication",
+  "dose_option",
   "medication_item",
   "qty",
+  "dispense_uom",
+  "stock_uom",
+  "conversion_factor",
   "rate",
   "amount",
   "dosage",
@@ -23,12 +27,24 @@
   "column_break_dispense",
   "dispensed_by",
   "dispensed_at",
+  "returned_by",
+  "returned_at",
   "batch_no",
   "expiry_date",
-  "stock_entry",
+  "audit_section",
+  "quantity_modified_by",
+  "quantity_modified_at",
+  "rate_modified_by",
+  "rate_modified_at",
   "sales_invoice_item"
  ],
  "fields": [
+  {
+   "fieldname": "dose_option",
+   "fieldtype": "Link",
+   "label": "Dose Option",
+   "options": "Medication Dose Option"
+  },
   {
    "fetch_from": "medication.linked_item",
    "fieldname": "medication_item",
@@ -46,6 +62,25 @@
    "in_list_view": 1,
    "label": "Qty",
    "reqd": 1
+  },
+  {
+   "fieldname": "dispense_uom",
+   "fieldtype": "Link",
+   "label": "Dispense UOM",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "label": "Stock UOM",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "conversion_factor",
+   "fieldtype": "Float",
+   "label": "Conversion Factor"
   },
   {
    "fieldname": "rate",
@@ -140,9 +175,23 @@
    "read_only": 1
   },
   {
+   "fieldname": "returned_by",
+   "fieldtype": "Link",
+   "label": "Returned By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "returned_at",
+   "fieldtype": "Datetime",
+   "label": "Returned At",
+   "read_only": 1
+  },
+  {
    "fieldname": "batch_no",
-   "fieldtype": "Data",
-   "label": "Batch No"
+   "fieldtype": "Link",
+   "label": "Batch No",
+   "options": "Batch"
   },
   {
    "fieldname": "expiry_date",
@@ -150,10 +199,34 @@
    "label": "Expiry Date"
   },
   {
-   "fieldname": "stock_entry",
+   "fieldname": "audit_section",
+   "fieldtype": "Section Break",
+   "label": "Audit"
+  },
+  {
+   "fieldname": "quantity_modified_by",
    "fieldtype": "Link",
-   "label": "Stock Entry",
-   "options": "Stock Entry",
+   "label": "Quantity Modified By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quantity_modified_at",
+   "fieldtype": "Datetime",
+   "label": "Quantity Modified At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rate_modified_by",
+   "fieldtype": "Link",
+   "label": "Rate Modified By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rate_modified_at",
+   "fieldtype": "Datetime",
+   "label": "Rate Modified At",
    "read_only": 1
   },
   {

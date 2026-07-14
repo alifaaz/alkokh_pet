@@ -17,17 +17,44 @@ from pet_app.api.response import standardize_response
 
 
 ACCOUNTING_ROLES = {"System Manager", "Accounts Manager", "Accounts User", "Accounting", "POS"}
+ACCOUNTING_PAGE_ROLES = {"Cashiers Page", "POS Page"}
 
 
 def _current_user() -> str:
 	return frappe.session.user
 
 
+def _user_roles(user: str | None = None) -> set[str]:
+	return set(frappe.get_roles(user or _current_user()) or [])
+
+
+def _has_doctype_permission(doctype: str, ptype: str, user: str | None = None) -> bool:
+	try:
+		return bool(frappe.has_permission(doctype, ptype=ptype, user=user or _current_user()))
+	except Exception:
+		return False
+
+
+def _has_legacy_accounting_role(user: str | None = None) -> bool:
+	user = user or _current_user()
+	return user == "Administrator" or bool(_user_roles(user) & ACCOUNTING_ROLES)
+
+
 def _is_accounting_user(user: str | None = None) -> bool:
 	user = user or _current_user()
-	if user == "Administrator":
+	return _has_legacy_accounting_role(user) or bool(_user_roles(user) & ACCOUNTING_PAGE_ROLES)
+
+
+def _has_accounting_record_permission(*permissions: tuple[str, str], user: str | None = None) -> bool:
+	user = user or _current_user()
+	if _has_legacy_accounting_role(user):
 		return True
-	return bool(set(frappe.get_roles(user) or []) & ACCOUNTING_ROLES)
+	return any(_has_doctype_permission(doctype, ptype, user) for doctype, ptype in permissions)
+
+
+def _require_accounting_record_permission(*permissions: tuple[str, str]):
+	if not _has_accounting_record_permission(*permissions):
+		frappe.throw(_("Not authorized."), frappe.PermissionError)
 
 
 def _require_accounting_user():
@@ -284,7 +311,7 @@ def _get_authorized_profile(profile: str, *, allow_disabled: bool = False):
 		frappe.throw(_("Cashier profile {0} is disabled.").format(frappe.bold(profile)))
 	require_restriction_value("cashier_profile", doc.name)
 
-	if _is_accounting_user():
+	if _has_accounting_record_permission(("POS Profile", "read")):
 		return doc
 
 	if not _profile_assigned_to_user(profile, _current_user()):
@@ -504,16 +531,16 @@ def _stamp_sales_invoice_references(references: list[dict], profile: str, cashie
 @standardize_response
 def list_cashier_profiles_for_user(user=None, company=None, search=None, include_disabled=0):
 	user = user or _current_user()
-	if user != _current_user() and not _is_accounting_user():
+	if user != _current_user() and not _has_accounting_record_permission(("POS Profile", "read")):
 		frappe.throw(_("Not authorized to list cashier profiles for another user."), frappe.PermissionError)
 
 	filters = {}
 	if company:
 		filters["company"] = company
-	if not cint(include_disabled) or not _is_accounting_user():
+	if not cint(include_disabled) or not _has_accounting_record_permission(("POS Profile", "read")):
 		filters["disabled"] = 0
 
-	if _is_accounting_user():
+	if _has_accounting_record_permission(("POS Profile", "read")):
 		profile_names = [
 			row.name
 			for row in frappe.get_all(
@@ -693,8 +720,6 @@ def _apply_profile_defaults(doc):
 @frappe.whitelist()
 @standardize_response
 def save_cashier_profile(profile=None, data=None, **kwargs):
-	_require_accounting_user()
-
 	payload = _coerce_dict(data)
 	payload.update({key: value for key, value in kwargs.items() if value is not None})
 	if "cash_account" in payload and "custom_cash_account" not in payload:
@@ -703,10 +728,10 @@ def save_cashier_profile(profile=None, data=None, **kwargs):
 	require_restriction_value("cashier_profile", profile_name)
 
 	if profile_name and frappe.db.exists("POS Profile", profile_name):
-		require_doctype_permission("POS Profile", "write")
+		_require_accounting_record_permission(("POS Profile", "write"))
 		doc = frappe.get_doc("POS Profile", profile_name)
 	else:
-		require_doctype_permission("POS Profile", "create")
+		_require_accounting_record_permission(("POS Profile", "create"))
 		if not profile_name:
 			frappe.throw(_("Cashier profile name is required."))
 		doc = frappe.get_doc({"doctype": "POS Profile", "__newname": profile_name})
@@ -765,9 +790,9 @@ def save_cashier_profile(profile=None, data=None, **kwargs):
 @frappe.whitelist()
 @standardize_response
 def create_payment_entry_with_cashier_context(pos_profile=None, data=None, submit=1, **kwargs):
-	require_doctype_permission("Payment Entry", "create")
+	_require_accounting_record_permission(("Payment Entry", "create"))
 	if cint(submit):
-		require_doctype_permission("Payment Entry", "submit")
+		_require_accounting_record_permission(("Payment Entry", "submit"))
 
 	payload = _coerce_dict(data)
 	payload.update({key: value for key, value in kwargs.items() if value is not None})
@@ -803,7 +828,7 @@ def create_payment_entry_with_cashier_context(pos_profile=None, data=None, submi
 
 	references = _normalize_references(raw_references, amount)
 	if any(row.get("reference_doctype") == "Sales Invoice" for row in references):
-		require_doctype_permission("Sales Invoice", "read")
+		_require_accounting_record_permission(("Sales Invoice", "read"))
 
 	party_type = payload.get("party_type")
 	party = payload.get("party")
@@ -1004,9 +1029,9 @@ def settle_cashier_to_treasury(
 	remarks = payload.get("remarks") or _("Cashier settlement from {0} to treasury.").format(doc.name)
 	pe = None
 	if transfer_amount > 0:
-		require_doctype_permission("Payment Entry", "create")
+		_require_accounting_record_permission(("Payment Entry", "create"))
 		if cint(submit):
-			require_doctype_permission("Payment Entry", "submit")
+			_require_accounting_record_permission(("Payment Entry", "submit"))
 
 		pe = frappe.new_doc("Payment Entry")
 		pe.payment_type = "Internal Transfer"
@@ -1082,7 +1107,7 @@ def list_cashier_settlements(
 	if profile_name:
 		_get_authorized_profile(profile_name)
 		filters["cashier_profile"] = profile_name
-	elif not _is_accounting_user():
+	elif not _has_accounting_record_permission(("Pet App Cashier Settlement", "read")):
 		assigned_profiles = [
 			row.parent
 			for row in frappe.get_all(

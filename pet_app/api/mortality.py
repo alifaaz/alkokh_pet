@@ -27,6 +27,13 @@ REPORT_ROLES = {"Visit", "Healthcare", "Nursing User", "Healthcare Administrator
 GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
 
 
+def _has_death_record_permission(ptype: str, user: str | None = None) -> bool:
+	try:
+		return bool(frappe.has_permission("Pet Death Record", ptype=ptype, user=user or frappe.session.user))
+	except Exception:
+		return False
+
+
 @frappe.whitelist()
 def list_death_reasons(species=None, category=None, active=1):
 	try:
@@ -351,9 +358,11 @@ def _get_death_record(name: str | None):
 
 
 def _assert_pet_access(pet: str, write=False):
-	if user_has_full_access() or get_user_roles() & (MANAGER_ROLES | DOCTOR_ROLES):
+	roles = get_user_roles()
+	death_ptype = "create" if write else "read"
+	if user_has_full_access() or roles & (MANAGER_ROLES | DOCTOR_ROLES) or _has_death_record_permission(death_ptype):
 		return
-	if write and get_user_roles() & REPORT_ROLES:
+	if write and roles & REPORT_ROLES:
 		return
 	guardian = frappe.db.get_value("Guardian", {"user_id": frappe.session.user}, "name")
 	if guardian and frappe.db.exists("PetGuardian", {"pet_id": pet, "guardian_id": guardian}):
@@ -373,11 +382,17 @@ def _is_manager() -> bool:
 
 
 def _can_confirm() -> bool:
-	return bool(user_has_full_access() or get_user_roles() & (DOCTOR_ROLES | MANAGER_ROLES))
+	return bool(
+		user_has_full_access()
+		or get_user_roles() & (DOCTOR_ROLES | MANAGER_ROLES)
+		or _has_death_record_permission("write")
+	)
 
 
 def _can_finalize(doc) -> bool:
 	if _is_manager():
+		return True
+	if _has_death_record_permission("write") and not cint(doc.requires_manager_review):
 		return True
 	return bool(get_user_roles() & DOCTOR_ROLES and not cint(doc.requires_manager_review))
 
