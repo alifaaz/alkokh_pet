@@ -6,6 +6,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
+from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
@@ -17,6 +18,7 @@ from pet_app.workflows import clinical_state
 
 class Lab(Document):
 	def validate(self):
+		self._validate_plan_item_links_before_detach()
 		if self.visit:
 			self.set_values_from_visit()
 		else:
@@ -33,6 +35,16 @@ class Lab(Document):
 	def on_update(self):
 		if self.visit:
 			sync_clinical_record_billable_item(self, "Lab")
+
+	def on_trash(self):
+		assert_no_active_plan_items_linked_to(self.doctype, self.name, action="delete")
+
+	def _validate_plan_item_links_before_detach(self):
+		previous = self.get_doc_before_save()
+		if previous and previous.get("visit") != self.visit:
+			assert_no_active_plan_items_linked_to(self.doctype, self.name, action="move")
+		if self.status == "Cancelled" and (not previous or previous.get("status") != "Cancelled"):
+			assert_no_active_plan_items_linked_to(self.doctype, self.name, action="cancel")
 
 	def validate_source(self):
 		if not (self.source_doctype and self.source_name):

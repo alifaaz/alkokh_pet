@@ -11,6 +11,8 @@
   "customer",
   "care_episode",
   "source_visit",
+  "linked_doctype",
+  "linked_name",
   "doctor",
   "plan_type",
   "title",
@@ -77,6 +79,20 @@
    "in_standard_filter": 1
   },
   {
+   "fieldname": "linked_doctype",
+   "fieldtype": "Select",
+   "label": "Linked DocType",
+   "options": "\nVet Visit Medication Item\nLab\nImaging\nPet Procedure",
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "linked_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Linked Name",
+   "options": "linked_doctype",
+   "in_standard_filter": 1
+  },
+  {
    "fieldname": "doctor",
    "fieldtype": "Link",
    "label": "Doctor",
@@ -87,7 +103,7 @@
    "fieldname": "plan_type",
    "fieldtype": "Select",
    "label": "Plan Type",
-   "options": "Medication\nInjection\nDiet Plan\nWound Care\nLab Recheck\nImaging Recheck\nProcedure\nFollow-up Visit\nMonitoring\nVaccination\nDeworming\nOwner Instruction\nBoarding Review\nOther",
+   "options": "Medication\nWound Care\nLab Recheck\nImaging Recheck\nProcedure\nFollow-up Visit\nMonitoring\nVaccination\nDeworming\nOwner Instruction\nBoarding Review\nOther",
    "reqd": 1,
    "in_list_view": 1,
    "in_standard_filter": 1

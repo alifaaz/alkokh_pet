@@ -13,7 +13,7 @@ class Disease(Document):
 	def validate(self):
 		self.disease_name = cstr(self.disease_name).strip()
 		self.species = cstr(self.species).strip()
-		self.category = cstr(self.category).strip()
+		self.category_a = cstr(self.category_a).strip()
 		if not self.disease_name:
 			frappe.throw(_("Disease Name is required."))
 		if self.active in (None, ""):

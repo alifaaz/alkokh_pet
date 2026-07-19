@@ -187,8 +187,11 @@ class TestNotificationEngine(FrappeTestCase):
 	def test_whatsapp_account_secrets_are_password_fields(self):
 		meta = frappe.get_meta("Pet App WhatsApp Account")
 		self.assertEqual(meta.get_field("access_token").fieldtype, "Password")
+		self.assertGreaterEqual(meta.get_field("access_token").length, 4096)
 		self.assertEqual(meta.get_field("app_secret").fieldtype, "Password")
+		self.assertGreaterEqual(meta.get_field("app_secret").length, 512)
 		self.assertEqual(meta.get_field("verify_token").fieldtype, "Password")
+		self.assertGreaterEqual(meta.get_field("verify_token").length, 512)
 
 	def _make_guardian(self):
 		suffix = frappe.generate_hash(length=8)

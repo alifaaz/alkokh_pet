@@ -6,15 +6,15 @@ import frappe
 from frappe import _
 from frappe.utils import cstr, now_datetime
 
-from pet_app.api.permissions import get_user_roles, user_has_full_access
 from pet_app.api.response import ok
 from pet_app.utils.case_assignment import (
 	DEFAULT_TEAM_ROLE,
-	DIRECT_ASSIGN_ROLES,
 	ensure_episode_practitioner,
+	is_supervisor_user,
 	set_visit_practitioner,
 	team_member_payload,
 	validate_doctor_practitioner,
+	VISIT_DOCTOR_TEAM_ERROR,
 	visit_practitioner,
 )
 from pet_app.utils.practitioner import get_practitioner_for_user
@@ -53,8 +53,8 @@ def _create_visit_referral_atomic(visit=None, to_practitioner=None, note=None, d
 	if not referral_note:
 		frappe.throw(_("Referral note is required."))
 
-	episode_doc = _episode_doc(visit_doc.get("care_episode"))
-	actor = _referral_actor(visit_doc)
+	episode_doc = _episode_doc(visit_doc.get("care_episode")) if visit_doc.get("care_episode") else None
+	actor = _referral_actor(visit_doc, episode_doc=episode_doc)
 	from_practitioner = actor["from_practitioner"]
 
 	to_practitioner_name = _arg(to_practitioner, payload, "to_practitioner", "practitioner", "doctor")
@@ -78,9 +78,11 @@ def _create_visit_referral_atomic(visit=None, to_practitioner=None, note=None, d
 	set_visit_practitioner(visit_doc, to_practitioner_name)
 	visit_doc.save(ignore_permissions=True)
 
-	episode_doc = frappe.get_doc("Pet Care Episode", episode_doc.name)
-	if ensure_episode_practitioner(episode_doc, to_practitioner_name, role=DEFAULT_TEAM_ROLE):
-		episode_doc.save(ignore_permissions=True)
+	if episode_doc:
+		episode_doc = frappe.get_doc("Pet Care Episode", episode_doc.name)
+		team_changed = ensure_episode_practitioner(episode_doc, to_practitioner_name, role=DEFAULT_TEAM_ROLE)
+		if team_changed:
+			episode_doc.save(ignore_permissions=True)
 
 	_notify_practitioner(
 		to_practitioner_name,
@@ -129,7 +131,8 @@ def can_refer_visit(visit_doc) -> bool:
 	current_practitioner = visit_practitioner(visit_doc)
 	if not current_practitioner:
 		return False
-	if _is_direct_assign_user():
+
+	if is_supervisor_user():
 		return True
 	practitioner = get_practitioner_for_user(frappe.session.user, include_disabled=False)
 	if not practitioner or practitioner != current_practitioner:
@@ -137,25 +140,19 @@ def can_refer_visit(visit_doc) -> bool:
 	return frappe.db.get_value("Healthcare Practitioner", practitioner, "practitioner_type") == "Doctor"
 
 
-def _referral_actor(visit_doc) -> dict:
+def _referral_actor(visit_doc, *, episode_doc=None) -> dict:
 	current_practitioner = visit_practitioner(visit_doc)
 	if not current_practitioner:
 		frappe.throw(_("Visit has no current practitioner."))
 
-	if _is_direct_assign_user():
+	if is_supervisor_user():
 		return {"from_practitioner": current_practitioner, "admin_initiated": True}
 
 	practitioner = _current_doctor_practitioner()
 	if practitioner != current_practitioner:
-		frappe.throw(_("Only the current visit doctor may refer this visit."), frappe.PermissionError)
+		frappe.throw(VISIT_DOCTOR_TEAM_ERROR, frappe.PermissionError)
 	return {"from_practitioner": practitioner, "admin_initiated": False}
 
-
-def _is_direct_assign_user(user: str | None = None) -> bool:
-	user = user or frappe.session.user
-	if user_has_full_access(user):
-		return True
-	return bool(get_user_roles(user) & DIRECT_ASSIGN_ROLES)
 
 
 def _current_doctor_practitioner() -> str:
@@ -216,10 +213,7 @@ def _visit_doc(visit_name: str | None):
 		frappe.throw(_("Visit is required."))
 	if not frappe.db.exists("Vet Visit", visit_name):
 		frappe.throw(_("Visit {0} was not found.").format(frappe.bold(visit_name)))
-	visit_doc = frappe.get_doc("Vet Visit", visit_name)
-	if not visit_doc.meta.has_field("care_episode") or not visit_doc.get("care_episode"):
-		frappe.throw(_("Visit {0} is not linked to a Care Episode.").format(frappe.bold(visit_name)))
-	return visit_doc
+	return frappe.get_doc("Vet Visit", visit_name)
 
 
 def _visit_pet_label(visit_doc) -> str:

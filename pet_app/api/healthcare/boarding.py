@@ -465,6 +465,37 @@ def active_boarding_for_visit(visit_name: str):
 	return rows[0] if rows else None
 
 
+def checked_in_boarding_for_visit(visit_name: str):
+	visit_name = cstr(visit_name).strip()
+	if not visit_name:
+		return None
+	if not frappe.get_meta("Pet Boarding").has_field("visit"):
+		return None
+	rows = frappe.get_all(
+		"Pet Boarding",
+		filters={
+			"visit": visit_name,
+			"record_status": "Checked In",
+			"docstatus": ["<", 2],
+		},
+		fields=[
+			"name",
+			"record_status",
+			"status",
+			"boarding_type",
+			"service_room",
+			"expected_check_out",
+			"boarding_note",
+			"boarded_by",
+			"visit",
+			"creation",
+		],
+		order_by="creation desc",
+		limit_page_length=1,
+	)
+	return rows[0] if rows else None
+
+
 def visit_boarding_payload(visit_doc) -> dict | None:
 	row = active_boarding_for_visit(visit_doc.name)
 	if not row:
@@ -1564,7 +1595,7 @@ def _coerce_datetime(value):
 
 def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 	boarding.run_method("_compute_stay_days")
-	stay_hours = flt(boarding.get("stay_hours") or 1)
+	stay_days = flt(boarding.get("stay_days") or 1)
 	linked_service_id = _room_stay_service_id(boarding.boarding_type)
 	existing_row = None
 	for row in boarding.billable_items or []:
@@ -1590,7 +1621,7 @@ def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 		existing_row.item_name = existing_row.item_name or item.get("item_name")
 		existing_row.item_code = item_code
 		existing_row.item_type = "Room Stay"
-		existing_row.qty = stay_hours
+		existing_row.qty = stay_days
 		existing_row.rate = flt(existing_row.rate or item.get("rate"))
 		existing_row.status = "Billable" if existing_row.status == "Draft" else existing_row.status or "Billable"
 		existing_row.linked_service_id = linked_service_id
@@ -1602,7 +1633,7 @@ def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 			"item_name": item.get("item_name"),
 			"item_code": item_code,
 			"item_type": "Room Stay",
-			"qty": stay_hours,
+			"qty": stay_days,
 			"rate": item.get("rate"),
 			"status": "Billable",
 			"note": _("Auto-added {0} boarding room stay.").format(boarding.boarding_type),

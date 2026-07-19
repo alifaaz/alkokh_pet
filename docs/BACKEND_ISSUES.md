@@ -140,6 +140,11 @@ Service providers can query everyone's services, not just their own.
 - **Workaround applied:** treated as optional; rendered when present.
 - **Backend should:** finalize and consistently return `Boarding Type` when set.
 
+### 19. Legacy visit-level follow-up API is unused by the healthcare Follow-ups page
+- **Problem:** The active healthcare Follow-ups page is backed by `Pet Care Plan Item` rows and their linked `Appointment` records through `pet_app.api.care_plan.list_due_plan_items` / `schedule_plan_item_appointment`. The older `pet_app.api.follow_up` module works from `Vet Visit.follow_up_*` fields and is now a parallel legacy surface.
+- **Current state:** No `FollowUp` DocType exists on the site; the only matching DocType is Frappe's unrelated `Document Follow`.
+- **Backend should:** leave the legacy API/data alone for now, but plan a later removal or migration so follow-up concepts live in one workflow.
+
 ---
 
 ## ⚪ NOT backend issues (verified frontend-only — do not chase)

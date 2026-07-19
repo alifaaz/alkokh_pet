@@ -20,6 +20,7 @@ DEFAULT_TEAM_ROLE = "Treating Doctor"
 SUPERVISOR_ROLES = {"Visit Admin", "System Manager", "Pet App Admin", "Healthcare Administrator"}
 DIRECT_ASSIGN_ROLES = {"Coordinator", "Visit Admin", "Healthcare Administrator", "Pet App Admin", "System Manager"}
 OPEN_VISIT_STATUSES = {"Draft", "In Progress", "Follow-up Needed"}
+VISIT_DOCTOR_TEAM_ERROR = _("Only this visit's doctor can change the care team.")
 
 
 def validate_doctor_practitioner(practitioner: str | None) -> str:
@@ -66,15 +67,11 @@ def remove_episode_practitioner(episode, practitioner: str | None) -> bool:
 	practitioner = cstr(practitioner).strip()
 	if not practitioner or not episode or not episode.meta.has_field(TEAM_FIELD):
 		return False
-
 	removed = False
 	for row in list(episode.get(TEAM_FIELD) or []):
 		if row.get("practitioner") == practitioner:
 			episode.remove(row)
 			removed = True
-
-	if removed and episode.get("primary_doctor") == practitioner:
-		episode.primary_doctor = first_episode_team_practitioner(episode, exclude={practitioner})
 
 	return removed
 
@@ -87,7 +84,7 @@ def first_episode_team_practitioner(episode, *, exclude: Iterable[str] | None = 
 	return None
 
 
-def episode_team_practitioners(episode, *, include_primary: bool = True) -> list[str]:
+def episode_team_practitioners(episode, *, include_primary: bool = False) -> list[str]:
 	seen: set[str] = set()
 	team: list[str] = []
 	if episode and episode.meta.has_field(TEAM_FIELD):
@@ -121,16 +118,31 @@ def current_user_team_practitioner(episode, user: str | None = None) -> str | No
 	return practitioner
 
 
+def current_user_visit_practitioner(visit, user: str | None = None) -> str | None:
+	user = user or frappe.session.user
+	visit_doctor = visit_practitioner(visit)
+	if not visit_doctor:
+		return None
+	practitioner = get_practitioner_for_user(user, include_disabled=False)
+	if practitioner != visit_doctor or not practitioner_is_doctor(practitioner):
+		return None
+	return practitioner
+
+
+def can_manage_episode_team(episode, visit=None, user: str | None = None) -> bool:
+	return bool(is_supervisor_user(user) or current_user_visit_practitioner(visit, user=user))
+
+
 def practitioner_is_doctor(practitioner: str | None) -> bool:
 	if not practitioner:
 		return False
 	return frappe.db.get_value(PRACTITIONER_DOCTYPE, practitioner, "practitioner_type") == "Doctor"
 
 
-def assert_can_manage_episode_team(episode):
-	if is_supervisor_user() or current_user_team_practitioner(episode):
+def assert_can_manage_episode_team(episode, visit=None):
+	if can_manage_episode_team(episode, visit):
 		return
-	frappe.throw(_("Not permitted"), frappe.PermissionError)
+	frappe.throw(VISIT_DOCTOR_TEAM_ERROR, frappe.PermissionError)
 
 
 def assert_can_assign_visit_doctor(episode):
@@ -191,13 +203,6 @@ def episode_visit_history(episode_name: str) -> list[dict]:
 
 def team_member_payload(practitioner: str | None) -> dict:
 	return practitioner_payload(practitioner)
-
-
-def practitioner_user_is_supervisor(practitioner: str | None) -> bool:
-	if not practitioner:
-		return False
-	user_id = frappe.db.get_value(PRACTITIONER_DOCTYPE, practitioner, "user_id")
-	return bool(user_id and is_supervisor_user(user_id))
 
 
 def _row_visit_practitioner(row) -> str | None:

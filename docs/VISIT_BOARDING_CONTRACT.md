@@ -25,13 +25,15 @@ Reserved
 Checked In
 ```
 
-Visit-level active boarding means:
+Visit-level active boarding means the visit has a current boarding row to display and manage:
 
 ```text
 Pending Room
 Reserved
 Checked In
 ```
+
+Only `Checked In` means physical custody. It is the only boarding state that makes the linked visit read-only or blocks `complete_case`. `Pending Room` and `Reserved` are reservations/work queue states; clinical work continues normally. The lock is temporary and lifts when the boarding reaches `Checked Out`.
 
 ## Pet Boarding Fields
 
@@ -226,11 +228,17 @@ The workbench permissions object also always includes:
 
 `can_cancel_boarding` is true only when this visit has cancellable active boarding (`Pending Room` or `Reserved`) and the current session user may call `cancel_boarding` for it. The key is always emitted; its absence means the backend contract has not shipped.
 
-## Visit Completion Guard
+## Visit Read-Only / Completion Guard
 
-`complete_case` rejects while the visit has active boarding in `Pending Room`, `Reserved`, or `Checked In`. The error names the blocking `Pet Boarding` record and its status.
+Boarding only gates the visit while the pet is physically in custody:
 
-`Checked Out` and `Cancelled` boarding rows are history and do not block visit completion.
+- `Pending Room`: visit remains editable and `complete_case` is allowed.
+- `Reserved`: visit remains editable and `complete_case` is allowed.
+- `Checked In`: visit is read-only and `complete_case` rejects. The error names the blocking `Pet Boarding` record.
+- `Checked Out`: the temporary lock is lifted; the visit is editable/completable again if its own visit status allows it.
+- `Cancelled`: history; does not block visit edits or completion.
+
+The care episode / medical-file path is not gated by boarding. Adding care-plan/episode items continues to work regardless of boarding state, including while the boarding is `Checked In` and after the visit is completed.
 
 ## Billing Contract
 
@@ -238,11 +246,11 @@ Boarding billing remains separate from visit billing.
 
 Boarding charges live on the boarding record (`Pet Boarding.billable_items`) and create a separate Sales Invoice during `check_out_boarding`. Visit completion creates the visit Sales Invoice from `Vet Visit.billable_items`.
 
-This feature does not merge boarding charges into the visit invoice. The completion guard prevents closing the visit while a stay is still active, but it does not change the separate boarding invoice behavior.
+This feature does not merge boarding charges into the visit invoice. Completing a visit while boarding is `Pending Room` or `Reserved` does not double-charge or lose boarding charges: visit completion creates only the visit invoice, and boarding checkout later creates the separate boarding invoice from `Pet Boarding.billable_items`.
 
 Room-stay pricing is added when a room is reserved or assigned, not by pushing rows onto the visit. The configured room item comes from `Pet Boarding Settings.travel_boarding_item` or `Pet Boarding Settings.treatment_boarding_item`. Its rate is resolved from the configured veterinary selling price list via `pet_app.utils.price_list.get_veterinary_selling_price_list()` and falls back to `Item.standard_rate` if no `Item Price` exists. The default configured price list is `Standard Selling`.
 
-Room stay is billed per hour: `qty = stay_hours`, rounded up to the next whole hour, minimum 1. The auto row uses `linked_service_id = "boarding_room_stay:<boarding_type>"` to remain idempotent and update in place. The provisional row created at room assignment uses `qty = 1` until check-out recomputes the final elapsed duration from full check-in/check-out datetimes.
+Room stay is billed per elapsed 24-hour day: `qty = stay_days`, where `stay_hours` remains the underlying duration measurement and `stay_days = ceil(stay_hours / 24)`, minimum 1. The auto row uses `linked_service_id = "boarding_room_stay:<boarding_type>"` to remain idempotent and update in place. The provisional row created at room assignment uses the current duration and check-out recomputes the final elapsed duration from full check-in/check-out datetimes.
 
 A zero-cost boarding is valid. If checkout has no non-cancelled invoice items, or the computed invoice total is zero, `check_out_boarding` closes the boarding without creating a Sales Invoice. The response returns `sales_invoice: null`.
 
@@ -267,7 +275,11 @@ Code paths checked during implementation:
 | `analytics.boarding_occupancy` | Still counts `Reserved`/`Checked In` only. |
 | `medical_file._boarding_events` | History listing continues to include boarding rows by pet. |
 | `boarding_death_cascade` | Terminal handling unchanged; Pending Room is non-terminal but carries no room-day billing. |
-| `complete_case` | Guard blocks `Pending Room`/`Reserved`/`Checked In` for the linked visit. `Cancelled` does not block. |
+| `active_boarding_for_visit` | Returns `Pending Room`/`Reserved`/`Checked In` for visit payload, duplicate-start prevention, and cancellability checks. It is not the visit read-only guard. |
+| `checked_in_boarding_for_visit` | Returns only `Checked In`; this is the visit read-only and `complete_case` guard. |
+| `complete_case` | Guard blocks only `Checked In`. `Pending Room`, `Reserved`, `Checked Out`, and `Cancelled` do not block completion. |
+| `workspace._assert_record_access` | Visit write actions are read-only only when `checked_in_boarding_for_visit` returns a row. Care-plan/episode actions are intentionally not routed through this lock. |
+| `visit_workbench._workbench_permissions` | Visit edit/complete permissions go false only for `Checked In`; `can_add_plan_item` remains independent of the boarding custody lock. |
 
 ## Non-Goals
 

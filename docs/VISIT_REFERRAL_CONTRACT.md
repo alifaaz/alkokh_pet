@@ -43,13 +43,15 @@ Doctor users may refer only visits currently assigned to their own practitioner.
 
 Behavior:
 
+A care episode is not required. A referral transfers the practitioner assigned to the `Vet Visit`; the care episode team update is only a side effect when the visit already has a `care_episode`. Episode-less wellness visits stay episode-less.
+
 - Requires `note`; no role is exempt.
 - Performs the transfer immediately and atomically under a database savepoint.
 - Sets `from_practitioner` to the visit's current practitioner before reassignment.
 - Sets `referred_by` to `frappe.session.user`.
 - Inserts the `Visit Referral` row with `referred_at = now`.
 - Reassigns this visit through `set_visit_practitioner()`, which writes both `primary_practitioner` and `doctor`.
-- Adds `to_practitioner` to the care episode team as `Treating Doctor` if missing.
+- Adds `to_practitioner` to the care episode team as `Treating Doctor` if the visit has a care episode and the doctor is missing from that team. If `care_episode` is empty, this step is a no-op and no episode is created.
 - Sends a `Notification Log` to `to_practitioner`'s linked user. The notification subject includes the referral note text.
 - For admin/coordinator-initiated transfers, also sends a `Notification Log` to `from_practitioner`'s linked user because that doctor did not initiate the handoff.
 
@@ -59,7 +61,6 @@ Error cases:
 
 - `Visit is required.`
 - `Visit <name> was not found.`
-- `Visit <name> is not linked to a Care Episode.`
 - `Vet Visit referral table is missing. Run migrations first.`
 - `Completed visits cannot be referred.`
 - `Visit is locked after billing.`
@@ -125,11 +126,11 @@ The existing `permissions` object also includes:
 }
 ```
 
-`can_refer_visit` is true when the current user can call `create_visit_referral` for this visit: the current visit doctor, a direct-assignment admin/coordinator role, or a full-access user. It is false for unrelated doctors and locked/completed visits.
+`can_refer_visit` is true when the current user can call `create_visit_referral` for this visit: the current visit doctor, a direct-assignment admin/coordinator role, or a full-access user. It is false for unrelated doctors and locked/completed visits. The visit's episode link is not part of this calculation.
 
 ## Scope
 
-A referral moves this visit's practitioner only. It does not retroactively change other visits in the same care episode. Multiple referrals over one visit's life are valid, for example `A -> B -> C`; the child table records that transfer history.
+A referral moves this visit's practitioner only. It does not retroactively change other visits in the same care episode. When a care episode exists, adding the receiving doctor to that episode team is a side effect of the transfer; without an episode, that side effect is skipped. Multiple referrals over one visit's life are valid, for example `A -> B -> C`; the child table records that transfer history.
 
 ## Why Not Visit Consult Request
 

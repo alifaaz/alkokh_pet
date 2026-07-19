@@ -67,7 +67,6 @@ def create_or_update_care_episode_from_visit(visit):
 	for fieldname, value in {
 		"current_visit": visit.name,
 		"last_visit": visit.name,
-		"primary_doctor": episode.get("primary_doctor") or visit_practitioner(visit),
 		"chief_complaint": episode.get("chief_complaint") or _case_sheet_complaint(visit.get("case_sheet")),
 	}.items():
 		if value and episode.get(fieldname) != value:
@@ -95,8 +94,7 @@ def set_visit_case_choice(visit, doctor_case_choice: str, *, episode: str | None
 	current_episode_name = visit.get("care_episode") if visit.meta.has_field("care_episode") else None
 
 	if choice == "wellness":
-		_cancel_episode_opened_by_visit_choice(current_episode_name, visit)
-		_set_visit_episode(visit, None)
+		return _set_visit_case_choice_wellness(visit, current_episode_name, choice, note)
 	elif choice == "continue_case":
 		target_episode_name = _resolve_continue_episode(visit, episode, active_episode_name)
 		_set_visit_episode(visit, target_episode_name)
@@ -104,17 +102,19 @@ def set_visit_case_choice(visit, doctor_case_choice: str, *, episode: str | None
 	elif choice == "new_case":
 		if active_episode_name and active_episode_name != current_episode_name:
 			frappe.throw(
-				_("Pet {0} already has active care episode {1}. Continue that case or close it before opening a new case.").format(
-					frappe.bold(visit.animal_patient), frappe.bold(active_episode_name)
-				)
+				_("This pet already has an open case ({0}). Close it before opening a new one.").format(frappe.bold(active_episode_name))
 			)
 		if current_episode_name and frappe.db.exists("Pet Care Episode", current_episode_name):
 			target_episode = frappe.get_doc("Pet Care Episode", current_episode_name)
 			if target_episode.episode_status not in ACTIVE_EPISODE_STATUSES:
 				frappe.throw(_("Visit is linked to a closed care episode. Choose another active case or clear the link first."))
 		else:
-			target_episode = _new_episode_from_visit(visit)
-			target_episode.insert(ignore_permissions=True)
+			target_episode = _cancelled_episode_opened_by_visit(visit)
+			if target_episode:
+				_reactivate_episode_from_visit(target_episode, visit)
+			else:
+				target_episode = _new_episode_from_visit(visit)
+				target_episode.insert(ignore_permissions=True)
 		_set_visit_episode(visit, target_episode.name)
 		_touch_episode_from_visit(target_episode, visit)
 
@@ -122,6 +122,24 @@ def set_visit_case_choice(visit, doctor_case_choice: str, *, episode: str | None
 	visit.save(ignore_permissions=True)
 	update_profile_for_visit(visit)
 	return get_visit_case_context(visit)
+
+
+def _set_visit_case_choice_wellness(visit, current_episode_name: str | None, choice: str, note: str | None):
+	savepoint = f"visit_wellness_choice_{frappe.generate_hash(length=10)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		_cancel_episode_opened_by_visit_choice(current_episode_name, visit)
+		_delete_visit_care_plan_items(visit)
+		_set_visit_episode(visit, None)
+		_stamp_case_choice(visit, choice, note)
+		visit.save(ignore_permissions=True)
+		update_profile_for_visit(visit)
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	else:
+		frappe.db.release_savepoint(savepoint)
+		return get_visit_case_context(visit)
 
 
 def get_visit_case_context(visit) -> dict:
@@ -325,7 +343,7 @@ def sync_completed_visit(visit, outcome=None):
 		episode_status = "Follow-up Scheduled" if visit.get("follow_up_date") else "Monitoring"
 		clinical_status = "Follow-up Scheduled" if visit.get("follow_up_date") else "Monitoring"
 	else:
-		episode_status = "Resolved"
+		episode_status = None
 		clinical_status = "Stable"
 	update_profile_for_visit(visit, clinical_status=clinical_status, episode_status=episode_status, plan_status="Completed" if episode_status == "Resolved" else None)
 
@@ -356,6 +374,44 @@ def sync_latest_vitals(visit, vital=None):
 		_updates(profile, updates)
 
 
+def protect_care_episode_before_visit_delete(visit):
+	if isinstance(visit, str):
+		visit = frappe.get_doc("Vet Visit", visit)
+	episode = _episode_opened_by_visit_for_delete(visit)
+	if not episode or episode.episode_status not in ACTIVE_EPISODE_STATUSES:
+		return
+
+	other_visits = frappe.get_all(
+		"Vet Visit",
+		filters={"care_episode": episode.name, "name": ["!=", visit.name]},
+		pluck="name",
+		order_by="modified desc",
+		ignore_permissions=True,
+	)
+	if other_visits:
+		_detach_visit_from_episode_links(episode, visit, replacement_visit=other_visits[0])
+		_clear_profile_visit_links_if_matches(visit, replacement_visit=other_visits[0])
+		return
+
+	blockers = _visit_delete_episode_blockers(episode, visit)
+	if blockers:
+		frappe.throw(
+			_(
+				"Cannot delete Vet Visit {0} because it opened active Care Episode {1}, which has clinical content: {2}. Close or reassign the care episode before deleting this visit."
+			).format(
+				frappe.bold(visit.name),
+				frappe.bold(episode.name),
+				", ".join(blockers),
+			)
+		)
+
+	_cancel_episode_opened_by_visit_choice(episode.name, visit)
+	episode = frappe.get_doc("Pet Care Episode", episode.name)
+	_detach_visit_from_episode_links(episode, visit)
+	_clear_profile_active_episode_if_matches(episode)
+	_clear_profile_visit_links_if_matches(visit)
+
+
 def _profile_doc(pet, guardian=None, customer=None):
 	profile_name = ensure_pet_medical_profile(pet, guardian)
 	profile = frappe.get_doc("Pet Medical Profile", profile_name)
@@ -370,13 +426,17 @@ def _profile_doc(pet, guardian=None, customer=None):
 
 
 def _new_episode_from_visit(visit):
+	opening_practitioner = visit_practitioner(visit)
+	if not opening_practitioner:
+		frappe.throw(_("Visit must have a practitioner before opening a new case."))
+
 	return frappe.get_doc(
 		{
 			"doctype": "Pet Care Episode",
 			"pet": visit.animal_patient,
 			"guardian": visit.guardian,
 			"customer": visit.customer,
-			"primary_doctor": visit_practitioner(visit),
+			"primary_doctor": opening_practitioner,
 			"episode_title": _first_text(_case_sheet_complaint(visit.case_sheet), visit.get("diagnosis"), _("Active Case")),
 			"episode_type": _episode_type_from_visit(visit),
 			"episode_status": "Under Diagnosis" if visit.status == "In Progress" else "Open",
@@ -399,6 +459,33 @@ def _active_episode_for_pet(pet: str) -> str | None:
 		"name",
 		order_by="modified desc",
 	)
+
+
+def _cancelled_episode_opened_by_visit(visit):
+	if not visit.get("animal_patient"):
+		return None
+	episodes = frappe.get_all(
+		"Pet Care Episode",
+		filters={"pet": visit.animal_patient, "episode_status": "Cancelled"},
+		fields=["name", "opened_visit", "opened_from_name"],
+		order_by="creation asc",
+		ignore_permissions=True,
+	)
+	for row in episodes:
+		if row.opened_visit != visit.name and row.opened_from_name != visit.name:
+			continue
+		if frappe.db.count("Vet Visit", {"care_episode": row.name, "name": ["!=", visit.name]}):
+			continue
+		return frappe.get_doc("Pet Care Episode", row.name)
+	return None
+
+
+def _reactivate_episode_from_visit(episode, visit):
+	episode.episode_status = "Under Diagnosis" if visit.get("status") == "In Progress" else "Open"
+	for fieldname in ("closed_on", "closed_by", "closure_reason", "resolved_on", "outcome"):
+		if episode.meta.has_field(fieldname):
+			episode.set(fieldname, None)
+	episode.save(ignore_permissions=True)
 
 
 def _active_episode_doc_for_pet(pet: str | None):
@@ -426,6 +513,32 @@ def _visit_episode_name(visit) -> str | None:
 	return episode_name if episode_name and frappe.db.exists("Pet Care Episode", episode_name) else None
 
 
+def _episode_opened_by_visit_for_delete(visit):
+	episode_name = _visit_episode_name(visit)
+	if episode_name:
+		episode = frappe.get_doc("Pet Care Episode", episode_name)
+		if _episode_was_opened_by_visit(episode, visit):
+			return episode
+
+	if not visit.get("animal_patient"):
+		return None
+	episodes = frappe.get_all(
+		"Pet Care Episode",
+		filters={"pet": visit.animal_patient, "episode_status": ["in", list(ACTIVE_EPISODE_STATUSES)]},
+		fields=["name", "opened_visit", "opened_from_name"],
+		order_by="modified desc",
+		ignore_permissions=True,
+	)
+	for row in episodes:
+		if row.opened_visit == visit.name or row.opened_from_name == visit.name:
+			return frappe.get_doc("Pet Care Episode", row.name)
+	return None
+
+
+def _episode_was_opened_by_visit(episode, visit) -> bool:
+	return episode.get("opened_visit") == visit.name or episode.get("opened_from_name") == visit.name
+
+
 def _normalize_case_choice(choice: str) -> str:
 	choice = cstr(choice).strip().lower()
 	if choice not in DOCTOR_CASE_CHOICES:
@@ -451,6 +564,21 @@ def _set_visit_episode(visit, episode_name: str | None):
 	if not visit.meta.has_field("care_episode"):
 		return
 	visit.set("care_episode", episode_name)
+
+
+def _delete_visit_care_plan_items(visit):
+	if not frappe.db.exists("DocType", "Pet Care Plan Item"):
+		return
+	from pet_app.utils.care_plan_links import cancel_linked_plan_appointment
+
+	for plan_name in frappe.get_all("Pet Care Plan Item", filters={"source_visit": visit.name}, pluck="name"):
+		plan = frappe.get_doc("Pet Care Plan Item", plan_name)
+		cancel_linked_plan_appointment(
+			plan,
+			reason=_("Care plan item removed when visit was switched to Wellness."),
+			clear_plan_link=True,
+		)
+		frappe.delete_doc("Pet Care Plan Item", plan_name, ignore_permissions=True, force=True)
 
 
 def _stamp_case_choice(visit, choice: str, note: str | None):
@@ -485,12 +613,115 @@ def _cancel_episode_opened_by_visit_choice(episode_name: str | None, visit):
 	episode.save(ignore_permissions=True)
 
 
+def _visit_delete_episode_blockers(episode, visit) -> list[str]:
+	blockers = []
+	for fieldname, label in (
+		("problems", _("episode problems")),
+		("medications", _("episode medications")),
+		("monitoring_items", _("episode monitoring items")),
+	):
+		if episode.get(fieldname):
+			blockers.append(label)
+
+	for fieldname, label in (
+		("diagnoses", _("visit diagnoses")),
+		("prescribed_medications", _("visit medications")),
+		("orders", _("visit orders")),
+		("care_services", _("visit care services")),
+	):
+		if visit.meta.has_field(fieldname) and visit.get(fieldname):
+			blockers.append(label)
+
+	if _doctype_count("Pet Care Plan Item", {"care_episode": episode.name}):
+		blockers.append(_("care plan items"))
+	elif _doctype_count("Pet Care Plan Item", {"source_visit": visit.name}):
+		blockers.append(_("care plan items"))
+
+	for doctype, label in (
+		("Lab", _("lab orders")),
+		("Imaging", _("imaging orders")),
+		("Pet Procedure", _("procedures")),
+		("PetCareService", _("care service records")),
+		("Pet Boarding", _("boarding records")),
+	):
+		if _linked_visit_count(doctype, visit.name):
+			blockers.append(label)
+
+	return blockers
+
+
+def _doctype_count(doctype: str, filters: dict) -> int:
+	if not frappe.db.exists("DocType", doctype):
+		return 0
+	return frappe.db.count(doctype, filters)
+
+
+def _linked_visit_count(doctype: str, visit_name: str) -> int:
+	if not frappe.db.exists("DocType", doctype):
+		return 0
+	meta = frappe.get_meta(doctype)
+	if not meta.has_field("visit"):
+		return 0
+	return frappe.db.count(doctype, {"visit": visit_name})
+
+
+def _detach_visit_from_episode_links(episode, visit, replacement_visit: str | None = None):
+	changed = False
+	for fieldname, value in (
+		("opened_visit", None),
+		("current_visit", replacement_visit),
+		("last_visit", replacement_visit),
+	):
+		if episode.meta.has_field(fieldname) and episode.get(fieldname) == visit.name:
+			episode.set(fieldname, value)
+			changed = True
+	if (
+		episode.meta.has_field("opened_from_name")
+		and episode.get("opened_from_doctype") == "Vet Visit"
+		and episode.get("opened_from_name") == visit.name
+	):
+		episode.opened_from_name = None
+		changed = True
+	if changed:
+		episode.save(ignore_permissions=True)
+
+
+def _clear_profile_visit_links_if_matches(visit, replacement_visit: str | None = None):
+	profile_name = frappe.db.get_value("Pet Medical Profile", {"pet": visit.get("animal_patient")}, "name")
+	if not profile_name:
+		return
+	profile = frappe.get_doc("Pet Medical Profile", profile_name)
+	updates = {}
+	for fieldname in ("current_visit", "last_visit"):
+		if profile.meta.has_field(fieldname) and profile.get(fieldname) == visit.name:
+			updates[fieldname] = replacement_visit
+	if profile.meta.has_field("last_completed_visit") and profile.get("last_completed_visit") == visit.name:
+		updates["last_completed_visit"] = None
+	if (
+		profile.meta.has_field("last_synced_from_name")
+		and profile.get("last_synced_from_doctype") == "Vet Visit"
+		and profile.get("last_synced_from_name") == visit.name
+	):
+		updates["last_synced_from_name"] = replacement_visit
+		if replacement_visit is None and profile.meta.has_field("last_synced_from_doctype"):
+			updates["last_synced_from_doctype"] = None
+	for fieldname, value in updates.items():
+		frappe.db.set_value("Pet Medical Profile", profile.name, fieldname, value, update_modified=False)
+
+
+def _clear_profile_active_episode_if_matches(episode):
+	profile_name = frappe.db.get_value("Pet Medical Profile", {"pet": episode.pet}, "name")
+	if not profile_name:
+		return
+	if frappe.db.get_value("Pet Medical Profile", profile_name, "active_care_episode") == episode.name:
+		frappe.db.set_value("Pet Medical Profile", profile_name, "active_care_episode", None, update_modified=False)
+
+
 def _touch_episode_from_visit(episode, visit):
 	changed = False
 	for fieldname, value in {
 		"current_visit": visit.name,
 		"last_visit": visit.name,
-		"primary_doctor": episode.get("primary_doctor") or visit_practitioner(visit),
 		"chief_complaint": episode.get("chief_complaint") or _case_sheet_complaint(visit.get("case_sheet")),
 	}.items():
 		if value and episode.meta.has_field(fieldname) and episode.get(fieldname) != value:

@@ -23,6 +23,7 @@ ACTIVE_EPISODE_STATUSES = {
 class PetCareEpisode(Document):
 	def before_insert(self):
 		self._set_defaults()
+		self._ensure_primary_doctor_team_member()
 
 	def validate(self):
 		self._set_defaults()
@@ -50,6 +51,8 @@ class PetCareEpisode(Document):
 			self.episode_title = self.chief_complaint or _("Active Case")
 		if not self.created_by:
 			self.created_by = frappe.session.user
+
+	def _ensure_primary_doctor_team_member(self):
 		if self.primary_doctor:
 			ensure_episode_practitioner(self, self.primary_doctor)
 
@@ -66,4 +69,4 @@ class PetCareEpisode(Document):
 			"name",
 		)
 		if existing:
-			frappe.throw(_("Pet {0} already has active Care Episode {1}.").format(frappe.bold(self.pet), frappe.bold(existing)))
+			frappe.throw(_("This pet already has an open case ({0}). Close it before opening a new one.").format(frappe.bold(existing)))

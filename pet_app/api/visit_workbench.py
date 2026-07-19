@@ -7,7 +7,12 @@ from frappe.utils import cint, cstr, get_datetime
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import fail, ok
-from pet_app.api.healthcare.boarding import can_cancel_visit_boarding, can_start_visit_boarding, visit_boarding_payload
+from pet_app.api.healthcare.boarding import (
+	can_cancel_visit_boarding,
+	can_start_visit_boarding,
+	checked_in_boarding_for_visit,
+	visit_boarding_payload,
+)
 from pet_app.api.visit_referral import can_refer_visit, visit_referrals_payload
 from pet_app.api.workspace import (
 	_assert_record_access,
@@ -19,6 +24,11 @@ from pet_app.api.workspace import (
 	_linked_records_for_visit,
 )
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
+from pet_app.utils.case_assignment import (
+	can_manage_episode_team,
+	current_user_visit_practitioner,
+	visit_practitioner,
+)
 from pet_app.utils.medical_profile import get_visit_case_context
 from pet_app.workflows import clinical_state
 
@@ -67,15 +77,21 @@ def get_visit_workbench(visit=None, visit_id=None, name=None):
 
 
 def _active_episode_payload(visit_doc) -> dict:
+	return _linked_doc_payload("Pet Care Episode", _active_episode_name_for_visit(visit_doc))
+
+
+def _active_episode_name_for_visit(visit_doc) -> str | None:
 	episode_name = visit_doc.get("care_episode")
-	if not episode_name and visit_doc.get("animal_patient"):
-		episode_name = frappe.db.get_value(
-			"Pet Care Episode",
-			{"pet": visit_doc.animal_patient, "episode_status": ["in", list(ACTIVE_EPISODE_STATUSES)]},
-			"name",
-			order_by="modified desc",
-		)
-	return _linked_doc_payload("Pet Care Episode", episode_name)
+	if episode_name:
+		return episode_name
+	if not visit_doc.get("animal_patient"):
+		return None
+	return frappe.db.get_value(
+		"Pet Care Episode",
+		{"pet": visit_doc.animal_patient, "episode_status": ["in", list(ACTIVE_EPISODE_STATUSES)]},
+		"name",
+		order_by="modified desc",
+	)
 
 
 def _plan_items(visit_doc) -> list[dict]:
@@ -115,6 +131,8 @@ def _visit_plan_item_payload(row) -> dict:
 	item["item_type"] = item.get("item_type") or item.get("plan_type")
 	item["owner_instructions"] = item.get("owner_instructions") or item.get("instructions")
 	item["due_datetime"] = item.get("due_datetime") or _plan_due_datetime(item)
+	item["linked_doctype"] = item.get("linked_doctype") or None
+	item["linked_name"] = item.get("linked_name") or None
 	return item
 
 
@@ -239,8 +257,13 @@ def _is_cancelled_billable(row) -> bool:
 def _workbench_permissions(visit_doc) -> dict:
 	billed = clinical_state.is_billed_visit(visit_doc)
 	cancelled = cstr(visit_doc.get("status")) == "Cancelled"
-	can_write_visit = (not billed and not cancelled) and _can_doctype("Vet Visit", "write")
-	can_update_follow_up = (not billed) and _can_doctype("Vet Visit", "write")
+	checked_in_boarding = checked_in_boarding_for_visit(visit_doc.name)
+	can_write_visit = (not billed and not cancelled and not checked_in_boarding) and _can_doctype("Vet Visit", "write")
+	can_update_follow_up = (not billed and not checked_in_boarding) and _can_doctype("Vet Visit", "write")
+	visit_doctor = visit_practitioner(visit_doc)
+	is_visit_doctor = bool(current_user_visit_practitioner(visit_doc))
+	team_episode = _active_episode_name_for_visit(visit_doc)
+	can_manage_team = bool(team_episode and can_manage_episode_team(None, visit_doc))
 	return {
 		"can_start_consultation": can_write_visit,
 		"can_set_case_choice": can_write_visit,
@@ -253,8 +276,13 @@ def _workbench_permissions(visit_doc) -> dict:
 		"can_schedule_plan_item": _can_doctype("Pet Care Plan Item", "write") and _can_doctype("Appointment", "create"),
 		"can_convert_plan_item_to_visit": _can_doctype("Pet Care Plan Item", "write") and _can_doctype("Vet Visit", "create"),
 		"can_refer_visit": can_refer_visit(visit_doc),
+		"can_add_doctor": can_manage_team,
+		"can_remove_doctor": can_manage_team,
+		"is_visit_doctor": is_visit_doctor,
+		"visit_practitioner": visit_doctor,
+		"team_episode": team_episode,
 		"can_start_boarding": can_start_visit_boarding(visit_doc),
-			"can_cancel_boarding": can_cancel_visit_boarding(visit_doc),
+		"can_cancel_boarding": can_cancel_visit_boarding(visit_doc),
 		"is_billed": cint(billed),
 		"is_cancelled": cint(cancelled),
 	}
