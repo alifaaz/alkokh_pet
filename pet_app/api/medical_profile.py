@@ -17,6 +17,10 @@ from pet_app.utils.medical_profile import get_visit_case_context, set_visit_case
 CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner", "Healthcare Administrator"}
 GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
 
+SUCCESSFUL_CLOSE_OUTCOMES = {"recovered", "improved", "stable"}
+DECEASED_CLOSE_OUTCOMES = {"death", "euthanasia"}
+ACTIVE_CLOSE_OUTCOMES = {"referred"}
+
 
 @frappe.whitelist()
 def get_pet_medical_profile(pet=None, pet_id=None):
@@ -90,21 +94,30 @@ def close_care_episode(episode=None, outcome=None, closure_reason=None, data=Non
 		require_doctype_permission("Pet Care Episode", "write")
 		doc = frappe.get_doc("Pet Care Episode", episode_name)
 		_assert_pet_access(doc.pet, write=True)
-		doc.episode_status = "Resolved" if (outcome or payload.get("outcome")) not in {"Death", "Euthanasia"} else "Deceased"
-		doc.outcome = outcome or payload.get("outcome") or doc.outcome
+		outcome_value = cstr(outcome or payload.get("outcome") or doc.outcome).strip()
+		doc.episode_status = _episode_status_for_close_outcome(outcome_value)
+		doc.outcome = outcome_value or doc.outcome
 		doc.closure_reason = closure_reason or payload.get("closure_reason") or doc.closure_reason
-		doc.closed_on = doc.closed_on or getdate()
-		doc.closed_by = frappe.session.user
+		if doc.episode_status not in ACTIVE_EPISODE_STATUSES:
+			doc.closed_on = doc.closed_on or getdate()
+			doc.closed_by = frappe.session.user
 		doc.save(ignore_permissions=True)
 		profile_name = frappe.db.get_value("Pet Medical Profile", {"pet": doc.pet}, "name")
 		if profile_name:
 			profile = frappe.get_doc("Pet Medical Profile", profile_name)
-			updates = {
-				"active_care_episode": None,
-				"current_case_status": "Deceased" if doc.episode_status == "Deceased" else "No Active Case",
-				"current_clinical_status": "Deceased" if doc.episode_status == "Deceased" else "Stable",
-				"treatment_plan_status": "Completed",
-			}
+			if doc.episode_status in ACTIVE_EPISODE_STATUSES:
+				updates = {
+					"active_care_episode": doc.name,
+					"current_case_status": doc.episode_status,
+					"current_clinical_status": doc.episode_status,
+				}
+			else:
+				updates = {
+					"active_care_episode": None,
+					"current_case_status": "Deceased" if doc.episode_status == "Deceased" else "No Active Case",
+					"current_clinical_status": _closed_clinical_status(doc.episode_status),
+					"treatment_plan_status": "Completed",
+				}
 			frappe.db.set_value("Pet Medical Profile", profile.name, updates, update_modified=False)
 		return ok({"episode": _doc_payload(doc)})
 	except Exception as exc:
@@ -141,6 +154,25 @@ def create_or_update_care_episode_from_visit(visit=None, data=None, **kwargs):
 def _active_episode_payload(pet: str) -> dict:
 	name = frappe.db.get_value("Pet Care Episode", {"pet": pet, "episode_status": ["in", list(ACTIVE_EPISODE_STATUSES)]}, "name", order_by="modified desc")
 	return _doc_payload(frappe.get_doc("Pet Care Episode", name)) if name else {}
+
+
+def _episode_status_for_close_outcome(outcome: str | None) -> str:
+	key = cstr(outcome).strip().lower()
+	if key in SUCCESSFUL_CLOSE_OUTCOMES:
+		return "Resolved"
+	if key in DECEASED_CLOSE_OUTCOMES:
+		return "Deceased"
+	if key in ACTIVE_CLOSE_OUTCOMES:
+		return "Referred"
+	return "Closed"
+
+
+def _closed_clinical_status(episode_status: str) -> str:
+	if episode_status == "Deceased":
+		return "Deceased"
+	if episode_status == "Resolved":
+		return "Stable"
+	return "No Active Case"
 
 
 def _plan_items(pet: str) -> list[dict]:

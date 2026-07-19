@@ -8,7 +8,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, flt, getdate, now_datetime, nowdate
 
-from pet_app.api.healthcare.boarding import active_boarding_for_visit
+from pet_app.api.healthcare.boarding import checked_in_boarding_for_visit
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import get_user_roles, require_restriction_value, user_has_full_access
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
@@ -110,6 +110,20 @@ WORKSPACE_WRITE_ROLES = (
 	| SERVICE_PROVIDER_ROLES
 )
 WORKSPACE_MODES = {"doctor", "service", "coordinator", "diagnostics", "accounting", "management", "all"}
+VISIT_BOARDING_READ_ONLY_ACTIONS = {
+	"set_case_choice",
+	"start_consultation",
+	"save_clinical_note",
+	"save_diagnoses",
+	"create_orders",
+	"cancel_medication",
+	"complete_case",
+	"request_follow_up",
+	"request_consult",
+	"complete_consult",
+	"add_note",
+	"attach_file",
+}
 
 OPEN_VISIT_STATUSES = {"Draft", "In Progress", "Follow-up Needed"}
 OPEN_CASE_STATUSES = {"Draft", "Waiting Practitioner", "In Consultation"}
@@ -468,6 +482,9 @@ def _has_legacy_or_doctype_permission(
 
 
 def _assert_record_access(doctype: str, name: str, write: bool = False, action: str | None = None):
+	if write and doctype == "Vet Visit" and action in VISIT_BOARDING_READ_ONLY_ACTIONS:
+		_assert_visit_not_checked_in_boarding(name, action=action)
+
 	user = frappe.session.user
 	if user_has_full_access(user):
 		return
@@ -1730,6 +1747,7 @@ def _complete_case(visit_name: str, payload: dict):
 
 def _complete_case_atomic(visit_name: str, payload: dict):
 	visit = frappe.get_doc("Vet Visit", visit_name)
+	_assert_no_active_visit_boarding(visit)
 	if cstr(visit.get("status")).strip() == "Completed":
 		return
 	if payload:
@@ -1763,14 +1781,20 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 	invoice_visit.add_comment("Comment", _("Case completed by {0}.").format(frappe.session.user))
 
 
-def _assert_no_active_visit_boarding(visit):
-	boarding = active_boarding_for_visit(visit.name)
-	if boarding:
-		frappe.throw(
-			_("Cannot complete visit {0} while Pet Boarding {1} is {2}.").format(
-				frappe.bold(visit.name), frappe.bold(boarding.name), frappe.bold(boarding.record_status)
-			)
+def _assert_visit_not_checked_in_boarding(visit_name: str, *, action: str | None = None):
+	boarding = checked_in_boarding_for_visit(visit_name)
+	if not boarding:
+		return
+	verb = _("complete") if action == "complete_case" else _("edit")
+	frappe.throw(
+		_("Cannot {0} visit {1} while Pet Boarding {2} is Checked In.").format(
+			verb, frappe.bold(visit_name), frappe.bold(boarding.name)
 		)
+	)
+
+
+def _assert_no_active_visit_boarding(visit):
+	_assert_visit_not_checked_in_boarding(visit.name, action="complete_case")
 
 
 def _validate_visit_completion_requirements(visit):
@@ -1778,8 +1802,6 @@ def _validate_visit_completion_requirements(visit):
 		frappe.throw(_("Illness is required before completing the visit."))
 	if not visit.diagnosis:
 		frappe.throw(_("Diagnosis is required before completing the visit."))
-	if not visit.treatment_plan:
-		frappe.throw(_("Treatment Plan is required before completing the visit."))
 	if not visit.doctor_notes:
 		frappe.throw(_("Clinical Note is required before completing the visit."))
 	if STRICT_MODE:
@@ -3173,7 +3195,7 @@ def _ensure_disease(row: dict) -> str | None:
 			"doctype": "Disease",
 			"disease_name": disease_name,
 			"species": row.get("species"),
-			"category": row.get("category"),
+			"category_a": row.get("category_a") or row.get("category"),
 			"active": 1,
 		}
 	)

@@ -465,6 +465,37 @@ def active_boarding_for_visit(visit_name: str):
 	return rows[0] if rows else None
 
 
+def checked_in_boarding_for_visit(visit_name: str):
+	visit_name = cstr(visit_name).strip()
+	if not visit_name:
+		return None
+	if not frappe.get_meta("Pet Boarding").has_field("visit"):
+		return None
+	rows = frappe.get_all(
+		"Pet Boarding",
+		filters={
+			"visit": visit_name,
+			"record_status": "Checked In",
+			"docstatus": ["<", 2],
+		},
+		fields=[
+			"name",
+			"record_status",
+			"status",
+			"boarding_type",
+			"service_room",
+			"expected_check_out",
+			"boarding_note",
+			"boarded_by",
+			"visit",
+			"creation",
+		],
+		order_by="creation desc",
+		limit_page_length=1,
+	)
+	return rows[0] if rows else None
+
+
 def visit_boarding_payload(visit_doc) -> dict | None:
 	row = active_boarding_for_visit(visit_doc.name)
 	if not row:

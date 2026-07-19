@@ -18,6 +18,15 @@ from pet_app.utils.medical_profile import (
 	sync_treatment_from_visit,
 	update_profile_for_visit,
 )
+from pet_app.utils.care_plan_links import (
+	cancel_linked_plan_appointment,
+	close_linked_plan_appointment,
+	enrich_plan_appointment_payload,
+	plan_appointment as linked_plan_appointment,
+	refresh_plan_appointment_status_field,
+	scheduled_time_for_plan,
+	sync_linked_plan_appointment_schedule,
+)
 from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.workflows import clinical_state
 
@@ -26,7 +35,6 @@ ACTIVE_PLAN_STATUSES = {"Planned", "Scheduled", "In Progress", "Overdue"}
 PLAN_TERMINAL_STATUSES = {"Done", "Cancelled", "Converted To Visit"}
 EPISODE_PLAN_ITEM_TYPE_MAP = {
 	"Medication": "Medication",
-	"Injection": "Medication",
 	"Deworming": "Medication",
 	"Lab Recheck": "Lab Test",
 	"Imaging Recheck": "Imaging",
@@ -34,7 +42,6 @@ EPISODE_PLAN_ITEM_TYPE_MAP = {
 	"Vaccination": "Procedure",
 	"Follow-up Visit": "Recheck",
 	"Monitoring": "Instruction",
-	"Diet Plan": "Instruction",
 	"Wound Care": "Instruction",
 	"Owner Instruction": "Instruction",
 	"Boarding Review": "Instruction",
@@ -123,6 +130,8 @@ def add_plan_item_from_visit(visit=None, data=None, **kwargs):
 				"customer": visit_doc.customer,
 				"care_episode": episode_name,
 				"source_visit": visit_doc.name,
+				"linked_doctype": payload.get("linked_doctype"),
+				"linked_name": payload.get("linked_name"),
 				"doctor": visit_doc.doctor,
 				"plan_type": plan_type,
 				"title": payload.get("title") or plan_type,
@@ -145,8 +154,6 @@ def add_plan_item_from_visit(visit=None, data=None, **kwargs):
 		)
 		plan.insert(ignore_permissions=True)
 
-		if plan.plan_type == "Medication":
-			_sync_medication_to_visit(visit_doc, plan, payload)
 		if cint(plan.requires_reminder):
 			_create_reminder_for_plan(plan)
 
@@ -170,14 +177,22 @@ def update_plan_item(plan_item=None, data=None, **kwargs):
 		if plan.status in {"Cancelled", "Converted To Visit"}:
 			return fail(_("This plan item can no longer be edited."), code="INVALID_STATE")
 
+		schedule_changed = any(fieldname in payload for fieldname in ("due_date", "due_time"))
 		for fieldname in _plan_update_fields():
 			if fieldname in payload and plan.meta.has_field(fieldname):
 				plan.set(fieldname, payload.get(fieldname))
 		if plan.plan_type == "Follow-up Visit":
 			plan.requires_appointment = 1
 		plan.save(ignore_permissions=True)
+		appointment = sync_linked_plan_appointment_schedule(plan) if schedule_changed else linked_plan_appointment(plan)
+		if appointment:
+			previous_appointment = plan.get("appointment")
+			previous_appointment_status = plan.get("appointment_status")
+			refresh_plan_appointment_status_field(plan, appointment)
+			if plan.get("appointment") != previous_appointment or plan.get("appointment_status") != previous_appointment_status:
+				plan.save(ignore_permissions=True)
 		_sync_episode_profile_for_plan(plan)
-		return ok({"plan_item": _doc_payload(plan)})
+		return ok({"plan_item": _doc_payload(plan), "appointment": _doc_payload(appointment) if appointment else None})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -193,15 +208,17 @@ def cancel_plan_item(plan_item=None, reason=None, data=None, **kwargs):
 		require_doctype_permission("Pet Care Plan Item", "write")
 		plan = frappe.get_doc("Pet Care Plan Item", name)
 		_assert_plan_access(plan, write=True)
+		cancel_reason = reason or payload.get("reason")
+		appointment = cancel_linked_plan_appointment(plan, reason=cancel_reason or _("Care plan item was cancelled."))
 		if plan.status != "Cancelled":
 			plan.status = "Cancelled"
-			plan.completion_note = reason or payload.get("reason") or plan.completion_note
-			plan.save(ignore_permissions=True)
+			plan.completion_note = cancel_reason or plan.completion_note
+		refresh_plan_appointment_status_field(plan, appointment)
+		plan.save(ignore_permissions=True)
 		_sync_episode_profile_for_plan(plan)
-		return ok({"plan_item": _doc_payload(plan)})
+		return ok({"plan_item": _doc_payload(plan), "appointment": _doc_payload(appointment) if appointment else None})
 	except Exception as exc:
 		return _error_response(exc)
-
 
 @frappe.whitelist(methods=["POST"])
 def complete_plan_item(plan_item=None, note=None, data=None, **kwargs):
@@ -214,14 +231,17 @@ def complete_plan_item(plan_item=None, note=None, data=None, **kwargs):
 		require_doctype_permission("Pet Care Plan Item", "write")
 		plan = frappe.get_doc("Pet Care Plan Item", name)
 		_assert_plan_access(plan, write=True)
+		complete_note = note or payload.get("note")
+		appointment = close_linked_plan_appointment(plan, reason=complete_note or _("Care plan item was completed."))
 		if plan.status != "Done":
 			plan.status = "Done"
 			plan.completed_on = plan.completed_on or now_datetime()
 			plan.completed_by = plan.completed_by or frappe.session.user
-			plan.completion_note = note or payload.get("note") or plan.completion_note
-			plan.save(ignore_permissions=True)
+			plan.completion_note = complete_note or plan.completion_note
+		refresh_plan_appointment_status_field(plan, appointment)
+		plan.save(ignore_permissions=True)
 		_sync_episode_profile_for_plan(plan)
-		return ok({"plan_item": _doc_payload(plan)})
+		return ok({"plan_item": _doc_payload(plan), "appointment": _doc_payload(appointment) if appointment else None})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -245,7 +265,7 @@ def schedule_plan_item_appointment(plan_item=None, appointment_data=None, data=N
 		appointment_payload.update(_payload(payload.get("appointment_data"), {}))
 		appointment = _get_or_create_plan_appointment(plan, appointment_payload)
 		plan.appointment = appointment.name
-		plan.appointment_status = appointment.get("status") or "Scheduled"
+		refresh_plan_appointment_status_field(plan, appointment)
 		if plan.status == "Planned":
 			plan.status = "Scheduled"
 		plan.save(ignore_permissions=True)
@@ -1199,6 +1219,11 @@ def _update_plan_appointment(appointment, plan, payload: dict):
 	if payload.get("scheduled_time") and not appointment.get("custom_linked_visit_id"):
 		appointment.scheduled_time = payload.get("scheduled_time")
 		changed = True
+	elif not payload.get("scheduled_time") and not appointment.get("custom_linked_visit_id"):
+		scheduled_time = scheduled_time_for_plan(plan)
+		if cstr(appointment.get("scheduled_time")) != cstr(scheduled_time):
+			appointment.scheduled_time = scheduled_time
+			changed = True
 	if _has_field("Appointment", "custom_care_plan_item") and not appointment.get("custom_care_plan_item"):
 		appointment.custom_care_plan_item = plan.name
 		changed = True
@@ -1207,19 +1232,11 @@ def _update_plan_appointment(appointment, plan, payload: dict):
 
 
 def _plan_appointment(plan):
-	if plan.appointment and frappe.db.exists("Appointment", plan.appointment):
-		return frappe.get_doc("Appointment", plan.appointment)
-	if _has_field("Appointment", "custom_care_plan_item"):
-		name = frappe.db.get_value("Appointment", {"custom_care_plan_item": plan.name}, "name", order_by="creation desc")
-		if name:
-			return frappe.get_doc("Appointment", name)
-	return None
+	return linked_plan_appointment(plan)
 
 
 def _scheduled_time_for_plan(plan):
-	due_date = plan.due_date or nowdate()
-	due_time = cstr(plan.due_time or "09:00:00").strip() or "09:00:00"
-	return get_datetime(f"{getdate(due_date)} {due_time}")
+	return scheduled_time_for_plan(plan)
 
 
 def _appointment_contact_for_plan(plan) -> dict:
@@ -1333,6 +1350,8 @@ def _plan_update_fields() -> set[str]:
 		"end_date",
 		"frequency",
 		"duration_days",
+		"linked_doctype",
+		"linked_name",
 		"requires_appointment",
 		"requires_reminder",
 		"priority",
@@ -1340,8 +1359,13 @@ def _plan_update_fields() -> set[str]:
 	}
 
 
-def _doc_payload(doc) -> dict:
-	return with_link_aliases(doc.as_dict(no_nulls=False))
+def _doc_payload(doc) -> dict | None:
+	if not doc:
+		return None
+	data = with_link_aliases(doc.as_dict(no_nulls=False))
+	if doc.doctype == "Pet Care Plan Item":
+		enrich_plan_appointment_payload(data)
+	return data
 
 
 def _enrich_due_plan_item_display_names(items: list[dict]) -> None:

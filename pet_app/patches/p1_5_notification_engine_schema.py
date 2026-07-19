@@ -29,10 +29,15 @@ def ensure_doctype(doctype_name: str, spec: dict):
 		if spec.get("issingle") and not doc.issingle:
 			doc.issingle = 1
 			changed = True
-		existing = {row.fieldname for row in doc.fields}
+		existing = {row.fieldname: row for row in doc.fields}
 		for field in spec.get("fields", []):
 			if field["fieldname"] not in existing:
 				doc.append("fields", field_doc(field))
+				changed = True
+				continue
+			existing_field = existing[field["fieldname"]]
+			if "length" in field and existing_field.length != field["length"]:
+				existing_field.length = field["length"]
 				changed = True
 		if changed:
 			doc.save(ignore_permissions=True)
@@ -150,6 +155,7 @@ def field_doc(field: dict) -> dict:
 		"depends_on",
 		"mandatory_depends_on",
 		"precision",
+		"length",
 	):
 		if key in field:
 			data[key] = field[key]
@@ -216,7 +222,7 @@ def code(fieldname: str, **kwargs) -> dict:
 
 
 def password(fieldname: str, **kwargs) -> dict:
-	return {"fieldname": fieldname, "fieldtype": "Password", **kwargs}
+	return {"fieldname": fieldname, "fieldtype": "Password", "length": 2048, **kwargs}
 
 
 CHANNELS = ("WhatsApp", "SMS", "Email", "In App")
@@ -281,9 +287,9 @@ DOCTYPES = {
 			{"fieldname": "phone_number", "fieldtype": "Data"},
 			{"fieldname": "display_phone_number", "fieldtype": "Data"},
 			{"fieldname": "graph_api_version", "fieldtype": "Data", "default": "v20.0"},
-			password("access_token"),
-			password("app_secret"),
-			password("verify_token"),
+			password("access_token", length=4096),
+			password("app_secret", length=512),
+			password("verify_token", length=512),
 			{"fieldname": "default_language", "fieldtype": "Data", "default": "en"},
 			{"fieldname": "quality_rating", "fieldtype": "Data"},
 			{"fieldname": "messaging_limit_tier", "fieldtype": "Data"},

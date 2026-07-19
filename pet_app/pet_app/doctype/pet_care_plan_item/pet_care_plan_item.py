@@ -3,7 +3,9 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, getdate, nowdate
+from frappe.utils import cint, cstr, getdate, nowdate
+
+from pet_app.utils.care_plan_links import plan_requires_link, validate_plan_item_link_target
 
 
 class PetCarePlanItem(Document):
@@ -14,6 +16,7 @@ class PetCarePlanItem(Document):
 		self._set_defaults()
 		self._validate_identity()
 		self._validate_dates()
+		self._validate_linked_target()
 
 	def _set_defaults(self):
 		if not self.status:
@@ -61,3 +64,17 @@ class PetCarePlanItem(Document):
 	def _validate_dates(self):
 		if self.end_date and self.start_date and getdate(self.end_date) < getdate(self.start_date):
 			frappe.throw(_("End Date cannot be before Start Date."))
+
+	def _validate_linked_target(self):
+		require_link = False
+		if plan_requires_link(self.plan_type):
+			if self.is_new():
+				require_link = True
+			else:
+				previous = self.get_doc_before_save()
+				if previous:
+					previous_had_link = bool(previous.get("linked_doctype") or previous.get("linked_name"))
+					plan_type_changed = cstr(previous.get("plan_type")).strip() != cstr(self.plan_type).strip()
+					require_link = previous_had_link or plan_type_changed
+
+		validate_plan_item_link_target(self, require_link=require_link)

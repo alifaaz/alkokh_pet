@@ -11,7 +11,13 @@ from frappe.utils import cint, cstr, flt, getdate, now_datetime
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.pet_app.doctype.medication.medication import resolve_dose_option_placeholder_uom
 from pet_app.pet_app.doctype.vet_case_sheet.vet_case_sheet import build_case_summary
-from pet_app.utils.medical_profile import sync_latest_vitals, sync_treatment_from_visit, update_profile_for_visit
+from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
+from pet_app.utils.medical_profile import (
+	protect_care_episode_before_visit_delete,
+	sync_latest_vitals,
+	sync_treatment_from_visit,
+	update_profile_for_visit,
+)
 from pet_app.utils.price_list import get_veterinary_selling_price_list
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
@@ -92,6 +98,7 @@ class VetVisit(Document):
 		self._validate_billing_lock()
 		self._apply_prescribed_medication_dose_options()
 		self._audit_prescribed_medication_changes()
+		self._validate_prescribed_medication_plan_links()
 		self._sync_prescribed_medications_billables()
 		self._sync_care_services_billables()
 		self._validate_billable_item_rows()
@@ -105,6 +112,9 @@ class VetVisit(Document):
 		self._sync_case_sheet()
 		self._sync_medical_profile_snapshot()
 		self._audit_manual_billable_items()
+
+	def on_trash(self):
+		protect_care_episode_before_visit_delete(self)
 
 	def _set_defaults(self):
 		if not self.visit_datetime:
@@ -253,9 +263,6 @@ class VetVisit(Document):
 
 		if not self.diagnosis:
 			frappe.throw(_("Diagnosis is required before completing the visit."))
-
-		if not self.treatment_plan:
-			frappe.throw(_("Treatment Plan is required before completing the visit."))
 
 		if not self.doctor_notes:
 			frappe.throw(_("Clinical Note is required before completing the visit."))
@@ -454,6 +461,24 @@ class VetVisit(Document):
 				timestamp = timestamp or now_datetime()
 				row.rate_modified_by = frappe.session.user
 				row.rate_modified_at = timestamp
+
+	def _validate_prescribed_medication_plan_links(self):
+		previous = self.get_doc_before_save()
+		if not previous:
+			return
+
+		current_rows = {row.name: row for row in self.get("prescribed_medications") or [] if row.name}
+		for previous_row in previous.get("prescribed_medications") or []:
+			if not previous_row.name:
+				continue
+			current_row = current_rows.get(previous_row.name)
+			if not current_row:
+				assert_no_active_plan_items_linked_to("Vet Visit Medication Item", previous_row.name, action="remove")
+				continue
+			was_cancelled = cstr(previous_row.get("dispense_status")).strip() == "Cancelled"
+			is_cancelled = cstr(current_row.get("dispense_status")).strip() == "Cancelled"
+			if is_cancelled and not was_cancelled:
+				assert_no_active_plan_items_linked_to("Vet Visit Medication Item", previous_row.name, action="cancel")
 
 	def _sync_prescribed_medications_billables(self):
 		active_linked_ids = set()
