@@ -43,6 +43,10 @@ app_license = "mit"
 
 # include js in doctype views
 # doctype_js = {"doctype" : "public/js/doctype.js"}
+doctype_js = {
+    "Pet App WhatsApp Template": "public/js/whatsapp_template.js",
+    "Pet App WhatsApp Action Rule": "public/js/whatsapp_action_rule.js",
+}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
@@ -247,6 +251,14 @@ before_request = ["pet_app.api.auth_api.set_cors_for_oauth_token_endpoint"]
 
 
 doc_events = {
+    "*": {
+        "after_insert": "pet_app.notifications.actions.after_insert",
+        "on_update": "pet_app.notifications.actions.on_update",
+        "on_submit": "pet_app.notifications.actions.on_submit",
+    },
+    "Pet App WhatsApp Action Rule": {
+        "validate": "pet_app.notifications.actions.validate_action_rule",
+    },
     "User": {
         "before_validate": "pet_app.utils.role_profiles.before_validate_user_role_profiles",
         "before_save": "pet_app.utils.role_profiles.before_save_user_role_profiles",
@@ -330,11 +342,13 @@ doc_events = {
 scheduler_events = {
     "all": [
         "pet_app.notifications.scheduler.enqueue_due_reminders",
+        "pet_app.notifications.scheduler.process_due_notifications",
         "pet_app.notifications.retry.retry_failed_notifications",
     ],
     "hourly": [
         "pet_app.api.product.repair_active_product_item_projections",
         "pet_app.tasks.reminders.enqueue_due_reminders",
+        "pet_app.notifications.actions.expire_due_actions",
     ],
     "daily": [
         "pet_app.api.product.repair_all_product_item_projections",

@@ -11,6 +11,7 @@ from pet_app.notifications.channels.dummy import DummyChannel
 from pet_app.notifications.channels.whatsapp_meta import WhatsAppMetaChannel
 from pet_app.notifications.consent import assert_consent_allowed
 from pet_app.notifications.context import (
+	build_document_context,
 	coerce_context,
 	mask_phone,
 	mask_sensitive_context,
@@ -41,11 +42,23 @@ def queue_notification(
 	idempotency_key=None,
 	manual=False,
 	to_email=None,
+	conversation=None,
+	action_request=None,
+	message_type="Text",
+	interactive=None,
+	media_file=None,
 ):
 	try:
+		if getattr(frappe.flags, "pet_app_whatsapp_simulation", False):
+			return api_error(
+				_("Notifications cannot be queued during WhatsApp rule simulation."),
+				code="SIMULATION_SIDE_EFFECT_BLOCKED",
+			)
 		_ensure_schema()
 		settings = get_settings()
 		context = coerce_context(context)
+		if source_doctype and source_name:
+			context = build_document_context(source_doctype, source_name, context)
 		template = resolve_template(event_key=event_key, template_key=template_key, channel=channel)
 		account = resolve_whatsapp_account(template=template, settings=settings) if channel == "WhatsApp" else None
 		phone = normalize_phone(
@@ -57,11 +70,26 @@ def queue_notification(
 			return api_error(_("Recipient phone is required."), code="VALIDATION_ERROR")
 		if channel == "Email" and not email:
 			return api_error(_("Recipient email is required."), code="VALIDATION_ERROR")
+		if channel == "WhatsApp" and not conversation:
+			from pet_app.notifications.inbox import get_or_create_conversation
 
-		idempotency_key = idempotency_key or _idempotency_key(event_key, recipient_type, recipient_name, source_doctype, source_name, template.template_key if template else template_key, phone)
-		existing = frappe.db.get_value("Pet App Notification Queue", {"idempotency_key": idempotency_key}, "name")
-		if existing:
-			return api_success({"queue": queue_payload(frappe.get_doc("Pet App Notification Queue", existing))}, meta={"duplicate": True})
+			conversation = get_or_create_conversation(phone, account).name
+
+		# A deliberate manual click must always dispatch. Automated triggers (and
+		# any caller that passes an explicit idempotency_key, e.g. offline replay)
+		# keep dedup; a bare manual send gets a unique key each time so it never
+		# collides with a prior send and gets silently swallowed.
+		if idempotency_key:
+			existing = frappe.db.get_value("Pet App Notification Queue", {"idempotency_key": idempotency_key}, "name")
+			if existing:
+				return api_success({"queue": queue_payload(frappe.get_doc("Pet App Notification Queue", existing))}, meta={"duplicate": True})
+		elif cint(manual):
+			idempotency_key = _manual_idempotency_key(event_key, recipient_type, recipient_name, phone)
+		else:
+			idempotency_key = _idempotency_key(event_key, recipient_type, recipient_name, source_doctype, source_name, template.template_key if template else template_key, phone)
+			existing = frappe.db.get_value("Pet App Notification Queue", {"idempotency_key": idempotency_key}, "name")
+			if existing:
+				return api_success({"queue": queue_payload(frappe.get_doc("Pet App Notification Queue", existing))}, meta={"duplicate": True})
 
 		category = template.category if template else "Utility"
 		if category == "Marketing" and not cint(settings.get("allow_marketing_messages")):
@@ -106,6 +134,12 @@ def queue_notification(
 				"queued_at": now_datetime(),
 				"provider": account.provider if account else None,
 				"provider_account": account.name if account else None,
+				"conversation": conversation,
+				"action_request": action_request,
+				"message_type": message_type,
+				"interactive_json": json.dumps(interactive, default=str) if interactive else None,
+				"media_file": media_file or (template.get("media_file") if template else None),
+				"delivery_mode": template.get("delivery_mode") if template else None,
 				"idempotency_key": idempotency_key,
 				"dedupe_key": idempotency_key,
 				"manual": cint(manual),
@@ -191,7 +225,9 @@ def process_notification_queue(queue_name):
 		template = resolve_template(event_key=doc.event_key, template_key=doc.template_key, channel=doc.channel)
 		context = _queue_context(doc)
 		channel = _channel_for(doc, template)
-		response = channel.send_template(to_phone=doc.to_phone, template=template, context=context, queue=doc) if template else channel.send_text(to_phone=doc.to_phone, message=doc.rendered_preview or doc.event_key, queue=doc)
+		response, sent_type, action_delivery_stage = _send_queue_message(doc, template, context, channel)
+		if response is None:
+			return api_success({"queue": queue_payload(doc)}, meta={"waiting_for_session": True})
 
 		doc.provider_message_id = response.get("provider_message_id")
 		doc.provider_response_json = json.dumps(response, default=str)
@@ -202,6 +238,21 @@ def process_notification_queue(queue_name):
 		doc.provider_error_message = None
 		doc.save(ignore_permissions=True)
 		create_log(doc, status="Sent")
+		from pet_app.notifications.inbox import record_outbound_message
+
+		message = record_outbound_message(doc, response, message_type=sent_type)
+		if doc.get("action_request"):
+			frappe.db.set_value(
+				"Pet App WhatsApp Action Request",
+				doc.action_request,
+				{
+					"notification_queue": doc.name,
+					"delivery_stage": action_delivery_stage,
+					"outbound_message": message.name if message else None,
+					"status": "Waiting Reply",
+					"error_message": None,
+				},
+			)
 		return api_success({"queue": queue_payload(doc)}, meta={"previous_status": before_status})
 	except Exception as exc:
 		return _mark_failed(queue_name, exc)
@@ -304,6 +355,10 @@ def queue_payload(doc) -> dict:
 		"provider_message_id": doc.provider_message_id,
 		"retry_count": doc.retry_count,
 		"idempotency_key": doc.idempotency_key,
+		"conversation": doc.get("conversation"),
+		"action_request": doc.get("action_request"),
+		"message_type": doc.get("message_type"),
+		"delivery_mode": doc.get("delivery_mode"),
 	}
 
 
@@ -318,6 +373,17 @@ def _mark_failed(queue_name, exc):
 		doc.retry_count = cint(doc.retry_count) + 1
 		doc.next_retry_at = now_datetime() + timedelta(minutes=cint(settings.get("retry_after_minutes") or 5))
 		doc.save(ignore_permissions=True)
+		from pet_app.notifications.inbox import record_failed_outbound_message
+
+		record_failed_outbound_message(doc, doc.provider_error_message)
+		if doc.get("action_request"):
+			from pet_app.notifications.actions import mark_action_failed
+
+			mark_action_failed(
+				doc.action_request,
+				doc.provider_error_message,
+				details={"notification_queue": doc.name, "error_code": doc.provider_error_code},
+			)
 		create_log(doc, status="Failed", message=doc.provider_error_message)
 		return api_error(cstr(exc), code=doc.provider_error_code, details={"queue": queue_payload(doc)})
 	except Exception:
@@ -331,6 +397,59 @@ def _channel_for(queue_doc, template=None):
 	if account.provider == "Meta Cloud API":
 		return WhatsAppMetaChannel(account=account, settings=get_settings())
 	return DummyChannel(account=account, settings=get_settings())
+
+
+def _send_queue_message(doc, template, context, channel):
+	from frappe.utils.file_manager import get_file
+	from pet_app.notifications.inbox import session_is_open
+
+	delivery_mode = cstr(doc.get("delivery_mode") or (template.get("delivery_mode") if template else None) or "Meta Template")
+	conversation_open = bool(doc.get("conversation") and session_is_open(doc.conversation))
+	if template and delivery_mode == "App Styled" and not conversation_open:
+		doc.status = "Waiting For Session"
+		doc.save(ignore_permissions=True)
+		if doc.get("action_request"):
+			frappe.db.set_value("Pet App WhatsApp Action Request", doc.action_request, "delivery_stage", "Awaiting Session")
+		return None, "Text", "Awaiting Session"
+	if template and delivery_mode == "Hybrid" and not conversation_open:
+		fallback_key = template.get("fallback_template_key")
+		if not fallback_key:
+			doc.status = "Waiting For Session"
+			doc.save(ignore_permissions=True)
+			if doc.get("action_request"):
+				frappe.db.set_value("Pet App WhatsApp Action Request", doc.action_request, "delivery_stage", "Awaiting Session")
+			return None, "Text", "Awaiting Session"
+		fallback = resolve_template(template_key=fallback_key)
+		fallback_channel = _channel_for(doc, fallback)
+		return (
+			fallback_channel.send_template(to_phone=doc.to_phone, template=fallback, context=context, queue=doc),
+			"Text",
+			"Awaiting Session",
+		)
+	if template and delivery_mode == "Meta Template":
+		return channel.send_template(to_phone=doc.to_phone, template=template, context=context, queue=doc), "Text", "Interactive Sent"
+
+	message = doc.rendered_preview or doc.event_key
+	interactive = json.loads(doc.interactive_json) if doc.get("interactive_json") else None
+	if interactive:
+		return (
+			channel.send_interactive(to_phone=doc.to_phone, message=message, interactive=interactive, queue=doc),
+			"Interactive",
+			"Interactive Sent",
+		)
+	if doc.get("media_file"):
+		file_doc = frappe.get_doc("File", doc.media_file)
+		file_name, content = get_file(file_doc.file_url)
+		media_type = cstr((template.get("media_type") if template else None) or doc.get("message_type") or "Document").lower()
+		return channel.send_media(
+			to_phone=doc.to_phone,
+			media_type=media_type,
+			file_name=file_name,
+			content=content,
+			caption=message,
+			queue=doc,
+		), media_type.title(), "Interactive Sent"
+	return channel.send_text(to_phone=doc.to_phone, message=message, queue=doc), "Text", "Interactive Sent"
 
 
 def _queue_context(doc) -> dict:
@@ -386,6 +505,15 @@ def _idempotency_key(*parts) -> str:
 	import hashlib
 
 	return hashlib.sha1("|".join(cstr(part) for part in parts).encode()).hexdigest()
+
+
+def _manual_idempotency_key(*parts) -> str:
+	"""Unique-per-click key for manual sends so they never dedup-collide.
+
+	The queue's idempotency_key column is unique; a manual click is a deliberate
+	action and must always dispatch, so we append a fresh hash to the context.
+	"""
+	return f"manual:{_idempotency_key(*parts)}:{frappe.generate_hash(length=12)}"
 
 
 def _ensure_schema():
