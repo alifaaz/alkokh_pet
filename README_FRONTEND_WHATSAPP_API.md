@@ -140,6 +140,10 @@ await api.post("send_manual_notification", {
 
 For **Manual** recipients (no linked record) pass `to_phone` directly instead of `recipient_name`.
 
+**Deduplication contract.** `send_manual_notification` sets `manual=true`, and a manual send is treated as a deliberate action: **every click dispatches a fresh message** — it is *not* de-duplicated against a prior send. (Automated rule triggers and any call that passes an explicit `idempotency_key` still de-dupe: a repeat returns `ok` with `meta.duplicate === true` and does **not** re-dispatch.) If you want a specific manual button to be click-safe (guard against accidental double-submits), pass your own stable `idempotency_key`; then a repeat returns the existing row with `meta.duplicate === true` instead of sending again.
+
+> ⚠️ **Always read `data.queue.status`, not just `ok`.** `ok: true` only means the request was accepted. The message was actually delivered only when `data.queue.status === "Sent"`. If you ever pass an `idempotency_key`, also check `meta.duplicate` — a `true` means "already sent, not re-sent" and the UI should say so rather than showing a fresh success toast.
+
 ### 3.2 **Schedule** for later (invoice due, follow-up next week)
 
 **POST** `queue_notification` with `send_after` (ISO datetime) and **do not** process now. The scheduler sends it when due.
@@ -265,7 +269,7 @@ function unwrap(json) {
 
 Be honest with these when planning the UI. The engine is real and production-shaped, but these pieces are **not implemented** on the backend:
 
-1. **No auto-trigger on business events.** Nothing sends automatically when a **Death Record**, **Sales Invoice**, **Vet Visit follow-up**, etc. is saved/submitted. There are **no `doc_events` wired to the engine**, and the **`Pet App Notification Rule`** DocType exists but **no code reads or evaluates it**. → Today the frontend must call `send_manual_notification` / `create_reminder` explicitly, OR the backend needs a small hook layer added. **This is the #1 gap.**
+1. **Auto-trigger on business events is wired via `Pet App WhatsApp Action Rule` (not `Pet App Notification Rule`).** `hooks.py` registers wildcard `doc_events` (`after_insert` / `on_update` / `on_submit`) → `pet_app.notifications.actions.evaluate_document_rules`, which reads enabled **`Pet App WhatsApp Action Rule`** rows for the source doctype, checks `condition_json`, and queues through the engine. So saving a **Pet Death Record** (Link fields `pet` → Pet, `guardian` → Guardian) with a matching enabled rule **does** dispatch automatically, and `build_document_context` populates `pet.*` / `guardian.*` (incl. `display_name`) for the template. The older **`Pet App Notification Rule`** DocType is the one with no evaluator — don't build automation on it. → For one-off sends the frontend still calls `send_manual_notification` / `create_reminder`; for config-driven automation, manage `Pet App WhatsApp Action Rule` rows.
 
 2. **Rate limiting is a stub.** `assert_rate_limit_allowed` always returns True. `max_messages_per_minute` / `max_messages_per_day` settings exist but are **not enforced**. Don't present them as active guarantees.
 
@@ -280,5 +284,5 @@ Be honest with these when planning the UI. The engine is real and production-sha
 7. **No realtime push to the frontend.** Delivery/read updates land via the Meta webhook into the DB; the frontend must **poll** `list_notification_queue` — there's no websocket event emitted for status changes yet.
 
 ### If you want "send on death record / invoice" to be config-driven
-That's gap #1. It requires wiring `doc_events` in `hooks.py` to a rule-evaluator that reads `Pet App Notification Rule` (which already has `event_key`, `template_key`, `send_timing`: Immediate/Delayed/Scheduled/Before Date/After Date/Manual Only, `condition_json`, `delay_minutes`). The schema is ready; the executor is not. Flag this to backend before building the "Automation Rules" UI.
+This already exists through **`Pet App WhatsApp Action Rule`** (see gap #1): `doc_events` in `hooks.py` fan out to `actions.evaluate_document_rules`, which evaluates enabled rules (`source_doctype`, `trigger_event`, `condition_json`, `template_key`, recipient resolution) and queues via the engine. Build the "Automation Rules" UI on this doctype. The legacy `Pet App Notification Rule` doctype (`send_timing`, `delay_minutes`, …) has **no** evaluator — don't target it.
 ```

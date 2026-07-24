@@ -21,13 +21,16 @@ def assert_consent_allowed(
 		return
 	if not frappe.db.exists("DocType", "Pet App Communication Consent"):
 		return
+	# Phone-level opt-outs apply regardless of whether the sender was resolved as
+	# a Guardian, Customer, User, or an as-yet-unmatched WhatsApp contact.
 	filters = {"channel": channel}
 	if phone:
 		filters["phone"] = phone
-	if recipient_name:
-		filters["party"] = recipient_name
-	if recipient_type:
-		filters["party_type"] = recipient_type
+	else:
+		if recipient_name:
+			filters["party"] = recipient_name
+		if recipient_type:
+			filters["party_type"] = recipient_type
 	rows = frappe.get_all(
 		"Pet App Communication Consent",
 		filters=filters,
@@ -61,4 +64,3 @@ def opt_out_phone(phone: str, channel: str = "WhatsApp", reason: str | None = No
 	doc.opt_out_reason = reason or "Opt-out keyword"
 	doc.save(ignore_permissions=True)
 	return doc
-

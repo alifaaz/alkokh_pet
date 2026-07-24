@@ -236,6 +236,22 @@ SECTION_CONFIG = (
 		"tone": "lagoon",
 		"items": (
 			{
+				"label": "WhatsApp Inbox",
+				"kind": "Page",
+				"target": "whatsapp-inbox",
+				"description": "Guardian conversations, attachments, response actions, and review queue.",
+				"icon": "es-line-message-circle",
+				"accent": "leaf",
+			},
+			{
+				"label": "WhatsApp Action Rules",
+				"kind": "DocType",
+				"target": "Pet App WhatsApp Action Rule",
+				"description": "Dynamic triggers, reply choices, safe executors, and approval policy.",
+				"icon": "es-line-git-branch",
+				"accent": "berry",
+			},
+			{
 				"label": "Healthcare Settings",
 				"kind": "DocType",
 				"target": "Healthcare Settings",

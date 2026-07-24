@@ -38,3 +38,5 @@ pet_app.patches.add_care_service_billing_option_animal_type
 pet_app.patches.case_assignment_schema
 pet_app.patches.appointment_cancelled_status
 pet_app.patches.whatsapp_account_secret_lengths
+pet_app.patches.p1_6_whatsapp_actions_inbox_schema
+pet_app.patches.p1_7_whatsapp_rule_designer

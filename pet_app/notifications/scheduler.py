@@ -5,7 +5,7 @@ import json
 import frappe
 from frappe.utils import get_datetime, now_datetime
 
-from pet_app.notifications.engine import queue_notification
+from pet_app.notifications.engine import process_notification_queue, queue_notification
 from pet_app.utils.api_response import api_success
 
 
@@ -55,6 +55,25 @@ def create_daily_reminders():
 	return enqueue_due_reminders()
 
 
+def process_due_notifications(limit=None):
+	if not frappe.db.exists("DocType", "Pet App Notification Queue"):
+		return api_success({"processed": []}, meta={"total": 0})
+	settings = frappe.get_single("Pet App Notification Settings") if frappe.db.exists("DocType", "Pet App Notification Settings") else None
+	batch_size = int(limit or (settings.reminder_batch_size if settings else 100) or 100)
+	rows = frappe.get_all(
+		"Pet App Notification Queue",
+		filters={"status": "Queued", "scheduled_at": ["<=", now_datetime()]},
+		fields=["name"],
+		order_by="scheduled_at asc, creation asc",
+		limit_page_length=batch_size,
+		ignore_permissions=True,
+	)
+	processed = []
+	for row in rows:
+		processed.append(process_notification_queue(row.name))
+	return api_success({"processed": processed}, meta={"total": len(processed)})
+
+
 def cleanup_old_webhook_events(days=30):
 	if not frappe.db.exists("DocType", "Pet App WhatsApp Webhook Event"):
 		return
@@ -67,4 +86,3 @@ def cleanup_old_webhook_events(days=30):
 		ignore_permissions=True,
 	):
 		frappe.delete_doc("Pet App WhatsApp Webhook Event", name, force=True, ignore_permissions=True)
-

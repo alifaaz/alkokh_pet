@@ -4,12 +4,16 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cstr, now_datetime
+from frappe.utils import cint, cstr, now_datetime
 
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import fail, ok, standardize_response
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.notifications import engine
+from pet_app.notifications import actions as whatsapp_actions
+from pet_app.notifications import designer as whatsapp_designer
+from pet_app.notifications import inbox as whatsapp_inbox
+from pet_app.notifications.context import list_template_variables
 from pet_app.notifications.scheduler import enqueue_due_reminders as _enqueue_due_reminders
 from pet_app.utils.api_response import api_error, api_success
 
@@ -64,7 +68,7 @@ def list_templates(event_key=None, enabled=None):
 		rows = frappe.get_all(
 			"Pet App WhatsApp Template",
 			filters=filters,
-			fields=["name", "template_key", "enabled", "template_name", "language", "category", "event_key", "recipient_type", "priority"],
+			fields=["name", "template_key", "enabled", "template_name", "language", "category", "event_key", "source_doctype", "recipient_type", "delivery_mode", "priority"],
 			order_by="template_key asc",
 			ignore_permissions=True,
 		)
@@ -87,9 +91,18 @@ def get_template(template_key=None, name=None):
 def save_template(data=None, **kwargs):
 	try:
 		payload = _payload(data, kwargs)
+		if payload.get("source_doctype"):
+			whatsapp_designer.get_source_schema(payload["source_doctype"])
+			require_doctype_permission(payload["source_doctype"], "read")
 		name = payload.get("name") or frappe.db.get_value("Pet App WhatsApp Template", {"template_key": payload.get("template_key")}, "name")
 		require_doctype_permission("Pet App WhatsApp Template", "write" if name else "create")
 		doc = frappe.get_doc("Pet App WhatsApp Template", name) if name else frappe.new_doc("Pet App WhatsApp Template")
+		content_candidate = doc.as_dict()
+		content_candidate.update(payload)
+		whatsapp_designer.validate_template_content(
+			content_candidate,
+			content_candidate.get("source_doctype"),
+		)
 		for key, value in payload.items():
 			if doc.meta.has_field(key):
 				doc.set(key, value)
@@ -130,9 +143,10 @@ def send_manual_notification(data=None, **kwargs):
 	try:
 		require_doctype_permission("Pet App Notification Queue", "create")
 		payload = _payload(data, kwargs)
+		process_now = payload.pop("process_now", 1)
 		payload["manual"] = True
 		result = engine.queue_notification(**payload)
-		if result.get("ok") and payload.get("process_now", 1):
+		if result.get("ok") and cint(process_now):
 			return engine.process_notification_queue(result["data"]["queue"]["name"])
 		return result
 	except Exception as exc:
@@ -390,4 +404,345 @@ def _payload(data, kwargs) -> dict:
 def _error_response(exc):
 	if isinstance(exc, frappe.PermissionError):
 		return api_error(_("Not permitted"), code="PERMISSION_ERROR")
-	return api_error(cstr(exc), code=getattr(exc, "exc_type", None) or exc.__class__.__name__)
+	return api_error(
+		cstr(exc),
+		code=getattr(exc, "code", None) or getattr(exc, "exc_type", None) or exc.__class__.__name__,
+		details=getattr(exc, "details", None),
+	)
+
+
+def _require_whatsapp_designer_access():
+	user = frappe.session.user
+	if not user or user == "Guest":
+		raise frappe.PermissionError
+	roles = set(frappe.get_roles(user) or [])
+	allowed_roles = {"System Manager", "Healthcare Administrator"}
+	if frappe.db.exists("DocType", "Pet App Notification Settings"):
+		meta = frappe.get_meta("Pet App Notification Settings")
+		if meta.has_field("whatsapp_full_access_role"):
+			configured_role = frappe.db.get_single_value("Pet App Notification Settings", "whatsapp_full_access_role")
+			if configured_role:
+				allowed_roles.add(configured_role)
+	if user != "Administrator" and not roles.intersection(allowed_roles):
+		raise frappe.PermissionError
+
+
+@frappe.whitelist()
+def list_whatsapp_template_variables(source_doctype=None):
+	try:
+		_require_whatsapp_designer_access()
+		require_doctype_permission("Pet App WhatsApp Template", "read")
+		if source_doctype:
+			whatsapp_designer.get_source_schema(source_doctype)
+			require_doctype_permission(source_doctype, "read")
+		return api_success({"variables": list_template_variables(source_doctype)}, meta={"source_doctype": source_doctype})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_whatsapp_designer_schema(source_doctype=None):
+	try:
+		_require_whatsapp_designer_access()
+		require_doctype_permission("Pet App WhatsApp Action Rule", "read")
+		require_doctype_permission("Pet App WhatsApp Template", "read")
+		if source_doctype:
+			require_doctype_permission(source_doctype, "read")
+		schema = whatsapp_designer.get_designer_schema(source_doctype)
+		if not source_doctype:
+			schema["source_tables"] = [
+				row for row in schema["source_tables"] if frappe.has_permission(row["value"], ptype="read")
+			]
+		return api_success({"schema": schema})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def list_whatsapp_action_rules(source_doctype=None, enabled=None):
+	try:
+		_require_whatsapp_designer_access()
+		require_doctype_permission("Pet App WhatsApp Action Rule", "read")
+		if source_doctype:
+			whatsapp_designer.get_source_schema(source_doctype)
+			require_doctype_permission(source_doctype, "read")
+		filters = {}
+		if source_doctype:
+			filters["source_doctype"] = source_doctype
+		if enabled is not None:
+			filters["enabled"] = cint(enabled)
+		names = frappe.get_all(
+			"Pet App WhatsApp Action Rule",
+			filters=filters,
+			pluck="name",
+			order_by="rule_name asc",
+			ignore_permissions=True,
+		)
+		rules = []
+		for name in names:
+			doc = frappe.get_doc("Pet App WhatsApp Action Rule", name)
+			if doc.source_doctype in whatsapp_designer.SOURCE_REGISTRY and frappe.has_permission(doc.source_doctype, ptype="read"):
+				rules.append(whatsapp_designer.canonical_rule(doc))
+		return api_success({"rules": rules}, meta={"total": len(rules)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def save_whatsapp_action_rule(data=None, **kwargs):
+	try:
+		_require_whatsapp_designer_access()
+		payload = _payload(data, kwargs)
+		if isinstance(payload.get("rule"), dict):
+			payload = payload["rule"]
+		name = payload.get("name") or payload.get("rule_name")
+		existing = frappe.db.exists("Pet App WhatsApp Action Rule", name) if name else None
+		require_doctype_permission("Pet App WhatsApp Action Rule", "write" if existing else "create")
+		doc = frappe.get_doc("Pet App WhatsApp Action Rule", existing) if existing else frappe.new_doc("Pet App WhatsApp Action Rule")
+		normalized = whatsapp_designer.raise_for_invalid_rule(payload, doc if existing else None)
+		require_doctype_permission(normalized["source_doctype"], "read")
+		require_doctype_permission("Pet App WhatsApp Template", "read")
+		for key in whatsapp_designer.RULE_FIELDS:
+			if key != "name" and doc.meta.has_field(key):
+				doc.set(key, normalized.get(key))
+		for key, value in whatsapp_designer.serialize_rule_sections(normalized).items():
+			doc.set(key, value)
+		doc.save(ignore_permissions=True)
+		return api_success({"rule": whatsapp_designer.canonical_rule(doc)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def validate_whatsapp_action_rule(data=None, rule=None, **kwargs):
+	try:
+		_require_whatsapp_designer_access()
+		require_doctype_permission("Pet App WhatsApp Action Rule", "read")
+		payload = _payload(data, kwargs)
+		candidate = _payload(rule, {}) if rule else payload.get("rule") or payload
+		source_doctype = cstr(candidate.get("source_doctype")).strip()
+		if source_doctype in whatsapp_designer.SOURCE_REGISTRY:
+			require_doctype_permission(source_doctype, "read")
+		require_doctype_permission("Pet App WhatsApp Template", "read")
+		return api_success({"validation": whatsapp_designer.validate_rule(candidate)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def simulate_whatsapp_action_rule(data=None, rule=None, source_name=None, **kwargs):
+	try:
+		_require_whatsapp_designer_access()
+		require_doctype_permission("Pet App WhatsApp Action Rule", "read")
+		require_doctype_permission("Pet App WhatsApp Template", "read")
+		payload = _payload(data, kwargs)
+		candidate = _payload(rule, {}) if rule else payload.get("rule") or payload
+		source_name = source_name or payload.get("source_name")
+		source_doctype = cstr(candidate.get("source_doctype")).strip()
+		whatsapp_designer.get_source_schema(source_doctype)
+		if not source_name or not frappe.db.exists(source_doctype, source_name):
+			raise whatsapp_designer.DesignerError(_("Source record was not found."), "SOURCE_RECORD_NOT_FOUND")
+		try:
+			require_doctype_permission(source_doctype, "read")
+			source_doc = frappe.get_doc(source_doctype, source_name)
+			if not source_doc.has_permission("read"):
+				raise frappe.PermissionError
+		except frappe.PermissionError:
+			raise whatsapp_designer.DesignerError(_("You cannot read this source record."), "SOURCE_READ_FORBIDDEN")
+		return api_success({"simulation": whatsapp_designer.simulate_rule(candidate, source_name)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def send_actionable_whatsapp_message(
+	template_key=None,
+	source_doctype=None,
+	source_name=None,
+	recipient=None,
+	context=None,
+	action_rule=None,
+	data=None,
+	**kwargs,
+):
+	try:
+		payload = _payload(data, kwargs)
+		template_key = template_key or payload.get("template_key")
+		source_doctype = source_doctype or payload.get("source_doctype")
+		source_name = source_name or payload.get("source_name")
+		recipient = recipient or payload.get("recipient")
+		action_rule = action_rule or payload.get("action_rule")
+		require_doctype_permission("Pet App WhatsApp Action Request", "create")
+		require_doctype_permission(source_doctype, "read")
+		filters = {"enabled": 1, "source_doctype": source_doctype}
+		if action_rule:
+			filters["name"] = action_rule
+		elif template_key:
+			filters["template_key"] = template_key
+		name = frappe.db.get_value("Pet App WhatsApp Action Rule", filters, "name", order_by="modified desc")
+		if not name:
+			frappe.throw(_("No active WhatsApp action rule matches this request."))
+		rule = frappe.get_doc("Pet App WhatsApp Action Rule", name)
+		source = frappe.get_doc(source_doctype, source_name)
+		request = whatsapp_actions.create_action_request(
+			rule,
+			source,
+			recipient=recipient,
+			context=_payload(context, {}) if context else None,
+			process_now=True,
+		)
+		return api_success({"action": _doc_payload(request)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def list_pending_whatsapp_actions(status=None, limit=50):
+	try:
+		require_doctype_permission("Pet App WhatsApp Action Request", "read")
+		filters = {"status": status} if status else {"status": ["in", ["Waiting Reply", "Matched", "Pending Review", "Needs Review"]]}
+		rows = frappe.get_all(
+			"Pet App WhatsApp Action Request",
+			filters=filters,
+			fields=[
+				"name", "rule", "status", "delivery_stage", "conversation", "source_doctype", "source_name",
+				"recipient_phone", "response_key", "response_value", "expires_at", "creation",
+			],
+			order_by="creation desc",
+			limit_page_length=cint(limit) or 50,
+			ignore_permissions=True,
+		)
+		return api_success({"actions": [dict(row) for row in rows]}, meta={"total": len(rows)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def approve_whatsapp_action(action_request=None, note=None, data=None, **kwargs):
+	try:
+		payload = _payload(data, kwargs)
+		name = action_request or payload.get("action_request") or payload.get("name")
+		require_doctype_permission("Pet App WhatsApp Action Request", "write")
+		doc = frappe.get_doc("Pet App WhatsApp Action Request", name)
+		if doc.status not in {"Pending Review", "Needs Review", "Matched"}:
+			frappe.throw(_("Only matched or review-pending actions can be approved."))
+		if doc.status == "Needs Review":
+			doc = whatsapp_actions.select_review_response(doc, payload.get("response_key"))
+		doc = whatsapp_actions.execute_action(doc, approved_by=frappe.session.user, approval_note=note or payload.get("note"))
+		return api_success({"action": _doc_payload(doc)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def reject_whatsapp_action(action_request=None, note=None, data=None, **kwargs):
+	try:
+		payload = _payload(data, kwargs)
+		name = action_request or payload.get("action_request") or payload.get("name")
+		require_doctype_permission("Pet App WhatsApp Action Request", "write")
+		doc = whatsapp_actions.reject_action(name, note or payload.get("note"))
+		return api_success({"action": _doc_payload(doc)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def list_whatsapp_conversations(status=None, limit=50):
+	try:
+		require_doctype_permission("Pet App WhatsApp Conversation", "read")
+		filters = {"status": status} if status else {}
+		rows = frappe.get_all(
+			"Pet App WhatsApp Conversation",
+			filters=filters,
+			fields=[
+				"name", "display_name", "normalized_phone", "guardian", "customer", "status", "last_inbound_at",
+				"last_outbound_at", "session_expires_at", "unread_count", "last_message_preview", "last_message_direction",
+			],
+			order_by="modified desc",
+			limit_page_length=cint(limit) or 50,
+			ignore_permissions=True,
+		)
+		for row in rows:
+			row["session_open"] = whatsapp_inbox.session_is_open(row)
+		return api_success({"conversations": [dict(row) for row in rows]}, meta={"total": len(rows)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_whatsapp_conversation(conversation=None, limit=100):
+	try:
+		require_doctype_permission("Pet App WhatsApp Conversation", "read")
+		doc = frappe.get_doc("Pet App WhatsApp Conversation", conversation)
+		messages = frappe.get_all(
+			"Pet App WhatsApp Message",
+			filters={"conversation": doc.name},
+			fields=[
+				"name", "direction", "message_type", "body", "caption", "file", "provider_message_id", "interactive_id",
+				"interactive_title", "status", "message_at", "read_at", "action_request", "source_doctype", "source_name",
+			],
+			order_by="message_at asc, creation asc",
+			limit_page_length=cint(limit) or 100,
+			ignore_permissions=True,
+		)
+		actions = frappe.get_all(
+			"Pet App WhatsApp Action Request",
+			filters={"conversation": doc.name},
+			fields=[
+				"name", "rule", "status", "delivery_stage", "source_doctype", "source_name",
+				"response_key", "response_value", "result_doctype", "result_name", "error_message",
+			],
+			order_by="creation asc",
+			ignore_permissions=True,
+		)
+		for action in actions:
+			rule_config = frappe.db.get_value("Pet App WhatsApp Action Rule", action.rule, "response_config_json")
+			action["response_options"] = (_payload(rule_config, {}).get("options") or []) if rule_config else []
+		return api_success(
+			{
+				"conversation": {**_doc_payload(doc), "session_open": whatsapp_inbox.session_is_open(doc)},
+				"messages": [dict(row) for row in messages],
+				"actions": [dict(row) for row in actions],
+			}
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def reply_whatsapp_conversation(conversation=None, message=None, file=None, data=None, **kwargs):
+	try:
+		payload = _payload(data, kwargs)
+		conversation = conversation or payload.get("conversation")
+		message = message if message is not None else payload.get("message")
+		file = file or payload.get("file")
+		require_doctype_permission("Pet App WhatsApp Message", "create")
+		doc = whatsapp_inbox.send_conversation_message(conversation, message, file)
+		return api_success({"message": _doc_payload(doc)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def mark_whatsapp_conversation_read(conversation=None, data=None, **kwargs):
+	try:
+		payload = _payload(data, kwargs)
+		conversation = conversation or payload.get("conversation")
+		require_doctype_permission("Pet App WhatsApp Conversation", "write")
+		doc = whatsapp_inbox.mark_conversation_read(conversation)
+		return api_success({"conversation": _doc_payload(doc)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def download_whatsapp_media(message=None):
+	try:
+		require_doctype_permission("Pet App WhatsApp Message", "read")
+		doc = frappe.get_doc("Pet App WhatsApp Message", message)
+		if not doc.file:
+			frappe.throw(_("This message has no downloaded attachment."))
+		file_doc = frappe.get_doc("File", doc.file)
+		return api_success({"file": {"name": file_doc.name, "file_name": file_doc.file_name, "file_url": file_doc.file_url, "is_private": file_doc.is_private}})
+	except Exception as exc:
+		return _error_response(exc)
