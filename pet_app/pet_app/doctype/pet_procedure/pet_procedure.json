@@ -106,8 +106,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Care Service",
-   "options": "CareService template",
-   "reqd": 1
+   "options": "CareService template"
   },
   {
    "fieldname": "item_code",

@@ -134,7 +134,9 @@ def _diagnostic_payload(doc) -> dict:
 		"pet": doc.pet,
 		"doctor": doc.doctor,
 		"care_service": doc.care_service,
-		"item_code": doc.item_code,
+		"item_code": doc.get("item_code"),
+		"body_part": doc.get("body_part"),
+		"modality": doc.get("modality"),
 		"status": doc.status,
 		"result": doc.get("result"),
 		"report": doc.get("report"),
@@ -172,19 +174,27 @@ def _has_attachment(doc) -> bool:
 	)
 
 
-def _sync_order_status(doc, status):
-	if not doc.visit or not doc.get("order_id"):
-		return
-	visit = frappe.get_doc("Vet Visit", doc.visit)
+def _sync_order_status(doc, status, *, visit=None, save=True, allow_rewind=False):
+	order_id = doc.get("order_id")
+	if not doc.visit or not order_id:
+		return False
+	visit = visit or frappe.get_doc("Vet Visit", doc.visit)
 	changed = False
 	for row in visit.get("orders") or []:
-		if row.order_id == doc.get("order_id"):
-			clinical_state.transition_status(row, status)
+		if row.order_id == order_id:
+			try:
+				clinical_state.transition_status(row, status)
+			except frappe.ValidationError:
+				if not allow_rewind:
+					raise
+				row.status = status
+				row.flags.allow_status_reconcile = True
 			row.linked_doctype = doc.doctype
 			row.linked_name = doc.name
 			changed = True
-	if changed:
+	if changed and save:
 		visit.save(ignore_permissions=True)
+	return changed
 
 
 def _payload(data, kwargs) -> dict:

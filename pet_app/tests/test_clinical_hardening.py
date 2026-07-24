@@ -14,6 +14,7 @@ from pet_app.api import visit_workbench
 from pet_app.api import vitals
 from pet_app.api import workspace
 from pet_app.pet_app.doctype.medication.medication import Medication
+from pet_app.pet_app.doctype.vet_visit.vet_visit import _create_sales_invoice_for_visit, _mark_visit_invoiced
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 from pet_app.utils.visit_billing import upsert_visit_billable_item
 
@@ -327,7 +328,7 @@ class TestClinicalHardening(FrappeTestCase):
 			{
 				"doctype": "Procedure Template",
 				"procedure_name": f"Procedure {frappe.generate_hash(length=6)}",
-				"billing_care_service": service.name,
+				"price": 25,
 				"active": 1,
 			}
 		).insert(ignore_permissions=True)
@@ -399,8 +400,10 @@ class TestClinicalHardening(FrappeTestCase):
 		service_name = order["linked_name"]
 
 		workspace.perform_action("Service", service_name, "finish_service", {})
-		with self.assertRaises(frappe.ValidationError):
-			workspace.perform_action("Service", service_name, "cancel_service", {"reason": "Too late"})
+		cancelled = workspace.perform_action("Service", service_name, "cancel_service", {"reason": "Too late"})
+
+		self.assertFalse(cancelled["ok"])
+		self.assertIn("already completed", cancelled["errors"][0]["message"])
 
 	def test_cancel_service_on_billed_visit_fails(self):
 		visit = self._make_visit()
@@ -414,8 +417,116 @@ class TestClinicalHardening(FrappeTestCase):
 		order = next(row for row in result["orders"] if row["kind"] == "service")
 		frappe.db.set_value("Vet Visit", visit.name, "billed", 1)
 
-		with self.assertRaises(frappe.ValidationError):
-			workspace.perform_action("Service", order["linked_name"], "cancel_service", {"reason": "Billed"})
+		cancelled = workspace.perform_action("Service", order["linked_name"], "cancel_service", {"reason": "Billed"})
+
+		self.assertFalse(cancelled["ok"])
+		self.assertIn("already billed", cancelled["errors"][0]["message"])
+
+
+	def test_cancel_lab_cancels_order_and_linked_billable(self):
+		visit = self._make_visit()
+		care_service = self._make_care_service("Clinical Hardening Lab Cancel")
+		result = workspace.perform_action(
+			"Visit",
+			visit.name,
+			"create_orders",
+			{"orders": [{"kind": "lab", "template_id": care_service.name, "title": "CBC"}]},
+		)
+		order = next(row for row in result["orders"] if row["kind"] == "lab")
+		lab = frappe.get_doc("Lab", order["linked_name"])
+
+		workspace.perform_action("Lab", lab.name, "cancel_test", {"reason": "Owner declined"})
+		lab.reload()
+		visit.reload()
+
+		self.assertEqual(lab.status, "Cancelled")
+		order_row = next(row for row in visit.orders if row.order_id == lab.order_id)
+		self.assertEqual(order_row.status, "Cancelled")
+		billable = next(row for row in visit.billable_items if row.get("linked_name") == lab.name)
+		self.assertEqual(billable.status, "Cancelled")
+		self._assert_cancelled_billable_hidden_from_active_payloads(
+			visit.name, lambda row: row.get("linked_name") == lab.name
+		)
+
+	def test_cancel_lab_with_result_fails(self):
+		visit = self._make_visit()
+		care_service = self._make_care_service("Clinical Hardening Lab Result Cancel")
+		result = workspace.perform_action(
+			"Visit",
+			visit.name,
+			"create_orders",
+			{"orders": [{"kind": "lab", "template_id": care_service.name, "title": "CBC"}]},
+		)
+		lab = frappe.get_doc("Lab", next(row for row in result["orders"] if row["kind"] == "lab")["linked_name"])
+		workspace.perform_action("Lab", lab.name, "save_result", {"result": "Positive"})
+
+		cancelled = workspace.perform_action("Lab", lab.name, "cancel_test", {"reason": "Too late"})
+
+		self.assertFalse(cancelled["ok"])
+		self.assertIn("already has results", cancelled["errors"][0]["message"])
+		lab.reload()
+		self.assertNotEqual(lab.status, "Cancelled")
+
+	def test_cancel_imaging_with_report_fails(self):
+		visit = self._make_visit()
+		care_service = self._make_care_service("Clinical Hardening Imaging Report Cancel")
+		result = workspace.perform_action(
+			"Visit",
+			visit.name,
+			"create_orders",
+			{"orders": [{"kind": "radiology", "template_id": care_service.name, "title": "X-Ray"}]},
+		)
+		imaging = frappe.get_doc("Imaging", next(row for row in result["orders"] if row["kind"] == "radiology")["linked_name"])
+		workspace.perform_action("Imaging", imaging.name, "save_result", {"report": "No fracture"})
+
+		cancelled = workspace.perform_action("Imaging", imaging.name, "cancel_test", {"reason": "Too late"})
+
+		self.assertFalse(cancelled["ok"])
+		self.assertIn("report or image", cancelled["errors"][0]["message"])
+		imaging.reload()
+		self.assertNotEqual(imaging.status, "Cancelled")
+
+	def test_cancel_service_on_draft_invoice_removes_invoice_line(self):
+		visit = self._make_visit()
+		care_service = self._make_care_service("Clinical Hardening Draft Cancel")
+		first = self._create_service_order_with_billable(visit, care_service, "Draft Service A")
+		second = self._create_service_order_with_billable(visit, care_service, "Draft Service B")
+		invoice_result = _create_sales_invoice_for_visit(visit.name)
+		invoice = invoice_result["sales_invoice"]
+		_mark_visit_invoiced(invoice_result["visit"], invoice, invoice_result["total_billable_amount"])
+		self.assertEqual(len(invoice.items), 2)
+		self.assertEqual(invoice.grand_total, 50)
+
+		cancelled = workspace.perform_action("Service", first.name, "cancel_service", {"reason": "Owner declined"})
+		self.assertTrue(cancelled["ok"], cancelled)
+		first.reload()
+		visit.reload()
+		invoice.reload()
+
+		self.assertEqual(first.status, "cancelled")
+		self.assertEqual(len(invoice.items), 1)
+		self.assertEqual(invoice.grand_total, 25)
+		self.assertEqual(invoice.items[0].item_code, care_service.item_code)
+		billable = next(row for row in visit.billable_items if row.get("linked_name") == first.name)
+		self.assertEqual(billable.status, "Cancelled")
+		remaining = next(row for row in visit.billable_items if row.get("linked_name") == second.name)
+		self.assertEqual(remaining.status, "Billed")
+
+	def test_cancel_service_on_submitted_invoice_fails_before_status_change(self):
+		visit = self._make_visit()
+		care_service = self._make_care_service("Clinical Hardening Submitted Cancel")
+		service = self._create_service_order_with_billable(visit, care_service, "Submitted Service")
+		invoice_result = _create_sales_invoice_for_visit(visit.name)
+		invoice = invoice_result["sales_invoice"]
+		_mark_visit_invoiced(invoice_result["visit"], invoice, invoice_result["total_billable_amount"])
+		frappe.db.set_value("Sales Invoice", invoice.name, "docstatus", 1, update_modified=False)
+
+		cancelled = workspace.perform_action("Service", service.name, "cancel_service", {"reason": "Too late"})
+
+		self.assertFalse(cancelled["ok"])
+		self.assertIn("Please contact the cashier", cancelled["errors"][0]["message"])
+		service.reload()
+		self.assertEqual(service.status, "pending")
 
 	def test_cancel_medication_cancels_billable_and_does_not_recreate(self):
 		visit = self._make_visit()
@@ -514,7 +625,6 @@ class TestClinicalHardening(FrappeTestCase):
 			{
 				"doctype": "Procedure Template",
 				"procedure_name": f"Procedure Cancel {frappe.generate_hash(length=6)}",
-				"billing_care_service": care_service.name,
 				"price": 25,
 				"active": 1,
 			}
@@ -790,6 +900,32 @@ class TestClinicalHardening(FrappeTestCase):
 					"price_list": self._ensure_clinic_price_list(),
 				}
 			).insert(ignore_permissions=True)
+
+
+	def _create_service_order_with_billable(self, visit, care_service, title):
+		result = workspace.perform_action(
+			"Visit",
+			visit.name,
+			"create_orders",
+			{"orders": [{"kind": "service", "care_service_id": care_service.name, "title": title}]},
+		)
+		order = next(row for row in result["orders"] if row["kind"] == "service" and row["title"] == title)
+		service = frappe.get_doc("PetCareService", order["linked_name"])
+		visit.reload()
+		upsert_visit_billable_item(
+			visit,
+			linked_service_id=f"PetCareService::{service.name}",
+			linked_doctype="PetCareService",
+			linked_name=service.name,
+			order_id=service.order_id,
+			item_code=care_service.item_code,
+			item_type="Service",
+			qty=1,
+			rate=care_service.default_price,
+			item_name=care_service.service_name,
+		)
+		visit.save(ignore_permissions=True)
+		return service
 
 	def _assert_cancelled_billable_hidden_from_active_payloads(self, visit_name, matches):
 		aggregate = workspace.get_record("Visit", visit_name)

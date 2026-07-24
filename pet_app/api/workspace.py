@@ -12,6 +12,12 @@ from pet_app.api.healthcare.boarding import checked_in_boarding_for_visit
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import get_user_roles, require_restriction_value, user_has_full_access
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
+from pet_app.utils.clinical_options import (
+	apply_structured_clinical_payload,
+	clinical_options_payload,
+	has_internal_clinical_note,
+	visit_clinical_payload,
+)
 from pet_app.utils.medical_profile import (
 	get_visit_case_context,
 	set_visit_case_choice,
@@ -31,6 +37,9 @@ from pet_app.utils.practitioner import (
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
+	assert_boarding_billable_item_can_cancel,
+	assert_visit_billable_item_can_cancel,
+	cancel_boarding_billable_item_by_link,
 	cancel_visit_billable_item_by_link,
 )
 from pet_app.pet_app.doctype.vet_visit.vet_visit import _create_sales_invoice_for_visit, _mark_visit_invoiced
@@ -77,6 +86,7 @@ DIAGNOSTIC_RESULT_FILE_FIELDS = {
 	"Lab": ("result_file",),
 	"Imaging": ("image", "report_file"),
 }
+DIAGNOSTIC_CANCEL_ACTIONS = {"cancel_test", "cancel_lab", "cancel_imaging", "cancel_lab_order", "cancel_imaging_order"}
 IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 # Workspace authorization must stay on DocPerm-backed operational roles.
@@ -349,7 +359,7 @@ def perform_action(source_type, name, action, payload=None):
 		_update_service_status(service_name, action, payload)
 		return get_record("service", service_name)
 
-	if action in {"start_test", "save_result", "release"}:
+	if action in {"start_test", "save_result", "release"} | DIAGNOSTIC_CANCEL_ACTIONS:
 		if doctype not in {"Lab", "Imaging"}:
 			frappe.throw(_("This action requires a Lab or Radiology record."))
 		_update_diagnostic_status(doctype, name, action, payload)
@@ -397,6 +407,9 @@ def attach_file(source_type, name, payload=None, file_url=None, file_name=None, 
 	is_private = cint(payload.get("is_private", is_private))
 
 	_assert_record_access(doctype, name, write=True, action="attach_file")
+	if doctype == "Pet Procedure":
+		doc = frappe.get_doc(doctype, name)
+		clinical_state.assert_action_allowed(doc, "attach_file")
 	if not file_url and not filedata:
 		frappe.throw(_("file_url or filedata is required."))
 
@@ -1146,34 +1159,25 @@ def _visit_aggregate(visit_name: str) -> dict:
 		"case_context": get_visit_case_context(visit),
 		"clinical": {
 			"chief_complaint": _value(case_sheet, "chief_complaint"),
-			"intake_summary": visit.get("intake_summary") or visit.case_summary,
-			"overview": visit.get("overview"),
-			"examination": visit.examination_notes,
-			"assessment": visit.get("assessment") or visit.diagnosis,
-			"plan": visit.treatment_plan,
-			"instructions": visit.get("instructions") or visit.doctor_notes,
-			"doctor_notes": visit.doctor_notes,
-			"case_summary": visit.case_summary,
-			"illness": visit.illness,
-			"diagnosis": visit.diagnosis,
-				"differential_diagnosis": visit.differential_diagnosis,
-				"follow_up_required": visit.follow_up_required,
-				"follow_up_reason": visit.get("follow_up_reason"),
-				"follow_up_preferred_date": visit.get("follow_up_preferred_date") or visit.follow_up_date,
-				"follow_up_date": visit.follow_up_date,
-				"follow_up_status": visit.get("follow_up_status") or "Not Needed",
-				"vitals": {
-					"weight": visit.weight,
-					"temperature": visit.temperature,
+			**visit_clinical_payload(visit),
+			"follow_up_required": visit.follow_up_required,
+			"follow_up_reason": visit.get("follow_up_reason"),
+			"follow_up_preferred_date": visit.get("follow_up_preferred_date") or visit.follow_up_date,
+			"follow_up_date": visit.follow_up_date,
+			"follow_up_status": visit.get("follow_up_status") or "Not Needed",
+			"vitals": {
+				"weight": visit.weight,
+				"temperature": visit.temperature,
 				"heart_rate": visit.heart_rate,
 				"respiratory_rate": visit.respiratory_rate,
-				},
-				"vital_signs": _visit_vital_signs(visit),
 			},
-			"follow_up": _visit_follow_up(visit),
-			"consult_requests": _visit_consult_requests(visit),
-			"diagnoses": _visit_diagnoses(visit),
-			"orders": _visit_orders(visit, linked_records=linked_records),
+			"vital_signs": _visit_vital_signs(visit),
+		},
+		"follow_up": _visit_follow_up(visit),
+		"clinical_options": clinical_options_payload(),
+		"consult_requests": _visit_consult_requests(visit),
+		"diagnoses": _visit_diagnoses(visit),
+		"orders": _visit_orders(visit, linked_records=linked_records),
 		"addenda": _visit_addenda(visit.name),
 		"linked_records": linked_records,
 		"notes": _comments_for("Vet Visit", visit.name),
@@ -1395,6 +1399,8 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 					"doctor",
 					"care_service",
 					"item_code",
+					"body_part",
+					"modality",
 					"status",
 					"modified",
 					*DIAGNOSTIC_RESULT_FILE_FIELDS.get(doctype, ()),
@@ -1416,6 +1422,8 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 					"status": row.get("status"),
 					"order_id": row.get("order_id"),
 					"title": _care_service_label(row.get("care_service")) or row.name,
+					"body_part": row.get("body_part"),
+					"modality": row.get("modality"),
 					"modified": row.get("modified"),
 					"result_files": result_files.get(doctype, {}).get(row.name, []),
 				}
@@ -1469,6 +1477,10 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 			ignore_permissions=True,
 		)
 		for row in rows:
+			result_files = []
+			seen_files = set()
+			for file_row in _attachments_for("Pet Procedure", row.name):
+				_append_result_file(result_files, seen_files, file_row)
 			records.append(
 				{
 					"source_type": "Procedure",
@@ -1486,6 +1498,7 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 					"completed_at": row.get("completed_at"),
 					"closed_at": row.get("closed_at"),
 					"modified": row.get("modified"),
+					"result_files": result_files,
 				}
 			)
 	return records
@@ -1623,13 +1636,12 @@ def _save_clinical_note(visit_name: str, payload: dict):
 		"overview": "overview",
 		"examination": "examination_notes",
 		"examination_notes": "examination_notes",
-		"assessment": "assessment" if _has_field("Vet Visit", "assessment") else "diagnosis",
 		"diagnosis": "diagnosis",
-		"differential_diagnosis": "differential_diagnosis",
 		"plan": "treatment_plan",
 		"treatment_plan": "treatment_plan",
-		"instructions": "instructions" if _has_field("Vet Visit", "instructions") else "doctor_notes",
-		"doctor_notes": "doctor_notes",
+		"assessment_note": "assessment_note",
+		"doctor_note": "doctor_note",
+		"owner_instruction_note": "owner_instruction_note",
 		"illness": "illness",
 		"follow_up_required": "follow_up_required",
 		"follow_up_reason": "follow_up_reason",
@@ -1641,6 +1653,7 @@ def _save_clinical_note(visit_name: str, payload: dict):
 		"heart_rate": "heart_rate",
 		"respiratory_rate": "respiratory_rate",
 	}
+	apply_structured_clinical_payload(visit, payload)
 	for incoming, fieldname in field_map.items():
 		if fieldname and incoming in payload and _has_field("Vet Visit", fieldname):
 			visit.set(fieldname, payload.get(incoming))
@@ -1677,13 +1690,25 @@ def _save_diagnoses(visit_name: str, payload: dict):
 	primary_text = _primary_diagnosis_text(rows)
 	if primary_text:
 		visit.diagnosis = primary_text
-	elif payload.get("assessment"):
+	elif isinstance(payload.get("assessment"), str) and payload.get("assessment"):
 		visit.diagnosis = payload.get("assessment")
 	visit.save(ignore_permissions=True)
 	sync_diagnoses_from_visit(visit)
 
 
 def _create_orders(visit_name: str, payload: dict):
+	savepoint = f"create_orders_{frappe.generate_hash(length=10)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		_create_orders_atomic(visit_name, payload)
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	else:
+		frappe.db.release_savepoint(savepoint)
+
+
+def _create_orders_atomic(visit_name: str, payload: dict):
 	visit = frappe.get_doc("Vet Visit", visit_name)
 	clinical_state.assert_action_allowed(visit, "create_orders")
 	if not _has_field("Vet Visit", "orders"):
@@ -1698,10 +1723,7 @@ def _create_orders(visit_name: str, payload: dict):
 		kind = _normalize_order_kind(row.get("kind") or row.get("type"))
 		template_id = row.get("template_id") or row.get("care_service") or row.get("care_service_id")
 		if kind == "procedure":
-			procedure_template = row.get("procedure_template") or row.get("procedure") or row.get("template_id")
 			template_id = row.get("care_service") or row.get("care_service_id")
-			if procedure_template and frappe.db.exists("Procedure Template", procedure_template):
-				template_id = template_id or frappe.db.get_value("Procedure Template", procedure_template, "billing_care_service")
 		order_id = cstr(row.get("order_id")).strip() or _deterministic_order_id(visit, row, kind, template_id)
 		order_row = _find_order_row(visit, order_id)
 		if not order_row:
@@ -1721,14 +1743,22 @@ def _create_orders(visit_name: str, payload: dict):
 			linked_updates.append((order_row.order_id, None, None, target_status))
 
 	visit = frappe.get_doc("Vet Visit", visit.name)
+	changed = False
 	for order_id, linked_doctype, linked_name, status in linked_updates:
 		for row in visit.get("orders") or []:
 			if row.order_id != order_id:
 				continue
-			row.status = status
-			row.linked_doctype = linked_doctype
-			row.linked_name = linked_name
-	visit.save(ignore_permissions=True)
+			if row.status != status:
+				row.status = status
+				changed = True
+			if row.linked_doctype != linked_doctype:
+				row.linked_doctype = linked_doctype
+				changed = True
+			if row.linked_name != linked_name:
+				row.linked_name = linked_name
+				changed = True
+	if changed:
+		visit.save(ignore_permissions=True)
 	sync_pending_orders_from_visit(visit)
 	visit.add_comment("Comment", _("Orders created by {0}.").format(frappe.session.user))
 
@@ -1751,7 +1781,23 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 	if cstr(visit.get("status")).strip() == "Completed":
 		return
 	if payload:
-		if any(key in payload for key in ("overview", "examination", "assessment", "plan", "instructions", "doctor_notes")):
+		clinical_payload_keys = (
+			"overview",
+			"examination",
+			"diagnosis",
+			"assessment",
+			"assessment_findings",
+			"assessment_note",
+			"plan",
+			"treatment_plan",
+			"instructions",
+			"owner_instruction_items",
+			"owner_instruction_note",
+			"doctor_notes",
+			"client_observations",
+			"doctor_note",
+		)
+		if any(key in payload for key in clinical_payload_keys):
 			_save_clinical_note(visit_name, payload)
 		if payload.get("diagnoses"):
 			_save_diagnoses(visit_name, payload)
@@ -1762,8 +1808,6 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 		diagnosis_text = _primary_diagnosis_text([row.as_dict() for row in visit.get("diagnoses") or []])
 		if diagnosis_text:
 			visit.diagnosis = diagnosis_text
-	if not visit.doctor_notes and visit.get("instructions"):
-		visit.doctor_notes = visit.get("instructions")
 	_validate_visit_completion_requirements(visit)
 
 	invoice_result = _create_sales_invoice_for_visit(visit.name)
@@ -1771,7 +1815,7 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 	if not sales_invoice or not sales_invoice.get("name"):
 		frappe.throw(_("Draft Sales Invoice could not be created for this visit."))
 	invoice_visit = invoice_result["visit"]
-	for fieldname in ("diagnosis", "doctor_notes"):
+	for fieldname in ("diagnosis", "doctor_note"):
 		if visit.get(fieldname) and not invoice_visit.get(fieldname):
 			invoice_visit.set(fieldname, visit.get(fieldname))
 	clinical_state.transition_status(invoice_visit, "Completed", action="complete_case")
@@ -1802,7 +1846,7 @@ def _validate_visit_completion_requirements(visit):
 		frappe.throw(_("Illness is required before completing the visit."))
 	if not visit.diagnosis:
 		frappe.throw(_("Diagnosis is required before completing the visit."))
-	if not visit.doctor_notes:
+	if not has_internal_clinical_note(visit):
 		frappe.throw(_("Clinical Note is required before completing the visit."))
 	if STRICT_MODE:
 		visit._validate_no_pending_clinical_records()
@@ -2097,6 +2141,9 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 			}
 		)
 	elif kind == "radiology":
+		template = frappe.get_cached_doc("CareService template", template_id)
+		body_part = cstr(raw.get("body_part") or raw.get("bodyPart") or order_row.get("body_part") or template.get("body_part")).strip()
+		modality = cstr(raw.get("modality") or order_row.get("modality") or template.get("modality")).strip()
 		doc = frappe.get_doc(
 			{
 				"doctype": "Imaging",
@@ -2106,6 +2153,10 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 				"doctor": visit.doctor,
 				"care_service": template_id,
 				"status": "Ordered",
+				"priority": order_row.priority,
+				"body_part": body_part or None,
+				"modality": modality or None,
+				"order_note": order_row.note,
 			}
 		)
 	elif kind == "service":
@@ -2129,9 +2180,9 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 		if not procedure_template or not frappe.db.exists("Procedure Template", procedure_template):
 			frappe.throw(_("Order {0} requires a Procedure Template.").format(order_row.title))
 		template = frappe.get_cached_doc("Procedure Template", procedure_template)
-		care_service = raw.get("care_service") or raw.get("care_service_id") or template.billing_care_service
+		care_service = raw.get("care_service") or raw.get("care_service_id")
 		if not care_service:
-			frappe.throw(_("Procedure Template {0} requires a billing Care Service.").format(frappe.bold(procedure_template)))
+			_validate_procedure_template_billing(template)
 		doc = frappe.get_doc(
 			{
 				"doctype": "Pet Procedure",
@@ -2151,6 +2202,21 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 	doc.insert(ignore_permissions=True)
 	doc.add_comment("Comment", _("Created from Vet Visit order {0}.").format(order_row.order_id))
 	return doc
+
+
+def _validate_procedure_template_billing(template):
+	if not cstr(template.get("item_code")).strip():
+		frappe.throw(
+			_("Procedure Template {0} must have an Item Code before it can be billed.").format(
+				frappe.bold(template.name)
+			)
+		)
+	if flt(template.get("price")) <= 0:
+		frappe.throw(
+			_("Procedure Template {0} must have a positive Price before it can be billed.").format(
+				frappe.bold(template.name)
+			)
+		)
 
 
 def _existing_linked_record_for_order(kind: str, visit_name: str, order_id: str, linked_doctype=None, linked_name=None):
@@ -2191,6 +2257,9 @@ def _sync_pet_weight_from_started_service(service, weight: float | None):
 
 def _update_service_status(service_name: str, action: str, payload: dict):
 	service = frappe.get_doc("PetCareService", service_name)
+	if action == "cancel_service":
+		_assert_service_cancellable(service)
+		_assert_linked_order_billing_cancellable(service, "Service")
 	clinical_state.assert_action_allowed(service, action)
 	started_weight = None
 	if action == "start_service":
@@ -2205,7 +2274,6 @@ def _update_service_status(service_name: str, action: str, payload: dict):
 		service.end_date = service.end_date or now_datetime()
 		clinical_state.transition_status(service, "completed", action=action)
 	elif action == "cancel_service":
-		_assert_linked_visit_not_billed(service.visit)
 		clinical_state.transition_status(service, "cancelled", action=action)
 	if payload.get("description"):
 		service.description = payload.get("description")
@@ -2213,22 +2281,13 @@ def _update_service_status(service_name: str, action: str, payload: dict):
 	if action == "start_service":
 		_sync_pet_weight_from_started_service(service, started_weight)
 	if action == "cancel_service":
-		_update_order_status_for_link(service.visit, service.order_id, "Cancelled", "PetCareService", service.name)
-		cancel_visit_billable_item_by_link(
-			service.visit,
-			linked_service_id=f"PetCareService::{service.name}",
-			linked_doctype="PetCareService",
-			linked_name=service.name,
-			order_id=service.order_id,
-			item_type="Service",
-		)
+		if not service.get("visit"):
+			_cancel_linked_order_billable(service, "Service")
 		reason = cstr(payload.get("reason") or payload.get("note")).strip()
 		comment = _("Service cancelled by {0}.").format(frappe.session.user)
 		if reason:
 			comment = _("{0} Reason: {1}").format(comment, reason)
 		service.add_comment("Comment", comment)
-	else:
-		_update_order_status_for_link(service.visit, service.order_id, "Completed" if service.status == "completed" else "In Progress", "PetCareService", service.name)
 
 
 def _assert_linked_visit_not_billed(visit_name: str | None):
@@ -2237,6 +2296,98 @@ def _assert_linked_visit_not_billed(visit_name: str | None):
 	visit = frappe.db.get_value("Vet Visit", visit_name, ["billed", "sales_invoice"], as_dict=True)
 	if visit and (visit.get("billed") or visit.get("sales_invoice")):
 		frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
+
+
+def _assert_service_cancellable(service) -> None:
+	if cstr(service.get("status")).strip().casefold() == "completed" or service.get("end_date"):
+		frappe.throw(_("This service is already completed and can't be cancelled."))
+
+
+def _assert_procedure_cancellable(procedure) -> None:
+	if procedure.get("status") in {"Completed", "Closed"} or procedure.get("completed_at") or procedure.get("closed_at"):
+		frappe.throw(_("This procedure is already completed and can't be cancelled."))
+
+
+def _assert_diagnostic_cancellable(doc) -> None:
+	if doc.doctype == "Lab" and _lab_has_results(doc):
+		frappe.throw(_("This lab already has results and can't be cancelled."))
+	if doc.doctype == "Imaging" and _imaging_has_report_or_image(doc):
+		frappe.throw(_("This imaging order already has a report or image and can't be cancelled."))
+
+
+def _lab_has_results(doc) -> bool:
+	return bool(
+		doc.get("result")
+		or doc.get("result_entered_at")
+		or doc.get("result_entered_by")
+		or doc.get("released_at")
+		or doc.get("released_by")
+		or doc.get("status") in {"Result Entered", "Released", "Completed"}
+	)
+
+
+def _imaging_has_report_or_image(doc) -> bool:
+	return bool(
+		doc.get("report")
+		or doc.get("image")
+		or doc.get("result_entered_at")
+		or doc.get("result_entered_by")
+		or doc.get("released_at")
+		or doc.get("released_by")
+		or doc.get("status") in {"Reported", "Released", "Completed"}
+	)
+
+
+def _assert_linked_order_billing_cancellable(doc, item_type: str) -> None:
+	linked_service_id = f"{doc.doctype}::{doc.name}"
+	if doc.get("visit"):
+		legacy_kwargs = {}
+		if doc.doctype == "PetCareService" and item_type == "Service":
+			legacy_kwargs = {"allow_legacy_service_fallback": True, "require_match": True}
+		assert_visit_billable_item_can_cancel(
+			doc.visit,
+			linked_service_id=linked_service_id,
+			linked_doctype=doc.doctype,
+			linked_name=doc.name,
+			order_id=doc.get("order_id"),
+			item_type=item_type,
+			**legacy_kwargs,
+		)
+	elif doc.get("source_doctype") == "Pet Boarding":
+		assert_boarding_billable_item_can_cancel(
+			doc.get("source_name"),
+			linked_service_id=linked_service_id,
+			linked_doctype=doc.doctype,
+			linked_name=doc.name,
+			order_id=doc.get("order_id"),
+			item_type=item_type,
+		)
+
+
+def _cancel_linked_order_billable(doc, item_type: str) -> None:
+	linked_service_id = f"{doc.doctype}::{doc.name}"
+	if doc.get("visit"):
+		legacy_kwargs = {}
+		if doc.doctype == "PetCareService" and item_type == "Service":
+			legacy_kwargs = {"allow_legacy_service_fallback": True, "require_match": True}
+		cancel_visit_billable_item_by_link(
+			doc.visit,
+			linked_service_id=linked_service_id,
+			linked_doctype=doc.doctype,
+			linked_name=doc.name,
+			order_id=doc.get("order_id"),
+			item_type=item_type,
+			**legacy_kwargs,
+		)
+	elif doc.get("source_doctype") == "Pet Boarding":
+		cancel_boarding_billable_item_by_link(
+			doc.get("source_name"),
+			linked_service_id=linked_service_id,
+			linked_doctype=doc.doctype,
+			linked_name=doc.name,
+			order_id=doc.get("order_id"),
+			item_type=item_type,
+		)
 
 
 def _find_medication_row(visit, row_id: str):
@@ -2248,7 +2399,12 @@ def _find_medication_row(visit, row_id: str):
 
 def _update_diagnostic_status(doctype: str, name: str, action: str, payload: dict):
 	doc = frappe.get_doc(doctype, name)
-	clinical_state.assert_action_allowed(doc, action)
+	state_action = "cancel_test" if action in DIAGNOSTIC_CANCEL_ACTIONS else action
+	if state_action == "cancel_test":
+		_assert_diagnostic_cancellable(doc)
+		_assert_linked_order_billing_cancellable(doc, "Lab" if doctype == "Lab" else "Imaging")
+		doc.flags.allow_billed_visit_cancellation = True
+	clinical_state.assert_action_allowed(doc, state_action)
 	if action == "start_test":
 		clinical_state.transition_status(doc, "In Progress", action=action)
 	if action in {"save_result", "release"}:
@@ -2271,25 +2427,37 @@ def _update_diagnostic_status(doctype: str, name: str, action: str, payload: dic
 		doc.released_by = doc.released_by or frappe.session.user
 		doc.released_at = doc.released_at or now_datetime()
 		clinical_state.transition_status(doc, "Released", action=action)
+	if state_action == "cancel_test":
+		clinical_state.transition_status(doc, "Cancelled", action=state_action)
 	doc.save(ignore_permissions=True)
+	if state_action == "cancel_test":
+		_update_order_status_for_link(doc.visit, doc.get("order_id"), "Cancelled", doctype, doc.name)
+		reason = cstr(payload.get("reason") or payload.get("note")).strip()
+		comment = _("{0} cancelled by {1}.").format(SOURCE_LABELS[doctype], frappe.session.user)
+		if reason:
+			comment = _("{0} Reason: {1}").format(comment, reason)
+		doc.add_comment("Comment", comment)
+		return
 	target_status = "Completed" if doc.status in {"Released", "Completed"} else "In Progress"
 	_update_order_status_for_link(doc.visit, doc.get("order_id"), target_status, doctype, doc.name)
 
 
 def _update_procedure_status(procedure_name: str, action: str, payload: dict):
 	doc = frappe.get_doc("Pet Procedure", procedure_name)
+	if action == "cancel_procedure":
+		_assert_procedure_cancellable(doc)
+		_assert_linked_order_billing_cancellable(doc, "Procedure")
+		doc.flags.allow_billed_visit_cancellation = True
 	clinical_state.assert_action_allowed(doc, action)
 	if action == "start_procedure":
 		clinical_state.transition_status(doc, "In Progress", action=action)
 		doc.started_at = doc.started_at or now_datetime()
 		if payload.get("provider"):
 			doc.provider = payload.get("provider")
-		target_status = "In Progress"
 	elif action == "complete_procedure":
 		_save_procedure_note(doc.name, payload, save=False, doc=doc, action=action)
 		clinical_state.transition_status(doc, "Completed", action=action)
 		doc.completed_at = doc.completed_at or now_datetime()
-		target_status = "Completed"
 	elif action == "close_procedure":
 		_save_procedure_note(doc.name, payload, save=False, doc=doc, action=action)
 		if doc.status not in {"Completed", "Closed"}:
@@ -2297,14 +2465,11 @@ def _update_procedure_status(procedure_name: str, action: str, payload: dict):
 			doc.completed_at = doc.completed_at or now_datetime()
 		clinical_state.transition_status(doc, "Closed", action=action)
 		doc.closed_at = doc.closed_at or now_datetime()
-		target_status = "Completed"
 	elif action == "cancel_procedure":
 		clinical_state.transition_status(doc, "Cancelled", action=action)
-		target_status = "Cancelled"
 	else:
 		frappe.throw(_("Unsupported procedure action: {0}").format(action))
 	doc.save(ignore_permissions=True)
-	_update_order_status_for_link(doc.visit, doc.order_id, target_status, "Pet Procedure", doc.name)
 
 
 def _save_procedure_note(procedure_name: str, payload: dict, save: bool = True, doc=None, action: str = "save_procedure_note"):
@@ -2330,7 +2495,6 @@ def _save_procedure_note(procedure_name: str, payload: dict, save: bool = True, 
 	_update_procedure_checklist(doc, payload)
 	if save:
 		doc.save(ignore_permissions=True)
-		_update_order_status_for_link(doc.visit, doc.order_id, _normalize_order_status(doc.status), "Pet Procedure", doc.name)
 
 
 def _update_procedure_checklist(doc, payload: dict):
@@ -2542,6 +2706,7 @@ def _update_order_status_for_link(visit_name: str | None, order_id: str | None, 
 			row.linked_name = linked_name or row.linked_name
 			changed = True
 	if changed:
+		visit.flags.ignore_billing_lock = True
 		visit.save(ignore_permissions=True)
 
 
@@ -2598,6 +2763,8 @@ def _linked_service_for_source(doctype: str, name: str) -> str | None:
 
 def _focus_source(doctype: str, name: str) -> dict:
 	focus = _source_brief(doctype, name)
+	if doctype == "Imaging":
+		focus["detail"] = _diagnostic_detail(doctype, name)
 	if doctype == "Pet Procedure":
 		focus["detail"] = _procedure_detail(name)
 	return focus
@@ -2618,6 +2785,44 @@ def _source_brief(doctype: str, name: str) -> dict:
 		"creation": row.get("creation"),
 		"modified": row.get("modified"),
 	}
+
+
+def _diagnostic_detail(doctype: str, name: str) -> dict:
+	doc = frappe.get_doc(doctype, name)
+	attachments = _attachments_for(doctype, doc.name)
+	result_files = []
+	seen_files = set()
+	for file_row in attachments:
+		_append_result_file(result_files, seen_files, file_row)
+	for fieldname in _fields(doctype, list(DIAGNOSTIC_RESULT_FILE_FIELDS.get(doctype, ()))):
+		_append_result_file(result_files, seen_files, {"file_url": doc.get(fieldname)})
+	payload = {
+		"name": doc.name,
+		"doctype": doc.doctype,
+		"visit": doc.get("visit"),
+		"order_id": doc.get("order_id"),
+		"pet": doc.get("pet"),
+		"doctor": doc.get("doctor"),
+		"care_service": doc.get("care_service"),
+		"item_code": doc.get("item_code"),
+		"status": doc.get("status"),
+		"priority": doc.get("priority"),
+		"body_part": doc.get("body_part"),
+		"modality": doc.get("modality"),
+		"order_note": doc.get("order_note"),
+		"result": doc.get("result"),
+		"report": doc.get("report"),
+		"image": doc.get("image"),
+		"attachment_required": cint(doc.get("attachment_required")),
+		"released_by": doc.get("released_by"),
+		"released_at": doc.get("released_at"),
+		"doctor_reviewed": cint(doc.get("doctor_reviewed")),
+		"doctor_reviewed_at": doc.get("doctor_reviewed_at"),
+		"result_visibility": doc.get("result_visibility"),
+		"attachments": attachments,
+		"result_files": result_files,
+	}
+	return with_link_aliases(payload, pet_field="pet", doctor_field="doctor", include_guardian=False, include_provider=False)
 
 
 def _procedure_detail(name: str) -> dict:
@@ -3238,6 +3443,8 @@ def _deterministic_order_id(visit, row: dict, kind: str, template_id: str | None
 			procedure_template,
 			cstr(row.get("item_code")).strip(),
 			title,
+			cstr(row.get("body_part") or row.get("bodyPart")).strip(),
+			cstr(row.get("modality")).strip(),
 			cstr(row.get("note")).strip(),
 		]
 	)
@@ -3267,6 +3474,10 @@ def _update_order_row_from_payload(visit, order_row, row: dict, kind: str, templ
 	order_row.qty = flt(row.get("qty") or order_row.qty or 1)
 	order_row.price = flt(row.get("price") or row.get("rate") or order_row.price or 0)
 	order_row.note = row.get("note") if "note" in row else order_row.note
+	if _has_field("Visit Order", "body_part"):
+		order_row.body_part = row.get("body_part") or row.get("bodyPart") or order_row.get("body_part")
+	if _has_field("Visit Order", "modality"):
+		order_row.modality = row.get("modality") or order_row.get("modality")
 	if not order_row.status:
 		order_row.status = "Draft"
 

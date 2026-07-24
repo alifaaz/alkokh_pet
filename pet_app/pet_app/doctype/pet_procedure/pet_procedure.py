@@ -6,13 +6,13 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, flt
+from frappe.utils import cint, cstr, flt
 
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
-	cancel_visit_billable_item,
+	cancel_visit_billable_item_by_link,
 	get_care_service_doc,
 	sync_clinical_record_billable_item,
 )
@@ -39,10 +39,47 @@ class PetProcedure(Document):
 			sync_clinical_record_billable_item(self, "Procedure")
 
 	def on_update(self):
-		if self.status == "Cancelled":
-			cancel_visit_billable_item(self.visit, self.name)
+		if self.flags.get("syncing_procedure_visit_side_effects") or not self.visit:
 			return
-		sync_clinical_record_billable_item(self, "Procedure")
+		self.flags.syncing_procedure_visit_side_effects = True
+		try:
+			visit = frappe.get_doc("Vet Visit", self.visit)
+			if self.status == "Cancelled":
+				cancel_visit_billable_item_by_link(
+					self.visit,
+					linked_service_id=f"Pet Procedure::{self.name}",
+					linked_doctype="Pet Procedure",
+					linked_name=self.name,
+					order_id=self.get("order_id"),
+					item_type="Procedure",
+					visit=visit,
+					save=False,
+				)
+				self._sync_visit_order_row("Cancelled", visit=visit, save=False)
+			else:
+				sync_clinical_record_billable_item(self, "Procedure", visit=visit, save=False)
+				self._sync_visit_order_row(self._visit_order_status(), visit=visit, save=False)
+			visit.flags.ignore_billing_lock = True
+			visit.save(ignore_permissions=True)
+		finally:
+			self.flags.syncing_procedure_visit_side_effects = False
+
+	def _visit_order_status(self) -> str:
+		status = cstr(self.status).strip()
+		if status == "Cancelled":
+			return "Cancelled"
+		if status in {"Completed", "Closed"}:
+			return "Completed"
+		if status == "In Progress":
+			return "In Progress"
+		return "Ordered"
+
+	def _sync_visit_order_row(self, status: str, *, visit=None, save: bool = True):
+		if not self.visit:
+			return False
+		from pet_app.api.diagnostics import _sync_order_status
+
+		return _sync_order_status(self, status, visit=visit, save=save, allow_rewind=status == "Ordered")
 
 	def on_trash(self):
 		assert_no_active_plan_items_linked_to(self.doctype, self.name, action="delete")
@@ -66,9 +103,10 @@ class PetProcedure(Document):
 		)
 		if not visit:
 			frappe.throw(_("Vet Visit {0} was not found.").format(frappe.bold(self.visit)))
-		if visit.sales_invoice:
+		allow_cancel = self.status == "Cancelled" and self.flags.get("allow_billed_visit_cancellation")
+		if visit.sales_invoice and not allow_cancel:
 			frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
-		if visit.billed:
+		if visit.billed and not allow_cancel:
 			frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
 
 		if not self.pet:
@@ -95,8 +133,6 @@ class PetProcedure(Document):
 		template = frappe.get_cached_doc("Procedure Template", self.procedure_template)
 		if not cint(template.get("active", 1)):
 			frappe.throw(_("Procedure Template {0} is inactive.").format(frappe.bold(self.procedure_template)))
-		if not self.care_service:
-			self.care_service = template.billing_care_service
 		if template.get("anesthesia_required") and not self.anesthesia_used:
 			self.anesthesia_used = 1
 
@@ -119,16 +155,32 @@ class PetProcedure(Document):
 			)
 
 	def set_values_from_care_service(self):
-		if not self.care_service:
-			frappe.throw(_("Care Service is required."))
-
-		care_service = get_care_service_doc(self.care_service)
-		if not care_service.get("item_code"):
-			frappe.throw(_("Care Service {0} must have an Item Code.").format(frappe.bold(self.care_service)))
-		if care_service.get("default_price") in (None, ""):
-			frappe.throw(_("Care Service {0} must have a Default Price.").format(frappe.bold(self.care_service)))
-		self.item_code = care_service.get("item_code")
-		self.rate = flt(care_service.get("default_price"))
+		if self.care_service:
+			care_service = get_care_service_doc(self.care_service)
+			if not care_service.get("item_code"):
+				frappe.throw(_("Care Service {0} must have an Item Code.").format(frappe.bold(self.care_service)))
+			if care_service.get("default_price") in (None, ""):
+				frappe.throw(_("Care Service {0} must have a Default Price.").format(frappe.bold(self.care_service)))
+			self.item_code = care_service.get("item_code")
+			self.rate = flt(care_service.get("default_price"))
+		else:
+			template = frappe.get_cached_doc("Procedure Template", self.procedure_template)
+			item_code = cstr(template.get("item_code")).strip()
+			if not item_code:
+				frappe.throw(
+					_("Procedure Template {0} must have an Item Code before it can be billed.").format(
+						frappe.bold(self.procedure_template)
+					)
+				)
+			rate = flt(template.get("price"))
+			if rate <= 0:
+				frappe.throw(
+					_("Procedure Template {0} must have a positive Price before it can be billed.").format(
+						frappe.bold(self.procedure_template)
+					)
+				)
+			self.item_code = item_code
+			self.rate = rate
 
 		if not self.status:
 			self.status = "Pending"

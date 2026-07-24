@@ -39,19 +39,22 @@
    "fieldname": "pet_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Pet Name"
+   "label": "Pet Name",
+   "reqd": 1
   },
   {
    "fieldname": "animal_species",
    "fieldtype": "Select",
    "label": "Animal Species",
-   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInsect\nArachnid\nCrustacean"
+   "options": "Mammal\nBird\nReptile\nAmphibian\nFish\nInsect\nArachnid\nCrustacean",
+   "reqd": 1
   },
   {
    "fieldname": "animal_type",
    "fieldtype": "Select",
    "label": "Animal Type",
-   "options": "Dog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther"
+   "options": "Dog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther",
+   "reqd": 1
   },
   {
    "fieldname": "breed",
@@ -62,7 +65,8 @@
   {
    "fieldname": "birth_date",
    "fieldtype": "Date",
-   "label": "Birth Date"
+   "label": "Birth Date",
+   "reqd": 1
   },
   {
    "fieldname": "registration_date",
@@ -91,7 +95,8 @@
    "fieldname": "gender",
    "fieldtype": "Select",
    "label": "Gender",
-   "options": "Male\nFemale\nUnknown"
+   "options": "Male\nFemale\nUnknown",
+   "reqd": 1
   },
   {
    "fieldname": "column_break_fzlf",
@@ -100,7 +105,8 @@
   {
    "fieldname": "weight",
    "fieldtype": "Float",
-   "label": "Weight"
+   "label": "Weight",
+   "reqd": 1
   },
   {
    "fieldname": "hight",

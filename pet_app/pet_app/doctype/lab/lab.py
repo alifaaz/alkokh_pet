@@ -4,12 +4,14 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cstr, flt, now_datetime
 
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
+	cancel_boarding_billable_item_by_link,
+	cancel_visit_billable_item_by_link,
 	get_care_service_doc,
 	sync_clinical_record_billable_item,
 )
@@ -24,17 +26,82 @@ class Lab(Document):
 		else:
 			self.validate_source()
 		self.set_values_from_care_service()
+		self._validate_release_integrity()
 		clinical_state.validate_document_transition(self)
 
 	def after_insert(self):
 		# Visit-linked labs auto-bill onto the Vet Visit. Source-linked labs
 		# (e.g. ordered from Pet Boarding) are billed by their own flow.
-		if self.visit:
+		if self.visit and self.status != "Cancelled":
 			sync_clinical_record_billable_item(self, "Lab")
 
 	def on_update(self):
+		if self.flags.get("syncing_lab_visit_side_effects"):
+			return
+		self.flags.syncing_lab_visit_side_effects = True
+		try:
+			if self.status == "Cancelled":
+				self._cancel_linked_billable_item()
+				self._sync_visit_order_row("Cancelled")
+				return
+			if self.visit:
+				visit = sync_clinical_record_billable_item(self, "Lab", save=False)
+				self._sync_visit_order_row(self._visit_order_status(), visit=visit, save=False)
+				visit.flags.ignore_billing_lock = True
+				visit.save(ignore_permissions=True)
+		finally:
+			self.flags.syncing_lab_visit_side_effects = False
+
+	def _validate_release_integrity(self):
+		if cstr(self.status).strip() != "Released":
+			return
+		previous = self.get_doc_before_save()
+		previous_status = cstr(previous.get("status")).strip() if previous else ""
+		if previous_status == "Released":
+			return
+		if not cstr(self.get("result")).strip():
+			frappe.throw(_("Lab result is required before release."))
+		if not self.released_by:
+			self.released_by = frappe.session.user
+		if not self.released_at:
+			self.released_at = now_datetime()
+
+	def _sync_visit_order_row(self, status: str, *, visit=None, save: bool = True):
+		if not self.visit:
+			return False
+		from pet_app.api.diagnostics import _sync_order_status
+
+		return _sync_order_status(self, status, visit=visit, save=save)
+
+	def _visit_order_status(self) -> str:
+		status = cstr(self.status).strip()
+		if status in {"Released", "Completed"}:
+			return "Completed"
+		if status == "Cancelled":
+			return "Cancelled"
+		if status in {"Pending", "Ordered"}:
+			return "Ordered"
+		return "In Progress" if status else "Draft"
+
+	def _cancel_linked_billable_item(self):
 		if self.visit:
-			sync_clinical_record_billable_item(self, "Lab")
+			cancel_visit_billable_item_by_link(
+				self.visit,
+				linked_service_id=f"Lab::{self.name}",
+				linked_doctype="Lab",
+				linked_name=self.name,
+				order_id=self.get("order_id"),
+				item_type="Lab",
+			)
+		elif self.source_doctype == "Pet Boarding":
+			cancel_boarding_billable_item_by_link(
+				self.source_name,
+				linked_service_id=f"Lab::{self.name}",
+				linked_doctype="Lab",
+				linked_name=self.name,
+				order_id=self.get("order_id"),
+				item_type="Lab",
+			)
 
 	def on_trash(self):
 		assert_no_active_plan_items_linked_to(self.doctype, self.name, action="delete")
@@ -67,9 +134,10 @@ class Lab(Document):
 		)
 		if not visit:
 			frappe.throw(_("Vet Visit {0} was not found.").format(frappe.bold(self.visit)))
-		if visit.sales_invoice:
+		allow_cancel = self.status == "Cancelled" and self.flags.get("allow_billed_visit_cancellation")
+		if visit.sales_invoice and not allow_cancel:
 			frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
-		if visit.billed:
+		if visit.billed and not allow_cancel:
 			frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
 
 		if not self.pet:

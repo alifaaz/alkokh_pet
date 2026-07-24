@@ -4,8 +4,9 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cstr, flt
 
+from pet_app.utils.visit_billing import cancel_visit_billable_item_by_link, sync_clinical_record_billable_item
 from pet_app.workflows import clinical_state
 
 
@@ -49,6 +50,7 @@ class PetCareService(Document):
 
 	def after_save(self):
 		self._sync_pet_weight()
+		self._sync_visit_side_effects()
 
 	def _set_barcode_on_create(self):
 		if not self.is_new() or self.barcode:
@@ -128,6 +130,54 @@ class PetCareService(Document):
 
 		frappe.db.set_value("Pet", pet_id, "weight", weight, update_modified=False)
 		frappe.logger().info(f"Updated Pet {pet_id} weight to {weight}")
+
+	def _sync_visit_side_effects(self):
+		if self.flags.get("syncing_service_visit_side_effects") or not self.visit:
+			return
+		self.flags.syncing_service_visit_side_effects = True
+		try:
+			visit = frappe.get_doc("Vet Visit", self.visit)
+			if self._is_cancelled():
+				cancel_visit_billable_item_by_link(
+					self.visit,
+					linked_service_id=f"PetCareService::{self.name}",
+					linked_doctype="PetCareService",
+					linked_name=self.name,
+					order_id=self.get("order_id"),
+					item_type="Service",
+					visit=visit,
+					save=False,
+					allow_legacy_service_fallback=True,
+					require_match=True,
+				)
+				self._sync_visit_order_row("Cancelled", visit=visit, save=False)
+			else:
+				sync_clinical_record_billable_item(self, "Service", visit=visit, save=False)
+				self._sync_visit_order_row(self._visit_order_status(), visit=visit, save=False)
+			visit.flags.ignore_billing_lock = True
+			visit.save(ignore_permissions=True)
+		finally:
+			self.flags.syncing_service_visit_side_effects = False
+
+	def _is_cancelled(self):
+		return cstr(self.status).strip().casefold() == "cancelled"
+
+	def _visit_order_status(self) -> str:
+		status = cstr(self.status).strip().casefold()
+		if status == "cancelled":
+			return "Cancelled"
+		if status == "completed" or self.end_date:
+			return "Completed"
+		if self.start_date:
+			return "In Progress"
+		return "Ordered"
+
+	def _sync_visit_order_row(self, status: str, *, visit=None, save: bool = True):
+		if not self.visit:
+			return False
+		from pet_app.api.diagnostics import _sync_order_status
+
+		return _sync_order_status(self, status, visit=visit, save=save)
 
 	def _validate_pet_guardian_link(self):
 		if not self.pet_id or not self.guardian_id:

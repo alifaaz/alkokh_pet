@@ -18,6 +18,15 @@ SUPPORTED_IMPORTS = {
 	"Services": "CareService template",
 }
 
+PET_REQUIRED_IMPORT_FIELDS = (
+	"pet_name",
+	"animal_species",
+	"animal_type",
+	"birth_date",
+	"weight",
+	"gender",
+)
+
 
 @frappe.whitelist(methods=["POST"])
 def create_import_job(import_type=None, rows=None, dry_run=1, data=None, **kwargs):
@@ -62,10 +71,22 @@ def validate_import_job(job):
 				row["doctype"] = target
 			if target and row.get("doctype") != target:
 				errors.append(_error(doc.name, index, "doctype", f"Expected DocType {target}.", row))
-			if target and target in {"Guardian", "Pet", "Product", "Medication", "CareService template"}:
+			if target == "Pet":
+				missing = _missing_required_pet_fields(row)
+				if missing:
+					fields = ", ".join(missing)
+					errors.append(
+						_error(
+							doc.name,
+							index,
+							fields,
+							_("Row {0}: missing required Pet fields: {1}.").format(index, fields),
+							row,
+						)
+					)
+			elif target and target in {"Guardian", "Product", "Medication", "CareService template"}:
 				required = {
 					"Guardian": "phone",
-					"Pet": "pet_name",
 					"Product": "product_name",
 					"Medication": "medication_name",
 					"CareService template": "service_name",
@@ -111,6 +132,16 @@ def get_import_errors(job):
 		return ok({"errors": [dict(row) for row in rows]}, meta={"total": len(rows)})
 	except Exception as exc:
 		return _error_response(exc)
+
+
+def _missing_required_pet_fields(row: dict) -> list[str]:
+	return [fieldname for fieldname in PET_REQUIRED_IMPORT_FIELDS if _is_missing_value(row.get(fieldname))]
+
+
+def _is_missing_value(value) -> bool:
+	if value is None:
+		return True
+	return cstr(value).strip() == ""
 
 
 def _error(job, row_no, fieldname, message, raw):

@@ -14,6 +14,9 @@
   "doctor",
   "care_service",
   "priority",
+  "body_part",
+  "modality",
+  "order_note",
   "column_break_main",
   "item_code",
   "rate",
@@ -196,12 +199,27 @@
    "fieldtype": "Select",
    "label": "Priority",
    "options": "Routine\nNormal\nHigh\nUrgent"
+  },
+  {
+   "fieldname": "body_part",
+   "fieldtype": "Data",
+   "label": "Body part"
+  },
+  {
+   "fieldname": "modality",
+   "fieldtype": "Data",
+   "label": "modality"
+  },
+  {
+   "fieldname": "order_note",
+   "fieldtype": "Small Text",
+   "label": "Order Note"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-22 07:39:24.913997",
+ "modified": "2026-07-21 06:22:21.587965",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Imaging",

@@ -70,6 +70,15 @@ PET_FIELD_ALIASES = {
 	"note": "note",
 }
 
+PET_REQUIRED_CREATE_FIELDS = (
+	"pet_name",
+	"animal_species",
+	"animal_type",
+	"birth_date",
+	"weight",
+	"gender",
+)
+
 MEDICAL_RECORD_TYPES = {
 	"vaccination": {
 		"doctype": "Pet Vaccination Record",
@@ -182,9 +191,28 @@ def _pet_updates(kwargs, require_name=False) -> dict:
 		if _pet_has_field(target):
 			updates[target] = value
 
-	if require_name and not updates.get("pet_name"):
-		raise MobilePetError(PET_REQUEST_INVALID, _("Pet name is required."))
+	if require_name:
+		_missing = _missing_required_create_fields(updates)
+		if _missing:
+			raise MobilePetError(
+				PET_REQUEST_INVALID,
+				_("Missing required pet fields: {0}.").format(", ".join(_missing)),
+			)
 	return updates
+
+
+def _missing_required_create_fields(updates: dict) -> list[str]:
+	return [
+		fieldname
+		for fieldname in PET_REQUIRED_CREATE_FIELDS
+		if _is_missing_pet_value(updates.get(fieldname))
+	]
+
+
+def _is_missing_pet_value(value) -> bool:
+	if value is None:
+		return True
+	return cstr(value).strip() == ""
 
 
 def _pet_from_name(name: str) -> dict:

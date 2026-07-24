@@ -7,6 +7,7 @@ from frappe.utils import cstr, getdate, now_datetime, nowdate
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.pet_app.doctype.pet_medical_profile.pet_medical_profile import ensure_pet_medical_profile
 from pet_app.utils.case_assignment import ensure_episode_practitioner, visit_practitioner
+from pet_app.utils.clinical_options import clinical_selection_text
 
 
 CASE_STATUS_FROM_EPISODE = {
@@ -205,8 +206,14 @@ def update_profile_for_visit(visit, *, clinical_status=None, episode_status=None
 		updates["active_diagnosis_summary"] = _text(visit.get("diagnosis"))
 	if episode and visit.get("treatment_plan"):
 		updates["active_treatment_summary"] = _text(visit.get("treatment_plan"))
-	if episode and (visit.get("doctor_notes") or visit.get("instructions")):
-		updates["active_problem_summary"] = _first_text(visit.get("case_summary"), visit.get("doctor_notes"), visit.get("instructions"))
+	problem_summary = _first_text(
+		visit.get("case_summary"),
+		clinical_selection_text(visit, "client_observations"),
+		visit.get("doctor_note"),
+		visit.get("assessment_note"),
+	)
+	if episode and problem_summary:
+		updates["active_problem_summary"] = problem_summary
 	if visit.get("follow_up_date"):
 		updates["next_follow_up_date"] = visit.get("follow_up_date")
 		updates["follow_up_status"] = visit.get("follow_up_status")
