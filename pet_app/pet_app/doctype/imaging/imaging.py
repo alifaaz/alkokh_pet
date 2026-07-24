@@ -10,6 +10,8 @@ from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
+	cancel_boarding_billable_item_by_link,
+	cancel_visit_billable_item_by_link,
 	get_care_service_doc,
 	sync_clinical_record_billable_item,
 )
@@ -29,12 +31,35 @@ class Imaging(Document):
 	def after_insert(self):
 		# Visit-linked imaging auto-bills onto the Vet Visit. Source-linked
 		# imaging (e.g. ordered from Pet Boarding) is billed by its own flow.
-		if self.visit:
+		if self.visit and self.status != "Cancelled":
 			sync_clinical_record_billable_item(self, "Imaging")
 
 	def on_update(self):
+		if self.status == "Cancelled":
+			self._cancel_linked_billable_item()
+			return
 		if self.visit:
 			sync_clinical_record_billable_item(self, "Imaging")
+
+	def _cancel_linked_billable_item(self):
+		if self.visit:
+			cancel_visit_billable_item_by_link(
+				self.visit,
+				linked_service_id=f"Imaging::{self.name}",
+				linked_doctype="Imaging",
+				linked_name=self.name,
+				order_id=self.get("order_id"),
+				item_type="Imaging",
+			)
+		elif self.source_doctype == "Pet Boarding":
+			cancel_boarding_billable_item_by_link(
+				self.source_name,
+				linked_service_id=f"Imaging::{self.name}",
+				linked_doctype="Imaging",
+				linked_name=self.name,
+				order_id=self.get("order_id"),
+				item_type="Imaging",
+			)
 
 	def on_trash(self):
 		assert_no_active_plan_items_linked_to(self.doctype, self.name, action="delete")
@@ -67,9 +92,10 @@ class Imaging(Document):
 		)
 		if not visit:
 			frappe.throw(_("Vet Visit {0} was not found.").format(frappe.bold(self.visit)))
-		if visit.sales_invoice:
+		allow_cancel = self.status == "Cancelled" and self.flags.get("allow_billed_visit_cancellation")
+		if visit.sales_invoice and not allow_cancel:
 			frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
-		if visit.billed:
+		if visit.billed and not allow_cancel:
 			frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
 
 		if not self.pet:

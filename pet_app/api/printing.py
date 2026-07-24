@@ -7,6 +7,7 @@ from frappe.utils import cint, cstr
 from pet_app.api.response import fail, ok
 from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api import workspace
+from pet_app.utils.clinical_options import visit_clinical_payload
 
 
 @frappe.whitelist()
@@ -123,6 +124,7 @@ def _get_doc(doctype, name):
 
 
 def _visit_header(doc) -> dict:
+	clinical_note = visit_clinical_payload(doc)
 	payload = {
 		"name": doc.name,
 		"visit_datetime": doc.visit_datetime,
@@ -132,7 +134,9 @@ def _visit_header(doc) -> dict:
 		"doctor": doc.doctor,
 		"diagnosis": doc.diagnosis,
 		"treatment_plan": doc.treatment_plan,
-		"doctor_notes": doc.doctor_notes,
+		"doctor_note": doc.get("doctor_note"),
+		"owner_instruction_note": doc.get("owner_instruction_note"),
+		"clinical_note": clinical_note,
 	}
 	return with_link_aliases(payload, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
 
@@ -148,6 +152,9 @@ def _diagnostic_payload(doc) -> dict:
 		"pet": doc.pet,
 		"doctor": doc.doctor,
 		"care_service": doc.care_service,
+		"item_code": doc.get("item_code"),
+		"body_part": doc.get("body_part"),
+		"modality": doc.get("modality"),
 		"status": doc.status,
 		"result": doc.get("result"),
 		"report": doc.get("report"),

@@ -4,6 +4,12 @@ from frappe.utils import cstr, flt, now_datetime
 from frappe.model.document import Document
 from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.response import standardize_response
+from pet_app.utils.visit_billing import (
+    assert_boarding_billable_item_can_cancel,
+    assert_visit_billable_item_can_cancel,
+    cancel_boarding_billable_item_by_link,
+    cancel_visit_billable_item_by_link,
+)
 
 
 class CareserviceTemplate(Document):
@@ -256,8 +262,10 @@ def cancel_service(service_name: str = None, cancellation_reason: str = None):
 
     service = frappe.get_doc("PetCareService", service_name)
     current_status = cstr(service.get("status")).strip()
-    if current_status.casefold() in SERVICE_CANCELLATION_TERMINAL_STATUSES:
-        frappe.throw(_("Service is already {0}.").format(frappe.bold(current_status)))
+    if current_status.casefold() in SERVICE_CANCELLATION_TERMINAL_STATUSES or service.get("end_date"):
+        frappe.throw(_("This service is already completed and can't be cancelled."))
+
+    _assert_service_billing_cancellable(service)
 
     user = frappe.session.user
     service.status = "Cancelled"
@@ -265,12 +273,78 @@ def cancel_service(service_name: str = None, cancellation_reason: str = None):
     service.cancelled_at = now_datetime()
     service.cancelled_by = frappe.db.get_value("User", frappe.session.user, "full_name") or frappe.session.user
     service.save(ignore_permissions=True)
+    if service.get("source_doctype") == "Pet Boarding":
+        _cancel_service_billable(service)
     service.add_comment(
         "Comment",
         _("Service cancelled by {0}. Reason: {1}").format(user, reason),
     )
 
     return _pet_care_service_payload(service)
+
+
+def _assert_service_billing_cancellable(service):
+    linked_service_id = f"PetCareService::{service.name}"
+    if service.get("visit"):
+        assert_visit_billable_item_can_cancel(
+            service.visit,
+            linked_service_id=linked_service_id,
+            linked_doctype="PetCareService",
+            linked_name=service.name,
+            order_id=service.get("order_id"),
+            item_type="Service",
+            allow_legacy_service_fallback=True,
+            require_match=True,
+        )
+    elif service.get("source_doctype") == "Pet Boarding":
+        assert_boarding_billable_item_can_cancel(
+            service.get("source_name"),
+            linked_service_id=linked_service_id,
+            linked_doctype="PetCareService",
+            linked_name=service.name,
+            order_id=service.get("order_id"),
+            item_type="Service",
+        )
+
+
+def _cancel_service_billable(service):
+    linked_service_id = f"PetCareService::{service.name}"
+    if service.get("visit"):
+        cancel_visit_billable_item_by_link(
+            service.visit,
+            linked_service_id=linked_service_id,
+            linked_doctype="PetCareService",
+            linked_name=service.name,
+            order_id=service.get("order_id"),
+            item_type="Service",
+            allow_legacy_service_fallback=True,
+            require_match=True,
+        )
+    elif service.get("source_doctype") == "Pet Boarding":
+        cancel_boarding_billable_item_by_link(
+            service.get("source_name"),
+            linked_service_id=linked_service_id,
+            linked_doctype="PetCareService",
+            linked_name=service.name,
+            order_id=service.get("order_id"),
+            item_type="Service",
+        )
+
+
+def _cancel_service_visit_order(service):
+    if not service.get("visit") or not service.get("order_id"):
+        return
+    visit = frappe.get_doc("Vet Visit", service.visit)
+    changed = False
+    for row in visit.get("orders") or []:
+        if row.order_id == service.order_id:
+            row.status = "Cancelled"
+            row.linked_doctype = "PetCareService"
+            row.linked_name = service.name
+            changed = True
+    if changed:
+        visit.flags.ignore_billing_lock = True
+        visit.save(ignore_permissions=True)
 
 
 def _pet_care_service_payload(service) -> dict:

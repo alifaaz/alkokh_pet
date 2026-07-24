@@ -250,6 +250,11 @@ def _upsert_pet(pet_name: str, guardian_name: str) -> str:
 	name = frappe.db.get_value("Pet", {"pet_name": pet_name, "requested_by": guardian_name}, "name")
 	payload = {
 		"pet_name": pet_name,
+		"animal_species": "Mammal",
+		"animal_type": "Dog",
+		"birth_date": "2020-01-01",
+		"weight": 1.0,
+		"gender": "Unknown",
 		"pet_status": "Approved",
 		"requested_by": guardian_name,
 	}

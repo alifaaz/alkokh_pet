@@ -784,7 +784,7 @@ def ensure_visit(case_sheet: str, doctor: str, **values):
 	doc.illness = values["illness"]
 	doc.diagnosis = values["diagnosis"]
 	doc.treatment_plan = values["treatment_plan"]
-	doc.doctor_notes = values["doctor_notes"]
+	doc.doctor_note = values["doctor_notes"]
 	doc.examination_notes = "Seeded clinical examination data."
 	doc.temperature = 38.4
 	doc.heart_rate = 92

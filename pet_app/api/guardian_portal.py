@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, now_datetime
+from frappe.utils import cint, cstr, getdate, now_datetime
 
 from pet_app.api.link_aliases import enrich_link_aliases, guardian_display_map, with_link_aliases
 from pet_app.api.response import fail, ok
@@ -107,11 +107,67 @@ def get_upcoming_appointments(limit=20):
 
 
 @frappe.whitelist()
+def get_appointments(pet=None, pet_id=None, status=None, date_from=None, date_to=None, future_only=0, limit=50):
+	try:
+		guardian = _current_guardian()
+		pet_name = cstr(pet or pet_id).strip()
+		if pet_name:
+			_assert_pet_access(guardian, pet_name)
+		rows = _appointments(
+			guardian,
+			pet_name or None,
+			future_only=bool(cint(future_only)),
+			limit=int(limit or 50),
+			status=status,
+			date_from=date_from,
+			date_to=date_to,
+		)
+		return ok({"appointments": rows}, meta={"total": len(rows), "guardian": guardian})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
 def get_guardian_invoices(outstanding_only=0, limit=50):
 	try:
 		guardian = _current_guardian()
 		rows = _invoices(guardian, outstanding_only=cint(outstanding_only), limit=int(limit or 50))
 		return ok({"invoices": rows}, meta={"total": len(rows)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_pet_care_services(pet=None, pet_id=None, status=None, category=None, date_from=None, date_to=None, limit=50):
+	try:
+		guardian = _current_guardian()
+		pet_name = cstr(pet or pet_id).strip()
+		if pet_name:
+			_assert_pet_access(guardian, pet_name)
+		rows = _pet_care_services(
+			guardian,
+			pet=pet_name or None,
+			status=status,
+			category=category,
+			date_from=date_from,
+			date_to=date_to,
+			limit=int(limit or 50),
+		)
+		return ok({"services": rows}, meta={"total": len(rows), "guardian": guardian})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_pet_care_service(service=None, service_name=None, name=None):
+	try:
+		guardian = _current_guardian()
+		service_id = cstr(service or service_name or name).strip()
+		if not service_id or not frappe.db.exists("PetCareService", service_id):
+			frappe.throw(_("Pet care service not found."))
+		doc = frappe.get_doc("PetCareService", service_id)
+		_assert_service_access(guardian, doc)
+		return ok({"service": _pet_care_service_payload(doc.as_dict(no_nulls=False))})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -280,12 +336,28 @@ def _preventive_events(doctype, pet, event_type, summary_field, limit):
 	]
 
 
-def _appointments(guardian: str, pet: str | None, future_only: bool, limit: int) -> list[dict]:
+def _appointments(
+	guardian: str,
+	pet: str | None,
+	future_only: bool,
+	limit: int,
+	status=None,
+	date_from=None,
+	date_to=None,
+) -> list[dict]:
 	filters = {"custom_guardian": guardian, "status": ["not in", ["Cancelled", "Closed"]]}
 	if pet:
 		filters["custom_pet"] = pet
+	if status:
+		filters["status"] = cstr(status)
 	if future_only:
 		filters["scheduled_time"] = [">=", now_datetime()]
+	if date_from and date_to:
+		filters["scheduled_time"] = ["between", [f"{date_from} 00:00:00", f"{date_to} 23:59:59"]]
+	elif date_from:
+		filters["scheduled_time"] = [">=", f"{date_from} 00:00:00"]
+	elif date_to:
+		filters["scheduled_time"] = ["<=", f"{date_to} 23:59:59"]
 	rows = frappe.get_all(
 		"Appointment",
 		filters=filters,
@@ -332,6 +404,177 @@ def _invoices(guardian: str, outstanding_only=False, limit=50) -> list[dict]:
 		ignore_permissions=True,
 	)
 	return [dict(row) for row in rows]
+
+
+def _pet_care_services(
+	guardian: str,
+	pet: str | None = None,
+	status=None,
+	category=None,
+	date_from=None,
+	date_to=None,
+	limit=50,
+) -> list[dict]:
+	filters = {}
+	if pet:
+		filters["pet_id"] = pet
+	else:
+		pet_ids = frappe.get_all("PetGuardian", filters={"guardian_id": guardian}, pluck="pet_id", ignore_permissions=True)
+		if not pet_ids:
+			return []
+		filters["pet_id"] = ["in", pet_ids]
+	if status:
+		filters["status"] = cstr(status)
+	if category:
+		filters["category"] = cstr(category)
+	if date_from and date_to:
+		filters["due_date"] = ["between", [getdate(date_from), getdate(date_to)]]
+	elif date_from:
+		filters["due_date"] = [">=", getdate(date_from)]
+	elif date_to:
+		filters["due_date"] = ["<=", getdate(date_to)]
+
+	rows = frappe.get_all(
+		"PetCareService",
+		filters=filters,
+		fields=[
+			"name",
+			"pet_service_name",
+			"pet_id",
+			"guardian_id",
+			"category",
+			"care_service_id",
+			"service_option",
+			"item_code",
+			"price",
+			"status",
+			"doctor",
+			"provider",
+			"visit",
+			"source_doctype",
+			"source_name",
+			"order_id",
+			"start_date",
+			"end_date",
+			"due_date",
+			"weight",
+			"size",
+			"description",
+			"modified",
+		],
+		order_by="due_date desc, modified desc",
+		limit_page_length=limit,
+		ignore_permissions=True,
+	)
+	return _pet_care_service_payloads([dict(row) for row in rows])
+
+
+def _assert_service_access(guardian: str, service):
+	if service.get("guardian_id") == guardian:
+		return
+	if service.get("pet_id"):
+		_assert_pet_access(guardian, service.get("pet_id"))
+		return
+	frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+
+def _pet_care_service_payload(row: dict) -> dict:
+	return _pet_care_service_payloads([dict(row)])[0]
+
+
+def _pet_care_service_payloads(rows: list[dict]) -> list[dict]:
+	enrich_link_aliases(
+		rows,
+		pet_field="pet_id",
+		guardian_field="guardian_id",
+		doctor_field="doctor",
+		provider_field="provider",
+	)
+	template_map = _care_service_template_map([row.get("care_service_id") for row in rows])
+	category_map = _care_service_category_map([row.get("category") for row in rows])
+	option_map = _care_service_option_map([row.get("service_option") for row in rows])
+	for row in rows:
+		row["service_id"] = row.get("name")
+		row["service_name"] = row.get("pet_service_name")
+		row["care_service"] = template_map.get(row.get("care_service_id")) or {}
+		row["category_details"] = category_map.get(row.get("category")) or {}
+		row["service_option_details"] = option_map.get(row.get("service_option")) or {}
+		if row["category_details"]:
+			row["category_name"] = row["category_details"].get("category_name") or row.get("category")
+			row["category_arabic_name"] = row["category_details"].get("arabic_name")
+	return rows
+
+
+def _care_service_template_map(names) -> dict[str, dict]:
+	names = _clean_names(names)
+	if not names:
+		return {}
+	rows = frappe.get_all(
+		"CareService template",
+		filters={"name": ["in", names]},
+		fields=[
+			"name",
+			"service_name",
+			"arabic_name",
+			"frequency",
+			"item_code",
+			"price_list",
+			"specimen",
+			"estimated_turnaround",
+			"modality",
+			"body_part",
+			"service_area",
+			"animal_species",
+			"category_id",
+			"default_price",
+			"description",
+			"disabled",
+		],
+		ignore_permissions=True,
+	)
+	return {row.name: dict(row) for row in rows}
+
+
+def _care_service_category_map(names) -> dict[str, dict]:
+	names = _clean_names(names)
+	if not names:
+		return {}
+	rows = frappe.get_all(
+		"CategoryCareServices",
+		filters={"name": ["in", names]},
+		fields=["name", "category_name", "arabic_name", "description", "active"],
+		ignore_permissions=True,
+	)
+	return {row.name: dict(row) for row in rows}
+
+
+def _care_service_option_map(names) -> dict[str, dict]:
+	names = _clean_names(names)
+	if not names:
+		return {}
+	rows = frappe.get_all(
+		"Care Service Billing Option",
+		filters={"name": ["in", names]},
+		fields=[
+			"name",
+			"option_label",
+			"ar_option_label",
+			"animal_species",
+			"animal_type",
+			"size_weight_label",
+			"min_weight",
+			"max_weight",
+			"item_code",
+			"default_rate",
+			"service_title",
+		],
+		ignore_permissions=True,
+	)
+	return {row.name: dict(row) for row in rows}
+
+
+def _clean_names(names) -> list[str]:
+	return sorted({cstr(name).strip() for name in names if cstr(name).strip()})
 
 
 def _owner_safe_death_record(pet: str) -> dict:

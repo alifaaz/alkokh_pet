@@ -140,4 +140,22 @@ function set_child_queries(frm) {
 			},
 		});
 	}
+
+	const clinicalCategories = {
+		assessment_findings: "Assessment Finding",
+		client_observations: "Client Observation",
+		owner_instruction_items: "Owner Instruction",
+	};
+
+	Object.entries(clinicalCategories).forEach(([parentfield, category]) => {
+		if (!frm.fields_dict[parentfield]) {
+			return;
+		}
+		frm.set_query("option", parentfield, () => ({
+			filters: {
+				category,
+				enabled: 1,
+			},
+		}));
+	});
 }

@@ -12,6 +12,7 @@ from pet_app.api.permissions import require_doctype_permission, require_restrict
 from pet_app.pet_app.doctype.medication.medication import resolve_dose_option_placeholder_uom
 from pet_app.pet_app.doctype.vet_case_sheet.vet_case_sheet import build_case_summary
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
+from pet_app.utils.clinical_options import has_internal_clinical_note, validate_visit_clinical_selections
 from pet_app.utils.medical_profile import (
 	protect_care_episode_before_visit_delete,
 	sync_latest_vitals,
@@ -106,6 +107,7 @@ class VetVisit(Document):
 		self._apply_row_pricing()
 		self._validate_case_sheet_uniqueness()
 		self._validate_follow_up()
+		validate_visit_clinical_selections(self)
 		self._validate_completion_rules()
 
 	def on_update(self):
@@ -264,7 +266,7 @@ class VetVisit(Document):
 		if not self.diagnosis:
 			frappe.throw(_("Diagnosis is required before completing the visit."))
 
-		if not self.doctor_notes:
+		if not has_internal_clinical_note(self):
 			frappe.throw(_("Clinical Note is required before completing the visit."))
 
 		if STRICT_MODE:
@@ -277,6 +279,8 @@ class VetVisit(Document):
 		previous_by_name = {row.name: row for row in previous.get("orders") or [] if row.name}
 		for row in self.get("orders") or []:
 			if not row.name or row.name not in previous_by_name:
+				continue
+			if row.flags.get("allow_status_reconcile"):
 				continue
 			old_status = previous_by_name[row.name].status
 			if old_status != row.status:
@@ -537,57 +541,9 @@ class VetVisit(Document):
 			billable_row.status = "Cancelled"
 
 	def _sync_care_services_billables(self):
-		active_linked_ids = set()
-
-		for row in self.care_services or []:
-			if cstr(row.get("status")).strip() == "Cancelled":
-				continue
-			if not row.care_service_id:
-				continue
-
-			service = get_care_service_doc(row.care_service_id)
-			if not service.item_code:
-				frappe.throw(_("Care Service {0} must have an Item Code.").format(frappe.bold(row.care_service_id)))
-			if service.default_price in (None, ""):
-				frappe.throw(_("Care Service {0} must have a Default Price.").format(frappe.bold(row.care_service_id)))
-			if flt(service.default_price) < 0:
-				frappe.throw(
-					_("Care Service {0} must not have a negative Default Price.").format(
-						frappe.bold(row.care_service_id)
-					)
-				)
-
-			category_name = None
-			if service.get("category_id"):
-				category_name = frappe.db.get_value("CategoryCareServices", service.category_id, "category_name")
-			if cstr(category_name).strip().lower() in {"lab", "imaging"}:
-				frappe.throw(
-					_("Care Service {0} belongs to category {1} and must be added through the {1} tab.").format(
-						frappe.bold(row.care_service_id), frappe.bold(category_name)
-					)
-				)
-
-			linked_service_id = f"visit-care-service::{row.name}"
-			active_linked_ids.add(linked_service_id)
-			upsert_visit_billable_item(
-				self,
-				linked_service_id=linked_service_id,
-				item_code=service.item_code,
-				item_type="Service",
-				qty=1,
-				rate=service.default_price,
-				item_name=service.service_name,
-				note=service.service_name,
-			)
-
-		for billable_row in self.billable_items or []:
-			if not cstr(billable_row.linked_service_id).startswith("visit-care-service::"):
-				continue
-			if billable_row.linked_service_id in active_linked_ids:
-				continue
-			if billable_row.status == "Billed":
-				continue
-			billable_row.status = "Cancelled"
+		# Service orders are billed by PetCareService hooks. The legacy
+		# care_services child table is retained for old rows only.
+		return
 
 	def _validate_billable_item_rows(self):
 		active_keys = set()
@@ -613,6 +569,8 @@ class VetVisit(Document):
 			active_keys.add(key)
 
 	def _validate_billed_billable_rows_unchanged(self):
+		if self.flags.ignore_billing_lock:
+			return
 		previous = self.get_doc_before_save()
 		if not previous:
 			return
@@ -1103,7 +1061,7 @@ def _visit_has_locked_changes(visit, previous) -> bool:
 		field = visit.meta.get_field(fieldname)
 		if not field:
 			continue
-		if field.fieldtype == "Table":
+		if field.fieldtype in {"Table", "Table MultiSelect"}:
 			if _table_signature(visit.get(fieldname), field.options) != _table_signature(
 				previous.get(fieldname), field.options
 			):

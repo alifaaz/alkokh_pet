@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import frappe
 from frappe import _
-from frappe.utils import cstr, get_datetime, getdate, now_datetime
+from frappe.utils import cint, cstr, get_datetime, getdate, now_datetime
 
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.response import fail, ok, standardize_response
@@ -122,6 +122,78 @@ def cancel_appointment(appointment=None, reason=None, data=None, **kwargs):
 
 
 @frappe.whitelist()
+def list_appointments(
+	guardian=None,
+	guardian_id=None,
+	customer=None,
+	customer_id=None,
+	pet=None,
+	pet_id=None,
+	status=None,
+	date_from=None,
+	date_to=None,
+	future_only=0,
+	limit=50,
+):
+	try:
+		requested_guardian = cstr(guardian or guardian_id).strip()
+		requested_customer = cstr(customer or customer_id).strip()
+		current_guardian = _current_user_guardian()
+		if current_guardian and not _can_filter_all_appointments():
+			if requested_guardian and requested_guardian != current_guardian:
+				return fail(_("Not permitted"), code="PERMISSION_ERROR")
+			requested_guardian = current_guardian
+			customer_from_guardian = frappe.db.get_value("Guardian", current_guardian, "customer_id")
+			if requested_customer and customer_from_guardian and requested_customer != customer_from_guardian:
+				return fail(_("Not permitted"), code="PERMISSION_ERROR")
+
+		filters = {"status": ["not in", ["Cancelled", "Closed"]]}
+		if requested_guardian:
+			filters["custom_guardian"] = requested_guardian
+		if requested_customer:
+			filters["custom_customer"] = requested_customer
+		if pet or pet_id:
+			filters["custom_pet"] = cstr(pet or pet_id).strip()
+		if status:
+			filters["status"] = cstr(status)
+		if cint(future_only):
+			filters["scheduled_time"] = [">=", now_datetime()]
+		if date_from and date_to:
+			filters["scheduled_time"] = ["between", [f"{getdate(date_from)} 00:00:00", f"{getdate(date_to)} 23:59:59"]]
+		elif date_from:
+			filters["scheduled_time"] = [">=", f"{getdate(date_from)} 00:00:00"]
+		elif date_to:
+			filters["scheduled_time"] = ["<=", f"{getdate(date_to)} 23:59:59"]
+
+		rows = frappe.get_all(
+			"Appointment",
+			filters=filters,
+			fields=[
+				"name",
+				"status",
+				"scheduled_time",
+				"customer_name",
+				"customer_details",
+				"custom_appointment_type",
+				"custom_pet",
+				"custom_guardian",
+				"custom_customer",
+				"custom_doctor",
+				"custom_room",
+				"custom_duration_minutes",
+			],
+			order_by="scheduled_time asc",
+			limit_page_length=int(limit or 50),
+			ignore_permissions=True,
+		)
+		appointments = [dict(row) for row in rows]
+		enrich_link_aliases(appointments, pet_field="custom_pet", guardian_field="custom_guardian", doctor_field="custom_doctor", include_provider=False)
+		return ok({"appointments": appointments}, meta={"total": len(rows)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
 def get_doctor_calendar(doctor=None, practitioner=None, date_from=None, date_to=None):
 	try:
 		doctor = practitioner or doctor
@@ -226,6 +298,17 @@ def _appointment_payload(doc) -> dict:
 		"duration_minutes": doc.get("custom_duration_minutes"),
 	}
 	return with_link_aliases(payload, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+
+
+def _current_user_guardian() -> str | None:
+	if not frappe.session.user or frappe.session.user == "Guest":
+		return None
+	return frappe.db.get_value("Guardian", {"user_id": frappe.session.user}, "name")
+
+
+def _can_filter_all_appointments() -> bool:
+	roles = set(frappe.get_roles(frappe.session.user) or [])
+	return bool({"System Manager", "Healthcare Administrator", "Receptionist", "Healthcare Receptionist"} & roles)
 
 
 def _set_optional(doc, fieldname, value):

@@ -397,7 +397,7 @@ class TestClinicalP1Flows(FrappeTestCase):
 			{
 				"doctype": "Procedure Template",
 				"procedure_name": f"P1 Procedure {frappe.generate_hash(length=8)}",
-				"billing_care_service": service.name,
+				"price": 25,
 				"consent_required": consent_required,
 				"active": 1,
 			}

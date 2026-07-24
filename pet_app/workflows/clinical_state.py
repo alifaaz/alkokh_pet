@@ -84,6 +84,7 @@ ACTION_ALLOWED_STATUSES = {
 		"save_result": {"Pending", "Ordered", "Sample Collected", "In Progress", "Result Entered"},
 		"release": {"Pending", "Ordered", "Sample Collected", "In Progress", "Result Entered"},
 		"release_lab_result": {"Pending", "Ordered", "Sample Collected", "In Progress", "Result Entered"},
+		"cancel_test": {"Pending", "Ordered", "Sample Collected", "In Progress", "Result Entered"},
 	},
 	"Imaging": {
 		"start_test": {"Pending", "Ordered", "Scheduled", "In Progress"},
@@ -91,6 +92,7 @@ ACTION_ALLOWED_STATUSES = {
 		"save_imaging_report": {"Pending", "Ordered", "Scheduled", "In Progress", "Reported"},
 		"release": {"Pending", "Ordered", "Scheduled", "In Progress", "Reported"},
 		"release_imaging_report": {"Pending", "Ordered", "Scheduled", "In Progress", "Reported"},
+		"cancel_test": {"Pending", "Ordered", "Scheduled", "In Progress", "Reported"},
 	},
 	"PetCareService": {
 		"start_service": {"pending", "overdue"},
@@ -99,6 +101,7 @@ ACTION_ALLOWED_STATUSES = {
 		"cancel_service": {"pending", "overdue"},
 	},
 	"Pet Procedure": {
+		"attach_file": {"In Progress", "Completed"},
 		"start_procedure": {"Pending", "In Progress"},
 		"save_procedure_note": {"Pending", "In Progress", "Completed"},
 		"complete_procedure": {"Pending", "In Progress", "Completed"},
@@ -167,6 +170,8 @@ def mark_visit_status(visit, new_status: str, action: str | None = None):
 
 
 def validate_document_transition(doc):
+	if doc.doctype == "Visit Order" and doc.flags.get("allow_status_reconcile"):
+		return
 	previous = doc.get_doc_before_save()
 	if not previous or not doc.meta.has_field("status"):
 		return

@@ -6,6 +6,7 @@ from frappe.utils import cstr
 
 from pet_app.api.response import fail, ok
 from pet_app.api.link_aliases import with_link_aliases
+from pet_app.utils.clinical_options import clinical_selection_text
 
 
 @frappe.whitelist()
@@ -21,11 +22,12 @@ def summarize_visit(visit):
 def generate_owner_friendly_discharge_instructions(visit):
 	try:
 		doc = frappe.get_doc("Vet Visit", visit)
+		home_instructions = _owner_instruction_text(doc)
 		parts = [
 			"Your pet was seen today.",
 			f"Diagnosis: {_plain(doc.diagnosis)}" if doc.diagnosis else None,
 			f"Care plan: {_plain(doc.treatment_plan)}" if doc.treatment_plan else None,
-			f"Home instructions: {_plain(doc.instructions or doc.doctor_notes)}" if (doc.instructions or doc.doctor_notes) else None,
+			f"Home instructions: {_plain(home_instructions)}" if home_instructions else None,
 		]
 		return ok({"instructions": "\n".join(part for part in parts if part)})
 	except Exception as exc:
@@ -72,6 +74,11 @@ def _visit_summary(doc):
 		"treatment_plan": _plain(doc.treatment_plan),
 	}
 	return with_link_aliases(payload, pet_field="pet", include_guardian=False, include_doctor=False, include_provider=False)
+
+
+def _owner_instruction_text(doc):
+	parts = [clinical_selection_text(doc, "owner_instruction_items"), doc.get("owner_instruction_note")]
+	return "\n".join(_plain(part) for part in parts if _plain(part))
 
 
 def _plain(value):

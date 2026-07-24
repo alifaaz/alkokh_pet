@@ -47,16 +47,19 @@
   "overview",
   "illness",
   "diagnosis",
+  "assessment_findings",
+  "assessment_note",
   "assessment",
   "column_break_assessment_1",
-  "differential_diagnosis",
   "diagnoses",
   "care_services",
   "plan_tab",
   "section_break_plan",
   "treatment_plan",
-  "doctor_notes",
-  "instructions",
+  "client_observations",
+  "doctor_note",
+  "owner_instruction_items",
+  "owner_instruction_note",
   "orders_actions_tab",
   "section_break_orders",
   "prescribed_medications",
@@ -321,7 +324,7 @@
    "fieldname": "illness",
    "fieldtype": "Select",
    "label": "Illness / Condition",
-   "options": "Gastrointestinal\nDermatological\nRespiratory\nMusculoskeletal\nDental\nOphthalmic\nOtic\nParasitic\nInfectious\nNutritional\nEndocrine\nUrinary\nReproductive\nNeurological\nBehavioral\nPreventive Care\nPost-Surgical\nOther"
+   "options": "Gastrointestinal\nDermatological\nRespiratory\nCardiovascular\nMusculoskeletal\nDental\nOphthalmic\nOtic\nParasitic\nInfectious\nNutritional\nEndocrine\nUrinary\nReproductive\nNeurological\nBehavioral\nPreventive Care\nPost-Surgical\nOther"
   },
   {
    "fieldname": "diagnosis",
@@ -329,18 +332,19 @@
    "label": "Diagnosis"
   },
   {
-   "fieldname": "assessment",
-   "fieldtype": "Text Editor",
-   "label": "Assessment"
+   "fieldname": "assessment_findings",
+   "fieldtype": "Table MultiSelect",
+   "label": "Assessment Findings",
+   "options": "Vet Visit Clinical Selection"
+  },
+  {
+   "fieldname": "assessment_note",
+   "fieldtype": "Small Text",
+   "label": "Assessment Note"
   },
   {
    "fieldname": "column_break_assessment_1",
    "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "differential_diagnosis",
-   "fieldtype": "Small Text",
-   "label": "Differential Diagnosis"
   },
   {
    "fieldname": "diagnoses",
@@ -369,14 +373,26 @@
    "label": "Treatment Plan"
   },
   {
-   "fieldname": "doctor_notes",
-   "fieldtype": "Text Editor",
-   "label": "Practitioner Notes"
+   "fieldname": "client_observations",
+   "fieldtype": "Table MultiSelect",
+   "label": "Client Observations",
+   "options": "Vet Visit Clinical Selection"
   },
   {
-   "fieldname": "instructions",
-   "fieldtype": "Text Editor",
-   "label": "Instructions"
+   "fieldname": "doctor_note",
+   "fieldtype": "Small Text",
+   "label": "Doctor Note"
+  },
+  {
+   "fieldname": "owner_instruction_items",
+   "fieldtype": "Table MultiSelect",
+   "label": "Owner Instruction Items",
+   "options": "Vet Visit Clinical Selection"
+  },
+  {
+   "fieldname": "owner_instruction_note",
+   "fieldtype": "Small Text",
+   "label": "Owner Instruction Note"
   },
   {
    "fieldname": "orders_actions_tab",
@@ -523,12 +539,17 @@
    "fieldname": "doctor_name",
    "fieldtype": "Data",
    "label": "Doctor Name"
+  },
+  {
+   "fieldname": "assessment",
+   "fieldtype": "Data",
+   "label": "assessment"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-16 06:27:31.081825",
+ "modified": "2026-07-21 06:25:00.641971",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Vet Visit",

@@ -29,6 +29,14 @@ from pet_app.utils.case_assignment import (
 	current_user_visit_practitioner,
 	visit_practitioner,
 )
+from pet_app.utils.clinical_options import (
+	ASSESSMENT_FINDING,
+	CLIENT_OBSERVATION,
+	OWNER_INSTRUCTION,
+	clinical_catalogue_choices,
+	clinical_options_payload,
+	visit_clinical_payload,
+)
 from pet_app.utils.medical_profile import get_visit_case_context
 from pet_app.workflows import clinical_state
 
@@ -56,6 +64,12 @@ def get_visit_workbench(visit=None, visit_id=None, name=None):
 				"medical_profile": _medical_profile_payload(visit_doc.get("animal_patient")),
 				"active_episode": _active_episode_payload(visit_doc),
 				"case_context": get_visit_case_context(visit_doc),
+				"clinical_note": visit_clinical_payload(visit_doc),
+				"illness_options": _select_options("Vet Visit", "illness"),
+				"clinical_options": clinical_options_payload(),
+				"assessment_finding_options": clinical_catalogue_choices(ASSESSMENT_FINDING),
+				"client_observation_options": clinical_catalogue_choices(CLIENT_OBSERVATION),
+				"owner_instruction_options": clinical_catalogue_choices(OWNER_INSTRUCTION),
 				"active_plan_items": _plan_items(visit_doc),
 				"plan_items": _visit_plan_items(visit_doc),
 				"diagnoses": _visit_diagnoses(visit_doc),
@@ -92,6 +106,13 @@ def _active_episode_name_for_visit(visit_doc) -> str | None:
 		"name",
 		order_by="modified desc",
 	)
+
+
+def _select_options(doctype: str, fieldname: str) -> list[str]:
+	field = frappe.get_meta(doctype).get_field(fieldname)
+	if not field:
+		return []
+	return [option for option in cstr(field.options).splitlines() if option]
 
 
 def _plan_items(visit_doc) -> list[dict]:
@@ -156,6 +177,20 @@ def _medical_profile_payload(pet: str | None) -> dict:
 
 def _visit_payload(doc) -> dict:
 	payload = _doc_payload(doc)
+	for legacy_fieldname in ("assessment", "doctor_notes", "instructions", "differential_diagnosis"):
+		payload.pop(legacy_fieldname, None)
+	clinical_note = visit_clinical_payload(doc)
+	payload.update(
+		{
+			"assessment_findings": clinical_note["assessment_findings"],
+			"assessment_note": clinical_note["assessment_note"],
+			"client_observations": clinical_note["client_observations"],
+			"doctor_note": clinical_note["doctor_note"],
+			"owner_instruction_items": clinical_note["owner_instruction_items"],
+			"owner_instruction_note": clinical_note["owner_instruction_note"],
+			"clinical_note": clinical_note,
+		}
+	)
 	pet_id = doc.get("animal_patient")
 	guardian_id = doc.get("guardian")
 	doctor_id = doc.get("doctor")

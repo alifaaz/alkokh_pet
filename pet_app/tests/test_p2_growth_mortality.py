@@ -508,7 +508,7 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 			{
 				"doctype": "Procedure Template",
 				"procedure_name": f"P2 Procedure {frappe.generate_hash(length=8)}",
-				"billing_care_service": service.name,
+				"price": 25,
 				"active": 1,
 			}
 		).insert(ignore_permissions=True)
