@@ -12,6 +12,14 @@ CURRENT_END = "2098-06-30"
 WIDE_START = "2098-05-01"
 EMPTY_START = "2099-01-01"
 EMPTY_END = "2099-01-31"
+GROUP_KEYS = {
+	"service_providers",
+	"doctors",
+	"coordinators",
+	"cashiers",
+	"receptionists",
+	"other_staff",
+}
 
 
 class TestEmployeeMonthDashboard(FrappeTestCase):
@@ -32,12 +40,17 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 		}
 
 		cls.category = cls._make_category()
-		cls.provider_a_user = cls._make_user("provider-a")
+		cls.provider_a_user = cls._make_user("provider-a", roles=("Coordinator",))
 		cls.provider_b_user = cls._make_user("provider-b")
 		cls.provider_zero_user = cls._make_user("provider-zero")
 		cls.provider_disabled_user = cls._make_user("provider-disabled")
 		cls.doctor_a_user = cls._make_user("doctor-a")
 		cls.doctor_b_user = cls._make_user("doctor-b")
+		cls.coordinator_user = cls._make_user("coordinator", roles=("Coordinator", "POS Cashier"))
+		cls.cashier_user = cls._make_user("cashier", roles=("POS Cashier",))
+		cls.receptionist_user = cls._make_user("receptionist", roles=("Reception",))
+		cls.other_staff_user = cls._make_user("other-staff", roles=("Desk User",))
+		cls.staff_zero_user = cls._make_user("staff-zero", roles=("Coordinator",))
 
 		cls.provider_a = cls._make_practitioner(cls.provider_a_user, "Service Provider", "Provider A")
 		cls.provider_b = cls._make_practitioner(cls.provider_b_user, "Service Provider", "Provider B")
@@ -81,6 +94,14 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 			cls._rate(cls.doctor_a, value, "2098-06-13 09:00:00")
 		cls._rate(cls.doctor_b, 5, "2098-06-13 09:00:00")
 		cls._rate(cls.doctor_a, 2, "2098-05-13 09:00:00")
+		for _ in range(3):
+			cls._staff_record(cls.coordinator_user, "2098-06-14 09:00:00")
+		cls._staff_record(cls.coordinator_user, "2098-05-14 09:00:00")
+		for _ in range(2):
+			cls._staff_record(cls.cashier_user, "2098-06-15 09:00:00")
+		cls._staff_record(cls.receptionist_user, "2098-06-16 09:00:00")
+		cls._staff_record(cls.other_staff_user, "2098-06-17 09:00:00")
+		cls._staff_record(cls.provider_a_user, "2098-06-18 09:00:00")
 
 		frappe.db.commit()
 
@@ -157,9 +178,9 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 		frappe.db.commit()
 
 	@classmethod
-	def _make_user(cls, label):
+	def _make_user(cls, label, roles=()):
 		email = f"employee.month.{label}.{frappe.generate_hash(length=6)}@example.com"
-		user = frappe.get_doc(
+		user_doc = frappe.get_doc(
 			{
 				"doctype": "User",
 				"email": email,
@@ -167,7 +188,12 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 				"user_type": "System User",
 				"send_welcome_email": 0,
 			}
-		).insert(ignore_permissions=True).name
+		).insert(ignore_permissions=True)
+		for role in roles:
+			user_doc.append("roles", {"role": role})
+		if roles:
+			user_doc.save(ignore_permissions=True)
+		user = user_doc.name
 		cls.created["users"].append(user)
 		return user
 
@@ -274,6 +300,30 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 		cls.created["ratings"].append(doc.name)
 		return doc.name
 
+	@classmethod
+	def _staff_record(cls, user, when):
+		target = cls._make_questionnaire()
+		doc = frappe.get_doc(
+			{
+				"doctype": "Rating",
+				"reference_doctype": "Rating Questionnaire",
+				"reference_name": target,
+				"overall_rating": 5,
+				"rated_by": user,
+				"rated_at": when,
+				"performer_doctype": "Healthcare Practitioner",
+				"performer_id": "EXTERNAL-HCP",
+			}
+		).insert(ignore_permissions=True)
+		frappe.db.set_value(
+			"Rating",
+			doc.name,
+			{"owner": user, "rated_at": when, "modified": when, "creation": when},
+			update_modified=False,
+		)
+		cls.created["ratings"].append(doc.name)
+		return doc.name
+
 	def _dashboard(self, date_from=CURRENT_START, date_to=CURRENT_END):
 		frappe.set_user("Administrator")
 		return employee_month.get_employee_month_dashboard(date_from=date_from, date_to=date_to)
@@ -281,7 +331,7 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 	def test_endpoint_returns_expected_top_level_shape(self):
 		data = self._dashboard()
 
-		self.assertEqual(set(data.keys()), {"service_providers", "doctors"})
+		self.assertEqual(set(data.keys()), GROUP_KEYS)
 		for group in data.values():
 			self.assertEqual(set(group.keys()), {"winner", "summary", "leaderboard"})
 			self.assertIsInstance(group["leaderboard"], list)
@@ -349,10 +399,60 @@ class TestEmployeeMonthDashboard(FrappeTestCase):
 		self.assertEqual(narrow_doctor["rating_average"], 4.5)
 		self.assertEqual(wide_doctor["rating_average"], 3.7)
 
+		narrow_coordinator = narrow["coordinators"]["winner"]
+		wide_coordinator = next(
+			row for row in wide["coordinators"]["leaderboard"] if row["practitioner_id"] == self.coordinator_user
+		)
+		self.assertEqual(narrow_coordinator["completed_count"], 3)
+		self.assertEqual(wide_coordinator["completed_count"], 4)
+		self.assertEqual(narrow_coordinator["delta"], "+2 vs previous period")
+
+	def test_staff_groups_rank_by_created_documents(self):
+		data = self._dashboard()
+
+		coordinators = data["coordinators"]
+		self.assertEqual(coordinators["winner"], coordinators["leaderboard"][0])
+		self.assertEqual(coordinators["winner"]["practitioner_id"], self.coordinator_user)
+		self.assertEqual(coordinators["winner"]["completed_count"], 3)
+		self.assertEqual(coordinators["winner"]["primary_metric_label"], "Documents created")
+		self.assertIsNone(coordinators["winner"]["rating_average"])
+		self.assertEqual(coordinators["winner"]["rating_count"], 0)
+		self.assertIsNone(coordinators["winner"]["on_time_rate"])
+		self.assertEqual(coordinators["winner"]["practitioner_type"], "Coordinator")
+		self.assertEqual(coordinators["winner"]["by_doctype"][0]["doctype"], "Rating")
+		self.assertEqual(
+			coordinators["summary"]["total_completed"],
+			sum(row["completed_count"] for row in coordinators["leaderboard"]),
+		)
+
+		self.assertEqual(data["cashiers"]["winner"]["practitioner_id"], self.cashier_user)
+		self.assertEqual(data["cashiers"]["winner"]["completed_count"], 2)
+		self.assertEqual(data["cashiers"]["winner"]["practitioner_type"], "Cashier")
+		self.assertEqual(data["receptionists"]["winner"]["practitioner_id"], self.receptionist_user)
+		self.assertEqual(data["receptionists"]["winner"]["completed_count"], 1)
+		self.assertEqual(data["receptionists"]["winner"]["practitioner_type"], "Receptionist")
+		self.assertEqual(data["other_staff"]["winner"]["practitioner_id"], self.other_staff_user)
+		self.assertEqual(data["other_staff"]["winner"]["completed_count"], 1)
+
+	def test_staff_groups_do_not_double_count_users(self):
+		data = self._dashboard()
+		staff_ids = set()
+		for key in ("coordinators", "cashiers", "receptionists", "other_staff"):
+			for row in data[key]["leaderboard"]:
+				self.assertNotIn(row["practitioner_id"], staff_ids)
+				staff_ids.add(row["practitioner_id"])
+
+		self.assertNotIn(self.provider_a_user, staff_ids)
+		self.assertNotIn(self.staff_zero_user, staff_ids)
+		self.assertIn(self.coordinator_user, staff_ids)
+		self.assertIn(self.cashier_user, staff_ids)
+		self.assertIn(self.receptionist_user, staff_ids)
+		self.assertIn(self.other_staff_user, staff_ids)
+
 	def test_empty_state_is_stable(self):
 		data = self._dashboard(EMPTY_START, EMPTY_END)
 
-		for group in (data["service_providers"], data["doctors"]):
+		for group in data.values():
 			self.assertIsNone(group["winner"])
 			self.assertEqual(group["leaderboard"], [])
 			self.assertEqual(
