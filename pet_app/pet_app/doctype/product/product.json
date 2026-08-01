@@ -23,6 +23,7 @@
   "category",
   "status",
   "tags",
+  "mobile_home_filter",
   "section_break_atcq",
   "item",
   "item_group",
@@ -111,6 +112,13 @@
    "fieldname": "tags",
    "fieldtype": "Small Text",
    "label": "tags"
+  },
+  {
+   "fieldname": "mobile_home_filter",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Mobile Home Filter",
+   "options": "Mobile Home Filter"
   },
   {
    "fieldname": "item",

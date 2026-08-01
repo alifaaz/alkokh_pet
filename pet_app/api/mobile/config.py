@@ -5,6 +5,7 @@ import functools
 import frappe
 from frappe.utils import cstr
 
+from pet_app.api.push import push_enabled_for
 from pet_app.api.mobile.response import error, ok
 
 SETTINGS_DOCTYPE = "Pet App Mobile Settings"
@@ -77,7 +78,7 @@ def get_config(**kwargs):
 			"pet_medical_records": True,
 			"cart": False,
 			"payments": False,
-			"push_notifications": False,
+			"push_notifications": push_enabled_for("mobile"),
 		},
 		"min_versions": {
 			"android": _setting(settings, "min_android_version"),
