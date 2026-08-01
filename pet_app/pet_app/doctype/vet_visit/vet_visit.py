@@ -866,8 +866,10 @@ def _mark_visit_invoiced(visit, sales_invoice, total_amount: float):
 	visit.save()
 
 
-def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
+def get_billable_invoice_items(visit, *, allow_non_invoiceable: bool = False) -> tuple[list[dict], float]:
 	if not visit.billable_items:
+		if allow_non_invoiceable:
+			return [], 0
 		frappe.throw(_("Add at least one billable item before invoicing."))
 
 	items = []
@@ -903,8 +905,12 @@ def get_billable_invoice_items(visit) -> tuple[list[dict], float]:
 		items.append(invoice_item)
 
 	if not items:
+		if allow_non_invoiceable:
+			return [], 0
 		frappe.throw(_("Add at least one active billable item before invoicing."))
 	if total_amount <= 0:
+		if allow_non_invoiceable:
+			return items, total_amount
 		frappe.throw(_("Total billable amount must be greater than zero before invoicing."))
 
 	return items, total_amount

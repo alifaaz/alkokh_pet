@@ -8,6 +8,13 @@ from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 
 
 class TestBoardingOrders(FrappeTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.reload_doc("pet_app", "doctype", "pet_billable_item")
+		frappe.reload_doc("pet_app", "doctype", "pet_care_plan_item")
+		frappe.reload_doc("pet_app", "doctype", "pet_boarding")
+
 	def setUp(self):
 		frappe.set_user("Administrator")
 
@@ -91,6 +98,118 @@ class TestBoardingOrders(FrappeTestCase):
 		self.assertEqual(service.status, "pending")
 		boarding.reload()
 		self.assertTrue(any(r.item_type == "Service" and r.linked_name == service.name for r in boarding.billable_items))
+
+	def test_create_medication_order_adds_boarding_billable_case_context(self):
+		boarding = self._make_checked_in_boarding()
+		episode = self._make_episode_for_boarding(boarding)
+		medication = self._make_medication("Boarding Medication Order")
+
+		res = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="medication",
+			template_id=medication.name,
+			note="Boarding dose",
+		)
+
+		self.assertTrue(res["ok"], res)
+		data = res["data"]
+		self.assertEqual(data["kind"], "medication")
+		self.assertEqual(data["boarding_id"], boarding.name)
+		self.assertEqual(data["linked_doctype"], "Medication")
+		self.assertEqual(data["linked_name"], medication.name)
+		boarding.reload()
+		rows = [row for row in boarding.billable_items if row.linked_doctype == "Medication" and row.linked_name == medication.name]
+		self.assertEqual(len(rows), 1)
+		row = rows[0]
+		self.assertEqual(row.item_type, "Medication")
+		self.assertEqual(row.item_code, medication.linked_item)
+		self.assertEqual(row.status, "Billable")
+		self.assertEqual(row.care_episode, episode.name)
+		self.assertEqual(row.dispense_status, "Pending Dispense")
+		self.assertEqual(row.dispensed_qty, 0)
+
+	def test_dispense_boarding_medication_updates_row_without_stock_entry(self):
+		boarding = self._make_checked_in_boarding()
+		self._make_episode_for_boarding(boarding)
+		medication = self._make_medication("Boarding Medication Dispense")
+		order = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="medication",
+			template_id=medication.name,
+		)
+		self.assertTrue(order["ok"], order)
+		item_id = order["data"]["item_id"]
+		stock_entries_before = frappe.db.count("Stock Entry")
+
+		dispensed = boarding_api.dispense_medication(
+			boarding=boarding.name,
+			item_id=item_id,
+			note="Handed to boarding team",
+		)
+
+		self.assertTrue(dispensed["ok"], dispensed)
+		self.assertEqual(dispensed["data"]["item"]["dispense_status"], "Dispensed")
+		self.assertEqual(dispensed["data"]["item"]["dispensed_qty"], 1)
+		self.assertEqual(dispensed["data"]["item"]["dispensed_by"], "Administrator")
+		self.assertTrue(dispensed["data"]["item"]["dispensed_at"])
+		self.assertIn("Handed to boarding team", dispensed["data"]["item"]["note"])
+		self.assertEqual(frappe.db.count("Stock Entry"), stock_entries_before)
+
+		second = boarding_api.dispense_medication(boarding=boarding.name, item_id=item_id)
+		self.assertTrue(second["ok"], second)
+		self.assertTrue(second["data"]["idempotent"])
+		self.assertEqual(second["data"]["item"]["dispensed_qty"], 1)
+		self.assertEqual(frappe.db.count("Stock Entry"), stock_entries_before)
+
+	def test_record_medication_given_marks_plan_done_idempotently(self):
+		boarding = self._make_checked_in_boarding()
+		episode = self._make_episode_for_boarding(boarding)
+		doctor = self._make_doctor()
+		visit = self._make_visit_for_episode(episode, doctor)
+		plan = self._make_medication_plan_item(episode, visit, doctor)
+		episode_status_before = frappe.db.get_value("Pet Care Episode", episode.name, "episode_status")
+
+		given = boarding_api.record_medication_given(
+			boarding=boarding.name,
+			plan_item=plan.name,
+			note="Ate with food",
+			given_at="2026-07-25 14:00:00",
+		)
+
+		self.assertTrue(given["ok"], given)
+		self.assertFalse(given["data"]["idempotent"])
+		self.assertEqual(given["data"]["plan_item"]["status"], "Done")
+		self.assertEqual(given["data"]["plan_item"]["completed_by"], "Administrator")
+		self.assertEqual(given["data"]["plan_item"]["completion_note"], "Ate with food")
+		self.assertEqual(frappe.db.get_value("Pet Care Episode", episode.name, "episode_status"), episode_status_before)
+		self.assertNotIn(episode_status_before, {"Closed", "Cancelled"})
+
+		second = boarding_api.record_medication_given(boarding=boarding.name, plan_item=plan.name)
+		self.assertTrue(second["ok"], second)
+		self.assertTrue(second["data"]["idempotent"])
+		self.assertEqual(second["data"]["plan_item"]["status"], "Done")
+
+	def test_record_medication_given_rejects_wrong_pet_case_and_non_medication(self):
+		boarding = self._make_checked_in_boarding()
+		active_episode = self._make_episode_for_boarding(boarding)
+		doctor = self._make_doctor()
+		active_visit = self._make_visit_for_episode(active_episode, doctor)
+		non_medication = self._make_monitoring_plan_item(active_episode, active_visit, doctor)
+
+		closed_episode = self._make_episode_for_boarding(boarding, primary_doctor=doctor, status="Closed")
+		closed_visit = self._make_visit_for_episode(closed_episode, doctor)
+		wrong_case = self._make_medication_plan_item(closed_episode, closed_visit, doctor, save_visit=False)
+
+		other_boarding = self._make_checked_in_boarding()
+		other_episode = self._make_episode_for_boarding(other_boarding, primary_doctor=doctor)
+		other_visit = self._make_visit_for_episode(other_episode, doctor)
+		wrong_pet = self._make_medication_plan_item(other_episode, other_visit, doctor)
+
+		for plan in (non_medication, wrong_case, wrong_pet):
+			result = boarding_api.record_medication_given(boarding=boarding.name, plan_item=plan.name)
+			self.assertFalse(result["ok"], result)
+			self.assertEqual(result["meta"]["code"], "VALIDATION_ERROR")
+			self.assertNotEqual(frappe.db.get_value("Pet Care Plan Item", plan.name, "status"), "Done")
 
 	# ----------------------------------------------------------------- guarding
 
@@ -197,6 +316,8 @@ class TestBoardingOrders(FrappeTestCase):
 				"pet_name": f"Pet {suffix}",
 				"animal_species": "Mammal",
 				"animal_type": "Dog",
+				"birth_date": "2020-01-01",
+				"weight": 10,
 				"pet_status": "Approved",
 			}
 		).insert(ignore_permissions=True)
@@ -223,16 +344,19 @@ class TestBoardingOrders(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True, ignore_mandatory=True).name
 
-	def _make_item(self, label):
+	def _make_item(self, label, *, item_group=None, is_stock_item=0, standard_rate=0):
 		suffix = frappe.generate_hash(length=8)
 		return frappe.get_doc(
 			{
 				"doctype": "Item",
 				"item_code": f"{label} Item {suffix}",
 				"item_name": f"{label} Item {suffix}",
-				"item_group": "All Item Groups",
+				"item_group": item_group or "All Item Groups",
 				"stock_uom": "Nos",
-				"is_stock_item": 0,
+				"is_stock_item": is_stock_item,
+				"is_sales_item": 1,
+				"is_purchase_item": 1,
+				"standard_rate": standard_rate,
 			}
 		).insert(ignore_permissions=True, ignore_mandatory=True)
 
@@ -254,3 +378,141 @@ class TestBoardingOrders(FrappeTestCase):
 				"price_list": self._ensure_clinic_price_list(),
 			}
 		).insert(ignore_permissions=True)
+
+	def _make_episode_for_boarding(self, boarding, *, primary_doctor=None, status="Open"):
+		primary_doctor = primary_doctor or self._make_doctor()
+		return frappe.get_doc(
+			{
+				"doctype": "Pet Care Episode",
+				"pet": boarding.pet,
+				"guardian": boarding.guardian,
+				"customer": boarding.customer,
+				"primary_doctor": primary_doctor.name,
+				"episode_title": "Boarding Medication Case",
+				"episode_type": "Boarding Medical Case",
+				"episode_status": status,
+			}
+		).insert(ignore_permissions=True)
+
+	def _make_visit_for_episode(self, episode, doctor):
+		data = {
+			"doctype": "Vet Visit",
+			"guardian": episode.guardian,
+			"customer": episode.customer,
+			"animal_patient": episode.pet,
+			"doctor": doctor.name,
+			"status": "In Progress",
+			"priority": "Normal",
+			"visit_type": "Consultation",
+			"visit_datetime": frappe.utils.now_datetime(),
+		}
+		meta = frappe.get_meta("Vet Visit")
+		if meta.has_field("primary_practitioner"):
+			data["primary_practitioner"] = doctor.name
+		if meta.has_field("care_episode"):
+			data["care_episode"] = episode.name
+		return frappe.get_doc(data).insert(ignore_permissions=True)
+
+	def _make_medication_plan_item(self, episode, visit, doctor, *, save_visit=True):
+		item = self._make_item("Boarding Scheduled Dose")
+		row_data = {
+			"doctype": "Vet Visit Medication Item",
+			"parent": visit.name,
+			"parenttype": "Vet Visit",
+			"parentfield": "prescribed_medications",
+			"idx": len(visit.get("prescribed_medications") or []) + 1,
+			"medication_item": item.name,
+			"qty": 1,
+			"rate": 10,
+			"dosage": "1 tablet",
+			"frequency": "BID",
+			"duration_days": 3,
+		}
+		if save_visit:
+			visit.append(
+				"prescribed_medications",
+				{
+					"medication_item": item.name,
+					"qty": 1,
+					"rate": 10,
+					"dosage": "1 tablet",
+					"frequency": "BID",
+					"duration_days": 3,
+				},
+			)
+			visit.save(ignore_permissions=True)
+			visit.reload()
+			medication_row = visit.prescribed_medications[-1]
+		else:
+			medication_row = frappe.get_doc(row_data)
+			medication_row.set_new_name()
+			medication_row.db_insert()
+		return frappe.get_doc(
+			{
+				"doctype": "Pet Care Plan Item",
+				"pet": episode.pet,
+				"guardian": episode.guardian,
+				"customer": episode.customer,
+				"care_episode": episode.name,
+				"source_visit": visit.name,
+				"doctor": doctor.name,
+				"plan_type": "Medication",
+				"title": "Give scheduled medication",
+				"status": "Planned",
+				"priority": "Normal",
+				"linked_doctype": "Vet Visit Medication Item",
+				"linked_name": medication_row.name,
+			}
+		).insert(ignore_permissions=True)
+
+	def _make_monitoring_plan_item(self, episode, visit, doctor):
+		return frappe.get_doc(
+			{
+				"doctype": "Pet Care Plan Item",
+				"pet": episode.pet,
+				"guardian": episode.guardian,
+				"customer": episode.customer,
+				"care_episode": episode.name,
+				"source_visit": visit.name,
+				"doctor": doctor.name,
+				"plan_type": "Monitoring",
+				"title": "Check appetite",
+				"status": "Planned",
+				"priority": "Normal",
+			}
+		).insert(ignore_permissions=True)
+
+	def _make_medication(self, label):
+		suffix = frappe.generate_hash(length=8)
+		item = self._make_item(
+			label,
+			item_group=self._leaf_item_group(),
+			is_stock_item=1,
+			standard_rate=15,
+		)
+		return frappe.get_doc(
+			{
+				"doctype": "Medication",
+				"medication_name": f"{label} {suffix}",
+				"linked_item": item.name,
+				"item_group": item.item_group,
+				"dosage_form_or_unit": item.stock_uom,
+				"default_price": 15,
+			}
+		).insert(ignore_permissions=True)
+
+	def _make_doctor(self):
+		suffix = frappe.generate_hash(length=8)
+		digits = "".join(ch for ch in suffix if ch.isdigit()).ljust(9, "0")[:9]
+		return frappe.get_doc(
+			{
+				"doctype": "Healthcare Practitioner",
+				"practitioner_name": f"Practitioner {suffix}",
+				"practitioner_type": "Doctor",
+				"phone": f"07{digits}",
+			}
+		).insert(ignore_permissions=True)
+
+	def _leaf_item_group(self):
+		groups = frappe.get_all("Item Group", filters={"is_group": 0}, pluck="name", limit=1)
+		return groups[0] if groups else "All Item Groups"

@@ -15,6 +15,7 @@ from pet_app.api.accounting.cashier import (
 	_validate_account,
 )
 from pet_app.api.permissions import get_user_roles, require_doctype_permission, user_has_full_access
+from pet_app.api.response import fail, standardize_response
 from pet_app.api.sales import _set_optional_guardian_reference
 from pet_app.pet_app.doctype.pet_boarding.pet_boarding import (
 	ACTIVE_BOARDING_STATUSES,
@@ -23,25 +24,28 @@ from pet_app.pet_app.doctype.pet_boarding.pet_boarding import (
 	ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES,
 	get_active_boarding_for_room,
 )
+from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.utils.case_assignment import DIRECT_ASSIGN_ROLES, visit_practitioner
 from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
 from pet_app.utils.price_list import get_veterinary_selling_price_list
-from pet_app.api.response import standardize_response
 
 
 ROOM_STAY_SERVICE_PREFIX = "boarding_room_stay"
 LOCK_TIMEOUT_SECONDS = 15
 BILLABLE_ITEM_STATUSES = ("Draft", "Billable", "Billed", "Cancelled")
-BILLABLE_ITEM_TYPES = ("Room Stay", "Service", "Medication", "Lab", "Product", "Other")
+BILLABLE_ITEM_TYPES = ("Room Stay", "Service", "Medication", "Lab", "Imaging", "Procedure", "Product", "Other")
+MEDICATION_PLAN_TYPES = {"Medication", "Injection"}
+DISPENSE_STATUSES = ("Prescribed", "Pending Dispense", "Dispensed", "Partially Dispensed", "Cancelled", "Returned")
+DISPENSE_FINAL_STATUSES = {"Dispensed", "Cancelled", "Returned"}
 
 # Clinical orders that can be raised directly from a checked-in boarding (no Vet Visit).
-ORDER_KINDS = ("lab", "radiology", "service")
+ORDER_KINDS = ("lab", "radiology", "service", "medication")
 ORDER_PRIORITIES = ("Routine", "Normal", "High", "Urgent")
 DEFAULT_ORDER_PRIORITY = "Routine"
 DUPLICATE_ORDER_WINDOW_SECONDS = 120
 ORDER_KIND_DOCTYPE = {"lab": "Lab", "radiology": "Imaging", "service": "PetCareService"}
-ORDER_KIND_BILLABLE_TYPE = {"lab": "Lab", "radiology": "Imaging", "service": "Service"}
+ORDER_KIND_BILLABLE_TYPE = {"lab": "Lab", "radiology": "Imaging", "service": "Service", "medication": "Medication"}
 ORDER_TERMINAL_STATUSES = {
 	"Lab": {"Released", "Completed", "Cancelled"},
 	"Imaging": {"Released", "Completed", "Cancelled"},
@@ -959,6 +963,78 @@ def sync_billable_items(boarding_id=None, billable_items=None, name=None, boardi
 	}
 
 
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def record_medication_given(boarding=None, plan_item=None, note=None, given_at=None, data=None, **kwargs):
+	payload = _coerce_payload(data, kwargs)
+	boarding_name = cstr(payload.get("boarding") or payload.get("boarding_id") or boarding).strip()
+	plan_item_name = cstr(payload.get("plan_item") or payload.get("name") or plan_item).strip()
+	given_note = cstr(payload.get("note") if "note" in payload else note).strip()
+	given_at_value = payload.get("given_at") if "given_at" in payload else given_at
+
+	if not boarding_name:
+		return _boarding_validation_error(_("Pet Boarding is required."))
+	if not plan_item_name:
+		return _boarding_validation_error(_("Plan item is required."))
+
+	_require_boarding_write_access()
+	require_doctype_permission("Pet Care Plan Item", "write")
+
+	if not frappe.db.exists("Pet Boarding", boarding_name):
+		return _boarding_validation_error(_("Pet Boarding {0} was not found.").format(frappe.bold(boarding_name)))
+	if not frappe.db.exists("Pet Care Plan Item", plan_item_name):
+		return _boarding_validation_error(_("Plan item {0} was not found.").format(frappe.bold(plan_item_name)))
+
+	boarding_doc = frappe.get_doc("Pet Boarding", boarding_name)
+	boarding_doc.check_permission("write")
+	if boarding_doc.record_status != "Checked In" or boarding_doc.docstatus != 0:
+		return _boarding_validation_error(_("Only checked-in Pet Boarding records can record medication as given."))
+
+	plan = frappe.get_doc("Pet Care Plan Item", plan_item_name)
+	validation_error = _validate_boarding_medication_plan_item(boarding_doc, plan)
+	if validation_error:
+		return validation_error
+
+	if cstr(plan.get("status")).strip() == "Done":
+		return {
+			"success": True,
+			"boarding_id": boarding_doc.name,
+			"plan_item": _serialize_plan_item_for_boarding(plan),
+			"idempotent": True,
+		}
+	if cstr(plan.get("status")).strip() in {"Cancelled", "Converted To Visit"}:
+		return _boarding_validation_error(_("This medication plan item can no longer be marked as given."))
+
+	try:
+		completed_at = _coerce_given_at(given_at_value)
+	except Exception:
+		return _boarding_validation_error(_("given_at must be a valid datetime."))
+	plan.status = "Done"
+	plan.completed_on = completed_at
+	plan.completed_by = frappe.session.user
+	if given_note:
+		plan.completion_note = given_note
+	plan.save(ignore_permissions=True)
+	plan.add_comment(
+		"Comment",
+		_("Medication marked given from Pet Boarding {0} by {1}.").format(boarding_doc.name, frappe.session.user),
+	)
+	_log_boarding_event(
+		"BOARDING_MEDICATION_GIVEN",
+		boarding=boarding_doc.name,
+		plan_item=plan.name,
+		care_episode=plan.get("care_episode"),
+		user=frappe.session.user,
+	)
+
+	return {
+		"success": True,
+		"boarding_id": boarding_doc.name,
+		"plan_item": _serialize_plan_item_for_boarding(plan),
+		"idempotent": False,
+	}
+
+
 @frappe.whitelist()
 @standardize_response
 def create_order(
@@ -1006,6 +1082,9 @@ def create_order(
 	boarding.check_permission("write")
 	_assert_boarding_orderable(boarding)
 
+	if kind == "medication":
+		return _create_boarding_medication_order(boarding, medication=template_id, item_code=item_code, note=note)
+
 	order_doctype = ORDER_KIND_DOCTYPE[kind]
 	require_doctype_permission(order_doctype, "create")
 
@@ -1033,6 +1112,84 @@ def create_order(
 	)
 
 	return _boarding_order_response(boarding, kind, order)
+
+
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def dispense_medication(boarding=None, item_id=None, qty=None, note=None, data=None, **kwargs):
+	payload = _coerce_payload(data, kwargs)
+	boarding_name = cstr(payload.get("boarding") or payload.get("boarding_id") or boarding).strip()
+	row_id = cstr(payload.get("item_id") or payload.get("row_name") or item_id).strip()
+	dispense_note = cstr(payload.get("note") if "note" in payload else note).strip()
+
+	if not boarding_name:
+		return _boarding_validation_error(_("Pet Boarding is required."))
+	if not row_id:
+		return _boarding_validation_error(_("Medication billable row is required."))
+
+	_require_boarding_write_access()
+	if not frappe.db.exists("Pet Boarding", boarding_name):
+		return _boarding_validation_error(_("Pet Boarding {0} was not found.").format(frappe.bold(boarding_name)))
+
+	boarding_doc = frappe.get_doc("Pet Boarding", boarding_name)
+	boarding_doc.check_permission("write")
+	_assert_boarding_orderable(boarding_doc)
+	_require_billable_dispense_fields()
+
+	row = _find_boarding_billable_row(boarding_doc, row_id)
+	if not row:
+		return _boarding_validation_error(_("Medication billable row was not found."))
+	if cstr(row.get("item_type")).strip() != "Medication":
+		return _boarding_validation_error(_("Only medication billable rows can be dispensed from this action."))
+	if cstr(row.get("status")).strip() in {"Cancelled", "Billed"}:
+		return _boarding_validation_error(_("Medication billable row cannot be dispensed from its current status."))
+
+	current_dispense_status = cstr(row.get("dispense_status")).strip()
+	if current_dispense_status == "Dispensed":
+		return {
+			"success": True,
+			"boarding_id": boarding_doc.name,
+			"item": _serialize_billable_item(row),
+			"idempotent": True,
+		}
+	if current_dispense_status in {"Cancelled", "Returned"}:
+		return _boarding_validation_error(_("Medication billable row cannot be dispensed from its current status."))
+
+	dispense_qty = flt(qty if qty is not None else payload.get("qty"))
+	if dispense_qty <= 0:
+		dispense_qty = max(flt(row.get("qty")) - flt(row.get("dispensed_qty")), 0)
+	if dispense_qty <= 0:
+		return _boarding_validation_error(_("Dispense Qty must be greater than zero."))
+	if flt(row.get("dispensed_qty")) + dispense_qty > flt(row.get("qty")):
+		return _boarding_validation_error(_("Dispensed Qty cannot exceed requested Qty."))
+
+	row.dispensed_qty = flt(row.get("dispensed_qty")) + dispense_qty
+	row.dispensed_by = frappe.session.user
+	row.dispensed_at = now_datetime()
+	row.dispense_status = "Dispensed" if flt(row.dispensed_qty) >= flt(row.get("qty")) else "Partially Dispensed"
+	if dispense_note:
+		row.note = _append_note(row.get("note"), dispense_note)
+
+	boarding_doc.save(ignore_permissions=True)
+	boarding_doc.add_comment(
+		"Comment",
+		_("Medication billable row {0} dispensed by {1}.").format(row.name, frappe.session.user),
+	)
+	_log_boarding_event(
+		"BOARDING_MEDICATION_DISPENSED",
+		boarding=boarding_doc.name,
+		item=row.name,
+		qty=dispense_qty,
+		user=frappe.session.user,
+	)
+
+	return {
+		"success": True,
+		"boarding_id": boarding_doc.name,
+		"item": _serialize_billable_item(row),
+		"boarding": _serialize_boarding_doc(boarding_doc),
+		"idempotent": False,
+	}
 
 
 def _assert_boarding_orderable(boarding):
@@ -1064,6 +1221,78 @@ def _normalize_order_priority(priority) -> str:
 			)
 		)
 	return normalized
+
+
+def _create_boarding_medication_order(boarding, *, medication: str, item_code: str | None = None, note: str | None = None) -> dict:
+	require_doctype_permission("Medication", "read")
+	medication_name = cstr(medication).strip()
+	if not medication_name or not frappe.db.exists("Medication", medication_name):
+		return _boarding_validation_error(_("Medication {0} was not found.").format(frappe.bold(medication_name or "")))
+
+	existing = _find_recent_duplicate_medication_billable(boarding, medication_name)
+	if existing:
+		_log_boarding_event(
+			"BOARDING_MEDICATION_ORDER_DUPLICATE",
+			boarding=boarding.name,
+			medication=medication_name,
+			item=existing.name,
+			user=frappe.session.user,
+		)
+		return _boarding_medication_order_response(boarding, existing, reused=True)
+
+	medication_doc = frappe.db.get_value(
+		"Medication",
+		medication_name,
+		["name", "medication_name", "linked_item", "default_price"],
+		as_dict=True,
+	)
+	resolved_item = cstr(item_code).strip() or cstr(medication_doc.get("linked_item")).strip()
+	if not resolved_item:
+		return _boarding_validation_error(
+			_("Medication {0} is not linked to an Item and cannot be billed for boarding.").format(
+				frappe.bold(medication_name)
+			)
+		)
+
+	item = _get_item_details(resolved_item)
+	rate = item.get("rate") if medication_doc.get("default_price") in (None, "") else flt(medication_doc.get("default_price"))
+	order_id = f"{boarding.name}-medication-{frappe.generate_hash(length=10)}"
+	row = boarding.append(
+		"billable_items",
+		{
+			"item_name": medication_doc.get("medication_name") or item.get("item_name"),
+			"item_code": item.get("item_code"),
+			"item_type": "Medication",
+			"qty": 1,
+			"rate": rate,
+			"amount": rate,
+			"status": "Billable",
+			"note": note or medication_doc.get("medication_name") or item.get("item_name"),
+			"linked_service_id": f"boarding-medication::{order_id}",
+			"linked_doctype": "Medication",
+			"linked_name": medication_name,
+			"order_id": order_id,
+		},
+	)
+	_set_child_value_if_field(row, "care_episode", _active_episode_name_for_pet(boarding.pet))
+	_set_child_value_if_field(row, "dispense_status", "Pending Dispense")
+	_set_child_value_if_field(row, "dispensed_qty", 0)
+
+	boarding.run_method("_apply_billable_item_amounts")
+	boarding.run_method("_compute_totals")
+	boarding.save()
+	boarding.add_comment(
+		"Comment",
+		_("Medication {0} added to boarding billing by {1}.").format(medication_name, frappe.session.user),
+	)
+	_log_boarding_event(
+		"BOARDING_MEDICATION_ORDER_CREATED",
+		boarding=boarding.name,
+		medication=medication_name,
+		item=row.name,
+		user=frappe.session.user,
+	)
+	return _boarding_medication_order_response(boarding, row)
 
 
 def _create_boarding_order_doc(boarding, kind, *, care_service, item_code, priority, note):
@@ -1195,6 +1424,154 @@ def _boarding_order_response(boarding, kind, order, reused=False) -> dict:
 	}
 
 
+def _boarding_medication_order_response(boarding, row, reused=False) -> dict:
+	return {
+		"success": True,
+		"order_id": row.get("order_id") or row.name,
+		"item_id": row.name,
+		"kind": "medication",
+		"boarding_id": boarding.name,
+		"linked_doctype": row.get("linked_doctype"),
+		"linked_name": row.get("linked_name"),
+		"reused": reused,
+		"total_cost": boarding.total_cost,
+		"balance": boarding.balance,
+		"billable_item": _serialize_billable_item(row),
+		"billable_items": [_serialize_billable_item(item) for item in boarding.billable_items or []],
+	}
+
+
+def _boarding_validation_error(message) -> dict:
+	return fail(message, code="VALIDATION_ERROR")
+
+
+def _active_episode_name_for_pet(pet: str | None) -> str | None:
+	pet = cstr(pet).strip()
+	if not pet:
+		return None
+	return frappe.db.get_value(
+		"Pet Care Episode",
+		{"pet": pet, "episode_status": ["in", list(ACTIVE_EPISODE_STATUSES)]},
+		"name",
+		order_by="modified desc",
+	)
+
+
+def _validate_boarding_medication_plan_item(boarding, plan) -> dict | None:
+	if plan.pet != boarding.pet:
+		return _boarding_validation_error(_("Plan item does not belong to the boarded pet."))
+
+	active_episode = _active_episode_name_for_pet(boarding.pet)
+	if not active_episode:
+		return _boarding_validation_error(_("The boarded pet does not have an open care episode."))
+	if plan.get("care_episode") != active_episode:
+		return _boarding_validation_error(_("Plan item does not belong to the boarded pet's open care episode."))
+	if not _is_medication_plan_item(plan):
+		return _boarding_validation_error(_("Only medication or injection plan items can be marked as given from boarding."))
+
+	linked_doctype = cstr(plan.get("linked_doctype")).strip()
+	linked_name = cstr(plan.get("linked_name")).strip()
+	if linked_doctype and linked_doctype != "Vet Visit Medication Item":
+		return _boarding_validation_error(_("Medication plan item must link to a prescribed medication row."))
+	if linked_name:
+		row = frappe.db.get_value(
+			"Vet Visit Medication Item",
+			linked_name,
+			["parent", "parenttype", "parentfield"],
+			as_dict=True,
+		)
+		if not row:
+			return _boarding_validation_error(_("Linked medication row was not found."))
+		if row.parenttype != "Vet Visit" or row.parentfield != "prescribed_medications":
+			return _boarding_validation_error(_("Linked medication row is not a visit prescription."))
+		if frappe.get_meta("Vet Visit").has_field("care_episode"):
+			visit_episode = frappe.db.get_value("Vet Visit", row.parent, "care_episode")
+			if visit_episode and visit_episode != plan.get("care_episode"):
+				return _boarding_validation_error(_("Linked medication row belongs to a different case."))
+	return None
+
+
+def _is_medication_plan_item(plan) -> bool:
+	return (
+		cstr(plan.get("plan_type")).strip() in MEDICATION_PLAN_TYPES
+		or cstr(plan.get("linked_doctype")).strip() == "Vet Visit Medication Item"
+	)
+
+
+def _coerce_given_at(value):
+	if not value:
+		return now_datetime()
+	return get_datetime(value)
+
+
+def _serialize_plan_item_for_boarding(plan) -> dict:
+	return {
+		"name": plan.name,
+		"pet": plan.pet,
+		"care_episode": plan.get("care_episode"),
+		"source_visit": plan.get("source_visit"),
+		"linked_doctype": plan.get("linked_doctype"),
+		"linked_name": plan.get("linked_name"),
+		"plan_type": plan.get("plan_type"),
+		"title": plan.get("title"),
+		"status": plan.get("status"),
+		"completed_on": plan.get("completed_on"),
+		"completed_by": plan.get("completed_by"),
+		"completion_note": plan.get("completion_note"),
+	}
+
+
+def _find_recent_duplicate_medication_billable(boarding, medication: str):
+	since = add_to_date(now_datetime(), seconds=-DUPLICATE_ORDER_WINDOW_SECONDS)
+	for row in boarding.billable_items or []:
+		if cstr(row.get("item_type")).strip() != "Medication":
+			continue
+		if cstr(row.get("linked_doctype")).strip() != "Medication":
+			continue
+		if cstr(row.get("linked_name")).strip() != medication:
+			continue
+		if cstr(row.get("status")).strip() in {"Cancelled", "Billed"}:
+			continue
+		created_at = row.get("creation")
+		if not created_at or get_datetime(created_at) >= since:
+			return row
+	return None
+
+
+def _find_boarding_billable_row(boarding, row_id: str):
+	row_id = cstr(row_id).strip()
+	for row in boarding.billable_items or []:
+		if row.name == row_id or cstr(row.idx) == row_id or cstr(row.get("order_id")).strip() == row_id:
+			return row
+	return None
+
+
+def _require_billable_dispense_fields() -> None:
+	meta = frappe.get_meta("Pet Billable Item")
+	missing = [
+		fieldname
+		for fieldname in ("dispense_status", "dispensed_qty", "dispensed_by", "dispensed_at")
+		if not meta.has_field(fieldname)
+	]
+	if missing:
+		frappe.throw(_("Run migrations before dispensing boarding medication. Missing fields: {0}").format(", ".join(missing)))
+
+
+def _set_child_value_if_field(row, fieldname: str, value) -> None:
+	if row.meta.has_field(fieldname):
+		row.set(fieldname, value)
+
+
+def _append_note(current, note: str) -> str:
+	current = cstr(current).strip()
+	note = cstr(note).strip()
+	if not current:
+		return note
+	if not note or note in current:
+		return current
+	return "\n".join([current, note])
+
+
 def _get_active_service_rooms(search=None):
 	values = {}
 	conditions = ["status = 'Active'"]
@@ -1322,6 +1699,7 @@ def _serialize_room(room, boarding=None) -> dict:
 def _serialize_detail(room, boarding=None) -> dict:
 	detail = _serialize_room(room, boarding) if room else {}
 	detail["billable_items"] = []
+	detail["permissions"] = _boarding_permissions(boarding)
 
 	if boarding:
 		boarding_data = _serialize_boarding_doc(boarding)
@@ -1329,8 +1707,76 @@ def _serialize_detail(room, boarding=None) -> dict:
 		detail["room"] = _serialize_room(room, boarding) if room else None
 		detail["boarding"] = boarding_data
 		detail["occupancy"] = _occupancy_from_record_status(boarding.record_status)
+		detail["permissions"] = _boarding_permissions(boarding)
 
 	return detail
+
+
+def _boarding_permissions(boarding=None) -> dict:
+	return {
+		"can_cancel_boarding": bool(boarding and _can_cancel_boarding_payload(boarding)),
+		"can_give_medication": bool(boarding and _user_can_give_medication(boarding)),
+		"can_dispense_medication": bool(boarding and _user_can_dispense_medication(boarding)),
+	}
+
+
+def _can_cancel_boarding_payload(boarding) -> bool:
+	try:
+		return boarding.record_status in CANCELLABLE_BOARDING_STATUSES and _user_can_cancel_boarding(boarding)
+	except Exception:
+		return False
+
+
+def _user_can_give_medication(boarding) -> bool:
+	try:
+		if boarding.record_status != "Checked In" or boarding.docstatus != 0:
+			return False
+		if not (_has_boarding_role(*BOARDING_WRITE_ROLES) or _has_doctype_permission("Pet Boarding", "write")):
+			return False
+		if not _has_doctype_permission("Pet Care Plan Item", "write"):
+			return False
+		episode = _active_episode_name_for_pet(boarding.pet)
+		if not episode:
+			return False
+		return _boarding_has_open_medication_plan_item(boarding.pet, episode)
+	except Exception:
+		return False
+
+
+def _user_can_dispense_medication(boarding) -> bool:
+	try:
+		if boarding.record_status != "Checked In" or boarding.docstatus != 0:
+			return False
+		if not (_has_boarding_role(*BOARDING_WRITE_ROLES) or _has_doctype_permission("Pet Boarding", "write")):
+			return False
+		return any(_is_pending_boarding_medication_billable(row) for row in boarding.billable_items or [])
+	except Exception:
+		return False
+
+
+def _boarding_has_open_medication_plan_item(pet: str, episode: str) -> bool:
+	return bool(
+		frappe.get_all(
+			"Pet Care Plan Item",
+			filters={
+				"pet": pet,
+				"care_episode": episode,
+				"plan_type": ["in", list(MEDICATION_PLAN_TYPES)],
+				"status": ["not in", ["Done", "Cancelled", "Converted To Visit"]],
+			},
+			pluck="name",
+			limit_page_length=1,
+			ignore_permissions=True,
+		)
+	)
+
+
+def _is_pending_boarding_medication_billable(row) -> bool:
+	if cstr(row.get("item_type")).strip() != "Medication":
+		return False
+	if cstr(row.get("status")).strip() in {"Cancelled", "Billed"}:
+		return False
+	return cstr(row.get("dispense_status")).strip() not in DISPENSE_FINAL_STATUSES
 
 
 def _serialize_boarding_doc(boarding) -> dict:
@@ -1433,6 +1879,14 @@ def _serialize_billable_item(row) -> dict:
 		"status": row.status,
 		"note": row.note,
 		"linked_service_id": row.linked_service_id,
+		"linked_doctype": row.get("linked_doctype"),
+		"linked_name": row.get("linked_name"),
+		"order_id": row.get("order_id"),
+		"care_episode": row.get("care_episode"),
+		"dispense_status": row.get("dispense_status"),
+		"dispensed_qty": row.get("dispensed_qty"),
+		"dispensed_by": row.get("dispensed_by"),
+		"dispensed_at": row.get("dispensed_at"),
 	}
 
 
@@ -1506,13 +1960,35 @@ def _normalize_billable_item_row(raw_row, idx: int, existing_by_name: dict, seen
 		"rate": rate,
 		"amount": flt(raw_row.get("amount") if raw_row.get("amount") is not None else qty * rate),
 		"status": status,
-		"note": raw_row.get("note") or "",
-		"linked_service_id": cstr(raw_row.get("linked_service_id")).strip(),
+		"note": raw_row.get("note") if "note" in raw_row else (existing_row.note if existing_row else ""),
+		"linked_service_id": _raw_or_existing(raw_row, existing_row, "linked_service_id"),
+		"linked_doctype": _raw_or_existing(raw_row, existing_row, "linked_doctype"),
+		"linked_name": _raw_or_existing(raw_row, existing_row, "linked_name"),
+		"order_id": _raw_or_existing(raw_row, existing_row, "order_id"),
+		"care_episode": _raw_or_existing(raw_row, existing_row, "care_episode"),
 	}
+	if item_type == "Medication":
+		dispense_status = cstr(existing_row.get("dispense_status") if existing_row else "").strip() or "Pending Dispense"
+		if dispense_status not in DISPENSE_STATUSES:
+			frappe.throw(_("Invalid dispense status {0}.").format(frappe.bold(dispense_status)))
+		row.update(
+			{
+				"dispense_status": dispense_status,
+				"dispensed_qty": flt(existing_row.get("dispensed_qty")) if existing_row else 0,
+				"dispensed_by": existing_row.get("dispensed_by") if existing_row else None,
+				"dispensed_at": existing_row.get("dispensed_at") if existing_row else None,
+			}
+		)
 	if row_name:
 		row["name"] = row_name
 
 	return row
+
+
+def _raw_or_existing(raw_row: dict, existing_row, fieldname: str):
+	if fieldname in raw_row:
+		return cstr(raw_row.get(fieldname)).strip()
+	return cstr(existing_row.get(fieldname)).strip() if existing_row else ""
 
 
 def _coerce_positive_float(value, message: str) -> float:

@@ -120,6 +120,8 @@ class PetBoarding(Document):
 				row.item_name = frappe.db.get_value("Item", row.item_code, "item_name")
 			if not row.status:
 				row.status = "Billable"
+			if row.item_type == "Medication" and row.meta.has_field("dispense_status") and not row.get("dispense_status"):
+				row.dispense_status = "Pending Dispense"
 
 	def _compute_stay_days(self):
 		self._compute_stay_duration()

@@ -12,6 +12,7 @@ def get_permission_query_conditions(user=None):
 		"Administrator",
 		"Pet App Admin",
 		"Healthcare Administrator",
+		"Healthcare Coordinator Read",
 		"Coordinator",
 		"Coordinatorr",
 		"Doctor",

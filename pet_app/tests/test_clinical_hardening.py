@@ -347,6 +347,156 @@ class TestClinicalHardening(FrappeTestCase):
 		active_rows = [row for row in visit.billable_items if row.status != "Cancelled"]
 		self.assertEqual(len(active_rows), 3)
 
+	def test_complete_case_with_no_billable_items_skips_invoice_and_saves_note(self):
+		visit = self._make_visit()
+		payload = self._complete_case_payload("no billables")
+
+		with patch.object(workspace, "_create_sales_invoice_for_visit") as create_invoice:
+			result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+
+		self.assertTrue(result["ok"], result)
+		create_invoice.assert_not_called()
+		visit.reload()
+		self._assert_visit_completed_without_invoice(visit)
+		self.assertEqual(visit.doctor_note, payload["doctor_note"])
+
+	def test_complete_case_with_only_cancelled_billables_skips_invoice(self):
+		visit = self._make_visit()
+		item = self._make_item("Clinical Hardening Cancelled Billable")
+		self._append_visit_billable(visit, item, status="Cancelled", rate=25)
+		payload = self._complete_case_payload("cancelled billables")
+
+		with patch.object(workspace, "_create_sales_invoice_for_visit") as create_invoice:
+			result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+
+		self.assertTrue(result["ok"], result)
+		create_invoice.assert_not_called()
+		visit.reload()
+		self._assert_visit_completed_without_invoice(visit)
+
+	def test_complete_case_with_zero_total_billables_skips_invoice(self):
+		visit = self._make_visit()
+		item = self._make_item("Clinical Hardening Zero Total")
+		self._append_visit_billable(visit, item, qty=1, rate=0)
+		payload = self._complete_case_payload("zero total")
+
+		with patch.object(workspace, "_create_sales_invoice_for_visit") as create_invoice:
+			result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+
+		self.assertTrue(result["ok"], result)
+		create_invoice.assert_not_called()
+		visit.reload()
+		self._assert_visit_completed_without_invoice(visit)
+
+	def test_complete_case_with_valid_billables_creates_draft_invoice(self):
+		visit = self._make_visit()
+		item = self._make_item("Clinical Hardening Positive Billable")
+		self._append_visit_billable(visit, item, qty=2, rate=15)
+		payload = self._complete_case_payload("positive billable")
+
+		result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+
+		self.assertTrue(result["ok"], result)
+		visit.reload()
+		self.assertEqual(visit.status, "Completed")
+		self.assertTrue(visit.sales_invoice)
+		self.assertEqual(visit.billed, 1)
+		invoice = frappe.get_doc("Sales Invoice", visit.sales_invoice)
+		self.assertEqual(invoice.docstatus, 0)
+		self.assertEqual(len(invoice.items), 1)
+		self.assertEqual(invoice.items[0].item_code, item.name)
+		self.assertEqual(float(invoice.items[0].qty), 2)
+		self.assertEqual(float(invoice.items[0].rate), 15)
+		self.assertEqual(float(invoice.grand_total), 30)
+		self.assertEqual(visit.doctor_note, payload["doctor_note"])
+
+	def test_complete_case_with_valid_billables_missing_customer_fails_and_rolls_back(self):
+		visit = self._make_visit()
+		item = self._make_item("Clinical Hardening Missing Customer")
+		self._append_visit_billable(visit, item, qty=1, rate=10)
+		frappe.db.set_value("Vet Visit", visit.name, "customer", None, update_modified=False)
+		frappe.db.set_value("Vet Case Sheet", visit.case_sheet, "customer", None, update_modified=False)
+		frappe.db.set_value("Guardian", visit.guardian, "customer_id", None, update_modified=False)
+		payload = self._complete_case_payload("missing customer")
+
+		# `customer` is reqd on Vet Visit, so completion is rejected before the invoice
+		# guard is reached. What matters is that it still fails and still rolls back.
+		result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+
+		self.assertFalse(result["ok"], result)
+		visit.reload()
+		self.assertEqual(visit.status, "In Progress")
+		self.assertFalse(visit.sales_invoice)
+		self.assertEqual(visit.billed, 0)
+		self.assertFalse(visit.doctor_note)
+		self.assertFalse(visit.diagnosis)
+
+		# The invoice-level customer guard itself is still in force.
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			_create_sales_invoice_for_visit(visit.name)
+		self.assertIn("Customer is required", str(ctx.exception))
+
+	def test_complete_case_with_malformed_billables_fails_and_rolls_back(self):
+		cases = (
+			("missing item code", {"item_code": None}, "missing Item Code"),
+			("zero qty", {"qty": 0}, "Qty greater than zero"),
+			("negative rate", {"rate": -1}, "negative Rate"),
+		)
+		for label, updates, message in cases:
+			visit = self._make_visit()
+			item = self._make_item(f"Clinical Hardening Malformed {label}")
+			row = self._append_visit_billable(visit, item, qty=1, rate=10)
+			frappe.db.set_value("Pet Billable Item", row.name, updates, update_modified=False)
+			payload = self._complete_case_payload(label)
+
+			result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+
+			self.assertFalse(result["ok"], result)
+			self.assertIn(message, result["errors"][0]["message"])
+			visit.reload()
+			self.assertEqual(visit.status, "In Progress")
+			self.assertFalse(visit.sales_invoice)
+			self.assertEqual(visit.billed, 0)
+			self.assertFalse(visit.doctor_note)
+			self.assertFalse(visit.diagnosis)
+
+	def test_complete_case_with_unresolvable_stock_warehouse_fails_and_rolls_back(self):
+		visit = self._make_visit()
+		item = self._make_stock_item("Clinical Hardening Stock Warehouse")
+		self._append_visit_billable(visit, item, qty=1, rate=10, item_type="Medication")
+		payload = self._complete_case_payload("stock warehouse")
+		old_default_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+		frappe.db.set_single_value("Stock Settings", "default_warehouse", "")
+
+		try:
+			result = workspace.perform_action("Visit", visit.name, "complete_case", payload)
+		finally:
+			frappe.db.set_single_value("Stock Settings", "default_warehouse", old_default_warehouse or "")
+
+		self.assertFalse(result["ok"], result)
+		self.assertIn("Warehouse is required", result["errors"][0]["message"])
+		visit.reload()
+		self.assertEqual(visit.status, "In Progress")
+		self.assertFalse(visit.sales_invoice)
+		self.assertEqual(visit.billed, 0)
+		self.assertFalse(visit.doctor_note)
+		self.assertFalse(visit.diagnosis)
+
+	def test_recomplete_completed_visit_is_noop(self):
+		visit = self._make_visit()
+		first_payload = self._complete_case_payload("first completion")
+		first = workspace.perform_action("Visit", visit.name, "complete_case", first_payload)
+		self.assertTrue(first["ok"], first)
+
+		with patch.object(workspace, "_create_sales_invoice_for_visit") as create_invoice:
+			second = workspace.perform_action("Visit", visit.name, "complete_case", self._complete_case_payload("second completion"))
+
+		self.assertTrue(second["ok"], second)
+		create_invoice.assert_not_called()
+		visit.reload()
+		self._assert_visit_completed_without_invoice(visit)
+		self.assertEqual(visit.doctor_note, first_payload["doctor_note"])
+
 	def test_cancel_service_cancels_order_and_linked_billable(self):
 		visit = self._make_visit()
 		care_service = self._make_care_service("Clinical Hardening Service Cancel")
@@ -727,12 +877,14 @@ class TestClinicalHardening(FrappeTestCase):
 
 	def test_warehouse_restriction_blocks_medication_wrong_warehouse(self):
 		user = self._make_user("warehouse.restricted", roles=["Stock Manager", "Item Manager"])
+		allowed_warehouse = self._make_warehouse("Allowed")
+		other_warehouse = self._make_warehouse("Other")
 		frappe.get_doc(
 			{
 				"doctype": "User Permission",
 				"user": user.name,
 				"allow": "Warehouse",
-				"for_value": "Allowed Warehouse - TEST",
+				"for_value": allowed_warehouse,
 				"apply_to_all_doctypes": 1,
 			}
 		).insert(ignore_permissions=True)
@@ -742,7 +894,7 @@ class TestClinicalHardening(FrappeTestCase):
 			{
 				"doctype": "Medication",
 				"medication_name": "Restricted Medication",
-				"default_warehouse": "Other Warehouse - TEST",
+				"default_warehouse": other_warehouse,
 			}
 		)
 		with self.assertRaises(frappe.PermissionError):
@@ -765,6 +917,8 @@ class TestClinicalHardening(FrappeTestCase):
 				"pet_name": f"Pet {suffix}",
 				"animal_species": "Mammal",
 				"animal_type": "Dog",
+				"birth_date": "2020-01-01",
+				"weight": 10,
 				"pet_status": "Approved",
 			}
 		).insert(ignore_permissions=True)
@@ -866,6 +1020,25 @@ class TestClinicalHardening(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True, ignore_mandatory=True)
 
+	def _make_warehouse(self, label):
+		suffix = frappe.generate_hash(length=8)
+		data = {
+			"doctype": "Warehouse",
+			"warehouse_name": f"{label} Warehouse {suffix}",
+			"is_group": 0,
+		}
+		company = self._default_company()
+		if company:
+			data["company"] = company
+		return frappe.get_doc(data).insert(ignore_permissions=True).name
+
+	def _default_company(self):
+		company = frappe.defaults.get_global_default("company")
+		if company:
+			return company
+		rows = frappe.get_all("Company", fields=["name"], limit=1)
+		return rows[0].name if rows else None
+
 	def _ensure_clinic_price_list(self):
 		if frappe.db.exists("Price List", "Standard Selling"):
 			return "Standard Selling"
@@ -926,6 +1099,49 @@ class TestClinicalHardening(FrappeTestCase):
 		)
 		visit.save(ignore_permissions=True)
 		return service
+
+	def _make_stock_item(self, label):
+		suffix = frappe.generate_hash(length=8)
+		return frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": f"{label} Item {suffix}",
+				"item_name": f"{label} Item {suffix}",
+				"item_group": "All Item Groups",
+				"stock_uom": "Nos",
+				"is_stock_item": 1,
+			}
+		).insert(ignore_permissions=True, ignore_mandatory=True)
+
+	def _complete_case_payload(self, label):
+		return {
+			"illness": "Other",
+			"diagnosis": f"Diagnosis {label}",
+			"doctor_note": f"Clinical note {label}",
+		}
+
+	def _append_visit_billable(self, visit, item, *, qty=1, rate=10, status="Billable", item_type="Service"):
+		visit.reload()
+		row = visit.append(
+			"billable_items",
+			{
+				"item_name": item.item_name,
+				"item_code": item.name,
+				"item_type": item_type,
+				"qty": qty,
+				"rate": rate,
+				"status": status,
+			},
+		)
+		visit.save(ignore_permissions=True)
+		visit.reload()
+		return next(saved for saved in visit.billable_items if saved.name == row.name)
+
+	def _assert_visit_completed_without_invoice(self, visit):
+		self.assertEqual(visit.status, "Completed")
+		self.assertFalse(visit.sales_invoice)
+		self.assertEqual(visit.billed, 0)
+		self.assertEqual(float(visit.total_billable_amount or 0), 0)
 
 	def _assert_cancelled_billable_hidden_from_active_payloads(self, visit_name, matches):
 		aggregate = workspace.get_record("Visit", visit_name)

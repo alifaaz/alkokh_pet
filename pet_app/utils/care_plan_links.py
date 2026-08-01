@@ -12,6 +12,10 @@ REQUIRED_PLAN_LINKS = {
 		"doctype": "Vet Visit Medication Item",
 		"missing_message": "Add a prescribed medication to this visit before adding a Medication plan item.",
 	},
+	"Injection": {
+		"doctype": "Vet Visit Medication Item",
+		"missing_message": "Add a prescribed medication to this visit before adding an Injection plan item.",
+	},
 	"Lab Recheck": {
 		"doctype": "Lab",
 		"missing_message": "Add a lab order to this visit before adding a Lab Recheck plan item.",
