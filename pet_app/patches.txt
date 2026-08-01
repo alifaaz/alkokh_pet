@@ -40,3 +40,9 @@ pet_app.patches.appointment_cancelled_status
 pet_app.patches.whatsapp_account_secret_lengths
 pet_app.patches.p1_6_whatsapp_actions_inbox_schema
 pet_app.patches.p1_7_whatsapp_rule_designer
+pet_app.patches.p1_8_onesignal_push_notifications
+pet_app.patches.p1_9_push_subscription_status
+pet_app.patches.p1_10_push_frontend_base_url
+pet_app.patches.p1_11_push_subscription_app_id
+pet_app.patches.mobile_home_product_linked_filters
+pet_app.patches.disease_composite_unique_index

@@ -218,3 +218,126 @@ This section records the backend issue work completed across the recent pet_app 
 - Aligned `bulk_create_pet_care_services` return shape to `created` / `failed`.
 - Added `title_field` metadata for Pet, Guardian, and PetCareService.
 - `care_plan.list_due_plan_items` returns `pet_name`, `doctor_name`, and `guardian_name` via `enrich_link_aliases`.
+
+## Disease Naming: Name vs Primary Key
+
+The `Disease` doctype is named `field:disease_name`, so a record's primary key
+*is* its human-readable name. The application came to depend on that coincidence
+in both directions: it looked records up **by primary key using a human-typed
+name**, and it returned **names as link values**. Both are correct only while
+`autoname` remains `field:disease_name`.
+
+This matters because Disease is slated to move to an autoname series
+(`DISEASE-#####`) so the same disease name can exist for more than one species.
+The moment it does, every PK-by-name lookup misses.
+
+The worst case was `_ensure_disease` in `pet_app/api/workspace.py`. It did
+`frappe.db.exists("Disease", disease_name)` and, on a miss, inserted a new
+Disease. After the rename that lookup would miss *every time*, so **every
+diagnosis save would silently create a duplicate Disease** - unbounded, with no
+error, and with the `unique` index that would have caught it removed by the same
+migration.
+
+### `_resolve_disease_key`
+
+Added in `pet_app/api/workspace.py`. Resolves a human-readable disease name to an
+actual primary key:
+
+- Looks up **by field** (`{"disease_name": ...}`), never by primary key.
+- Returns the resolved `name`, or `doc.name` on the create path - **never the
+  input string**.
+- Fallback order, most specific first:
+  1. `(disease_name, species)` when a species is supplied
+  2. `(disease_name, species="")` - the generic, species-less catalogue entry, in
+     preference to an arbitrary other-species record
+  3. `disease_name` alone
+- Uses `get_all(..., order_by="creation asc", limit=1)` rather than `get_value`,
+  which gives no ordering guarantee. Once duplicate `disease_name` values become
+  possible, the **oldest** (most established) catalogue entry wins deterministically.
+
+Behaviour-preserving today: `name == disease_name` for all records and
+`disease_name` still carries a UNIQUE index, so all three filter sets collapse to
+the same row. That is what makes the fix deployable *in advance* of the rename
+and independently verifiable now.
+
+### Why reuse beats create when species is unknown
+
+`Visit Diagnosis` has **no species column** (`disease`, `diagnosis_text`,
+`is_primary`, `severity`, `note`). `_ensure_disease` is called only from
+`_save_diagnoses`, which passes a diagnosis row - so in practice **no species is
+supplied and the name-only path is the operative one**.
+
+The two failure modes are not symmetric:
+
+- Binding a Dog diagnosis to a Cat record is a wrong link: **visible, bounded to
+  one row, and repointable** (exactly the operation performed in the Aug 2026
+  catalogue cleanup).
+- Creating a duplicate Disease on every save is **silent, unbounded and
+  compounding**.
+
+When there is nothing to discriminate on, reuse is the recoverable error. Hence
+the name-only fallback resolves rather than creates.
+
+**Proper long-term fix, not yet done:** pass the patient's species down from the
+visit (`Vet Visit` -> `animal_patient` -> species) into `_ensure_disease` so the
+lookup can actually discriminate. This is needed **before** species-specific
+duplicate records start being created - that is the moment the name-only fallback
+stops being harmless.
+
+### The `Unspecified` near-miss
+
+The Aug 2026 cleanup folded 26 junk/leaked-category records into a single
+replacement. It was nearly named `Unspecified`.
+
+`clinical_reports.top_diagnoses` already emits the **literal string**
+`'Unspecified'` via `coalesce(..., 'Unspecified')` for visits with no diagnosis at
+all. Naming the record `Unspecified` would have made `GROUP BY` merge two
+unrelated populations - real reassigned diagnoses and never-diagnosed visits -
+into one indistinguishable row.
+
+Note the direction of the hazard: **the `tabDisease` JOIN added to that report
+would have *created* the collision, not avoided it.** Before the JOIN the report
+grouped on `d.disease` (the key); after it, `dis.disease_name` resolves to the
+record's name, which would have been the literal string `'Unspecified'`. The
+record was named **`Unspecified Diagnosis`** instead, so the two stay distinct.
+
+Do not name any Disease record exactly `Unspecified`.
+
+### Restarting after editing these files
+
+`kill -HUP` does **not** reload code here - gunicorn runs with `--preload`, so HUP
+recycles workers from an already-imported `sys.modules` and verifies nothing. Use:
+
+```
+sudo supervisorctl restart frappe-bench-web:frappe-bench-frappe-web
+```
+
+The short name fails; the process lives in a supervisor **group**.
+
+Also note: `bench console` starts a *new* process that imports the current source
+from disk, so `hasattr(module, "new_symbol")` is **True there regardless of
+whether the running workers reloaded**. It is not a valid proof of reload - only
+an HTTP request through the actual workers is.
+
+### Still outstanding, deliberately not done
+
+- **`category_a` options string** (`disease.json`): unlike `species`, it has no
+  leading blank line, so an unset value silently becomes the first option -
+  every auto-created Disease is born filed as `Cardiovascular System`.
+  `_ensure_disease` passes `None` for category in the normal case, so this fires
+  routinely. One-character fix: prepend `\n` to the options string.
+- **`workspace.py` `_visit_diagnoses`**: `"disease_name": _disease_label(row.disease)
+  or row.disease` leaks the raw primary key when the label lookup fails. Should
+  return `None` (the response already carries `disease` and `diagnosis_text`
+  separately). This is an API contract change and needs frontend coordination.
+- **`top_diagnoses` GROUP BY**: `tabVet Visit` has a real column named
+  `diagnosis`, so `group by diagnosis` binds to **that column, not the SELECT
+  alias**. The report therefore emits one row per distinct free-text
+  `v.diagnosis` value - the same label repeats (59 rows where 44 are correct).
+  Pre-existing and unrelated to the naming work; fix by grouping on a
+  non-colliding alias.
+- **Composite unique index** on `(disease_name, species)`, replacing the
+  single-column `unique` on `disease_name`. The application-level check already
+  exists in `disease.py::_validate_duplicate` but is masked by the DB index.
+- **The rename itself**: `autoname` -> `DISEASE-.#####`, plus
+  `show_title_field_in_link: 1` so link fields keep displaying the name.

@@ -42,7 +42,11 @@ from pet_app.utils.visit_billing import (
 	cancel_boarding_billable_item_by_link,
 	cancel_visit_billable_item_by_link,
 )
-from pet_app.pet_app.doctype.vet_visit.vet_visit import _create_sales_invoice_for_visit, _mark_visit_invoiced
+from pet_app.pet_app.doctype.vet_visit.vet_visit import (
+	_create_sales_invoice_for_visit,
+	_mark_visit_invoiced,
+	get_billable_invoice_items,
+)
 from pet_app.workflows import clinical_state
 from pet_app.api.response import standardize_response
 
@@ -86,6 +90,15 @@ DIAGNOSTIC_RESULT_FILE_FIELDS = {
 	"Lab": ("result_file",),
 	"Imaging": ("image", "report_file"),
 }
+# Free-text diagnostic findings, per doctype. Released-only on the visit page and
+# history surfaces — see _linked_records_for_visit. The record detail page
+# (_diagnostic_detail) is deliberately NOT gated: staff work on a record there.
+DIAGNOSTIC_TEXT_FIELDS = {
+	"Lab": ("result",),
+	"Imaging": ("report",),
+}
+# Exact Select value. "Reported" / "Result Entered" / "Completed" are NOT released.
+DIAGNOSTIC_RELEASED_STATUS = "Released"
 DIAGNOSTIC_CANCEL_ACTIONS = {"cancel_test", "cancel_lab", "cancel_imaging", "cancel_lab_order", "cancel_imaging_order"}
 IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
@@ -1404,6 +1417,7 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 					"status",
 					"modified",
 					*DIAGNOSTIC_RESULT_FILE_FIELDS.get(doctype, ()),
+					*DIAGNOSTIC_TEXT_FIELDS.get(doctype, ()),
 				],
 			),
 			order_by="modified desc",
@@ -1414,20 +1428,31 @@ def _linked_records_for_visit(visit_name: str) -> list[dict]:
 	result_files = _diagnostic_result_files(diagnostic_rows)
 	for doctype in ("Lab", "Imaging"):
 		for row in diagnostic_rows.get(doctype) or []:
-			records.append(
-				{
-					"source_type": SOURCE_LABELS[doctype],
-					"source_doctype": doctype,
-					"name": row.name,
-					"status": row.get("status"),
-					"order_id": row.get("order_id"),
-					"title": _care_service_label(row.get("care_service")) or row.name,
-					"body_part": row.get("body_part"),
-					"modality": row.get("modality"),
-					"modified": row.get("modified"),
-					"result_files": result_files.get(doctype, {}).get(row.name, []),
-				}
-			)
+			record = {
+				"source_type": SOURCE_LABELS[doctype],
+				"source_doctype": doctype,
+				"name": row.name,
+				"status": row.get("status"),
+				"order_id": row.get("order_id"),
+				"title": _care_service_label(row.get("care_service")) or row.name,
+				"body_part": row.get("body_part"),
+				"modality": row.get("modality"),
+				"modified": row.get("modified"),
+				"result_files": result_files.get(doctype, {}).get(row.name, []),
+			}
+			# Mirrors guardian_portal._released_diagnostic_rows: diagnostic text is
+			# withheld until the record is Released. That endpoint can filter in the
+			# query because it only ever returns released rows; this payload must still
+			# list unreleased records (the visit page renders their status), so the
+			# filter is applied per record at emission instead.
+			#
+			# When not released the key is OMITTED rather than emitted empty, so the
+			# frontend can tell "released, no text recorded" (key present, may be null)
+			# apart from "not released yet" (key absent).
+			if cstr(row.get("status")) == DIAGNOSTIC_RELEASED_STATUS:
+				for fieldname in _fields(doctype, list(DIAGNOSTIC_TEXT_FIELDS.get(doctype, ()))):
+					record[fieldname] = row.get(fieldname)
+			records.append(record)
 
 	rows = frappe.get_all(
 		"PetCareService",
@@ -1671,12 +1696,18 @@ def _save_diagnoses(visit_name: str, payload: dict):
 	rows = _coerce_list(payload.get("diagnoses") if "diagnoses" in payload else payload.get("rows"))
 	if _has_field("Vet Visit", "diagnoses"):
 		visit.set("diagnoses", [])
+		# One lookup per save. Disambiguates same-named Disease records once the
+		# catalogue holds one per species; harmless while names are still unique.
+		patient_species = _patient_species(visit)
 		for row in rows:
 			row = _coerce_dict(row)
-			disease = row.get("disease")
+			row_species = cstr(row.get("species")).strip() or patient_species
+			disease = cstr(row.get("disease")).strip()
 			if disease and not frappe.db.exists("Disease", disease):
-				disease = None
-			disease = disease or _ensure_disease(row)
+				# Not a primary key, so the client sent a human-readable name.
+				# Resolve it by field rather than discarding it.
+				disease = _resolve_disease_key(disease, row_species)
+			disease = disease or _ensure_disease(row, default_species=patient_species)
 			visit.append(
 				"diagnoses",
 				{
@@ -1810,19 +1841,30 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 			visit.diagnosis = diagnosis_text
 	_validate_visit_completion_requirements(visit)
 
-	invoice_result = _create_sales_invoice_for_visit(visit.name)
-	sales_invoice = invoice_result.get("sales_invoice")
-	if not sales_invoice or not sales_invoice.get("name"):
-		frappe.throw(_("Draft Sales Invoice could not be created for this visit."))
-	invoice_visit = invoice_result["visit"]
-	for fieldname in ("diagnosis", "doctor_note"):
-		if visit.get(fieldname) and not invoice_visit.get(fieldname):
-			invoice_visit.set(fieldname, visit.get(fieldname))
-	clinical_state.transition_status(invoice_visit, "Completed", action="complete_case")
-	_mark_visit_invoiced(invoice_visit, invoice_result["sales_invoice"], invoice_result["total_billable_amount"])
-	sync_completed_visit(invoice_visit, outcome=payload.get("outcome") if payload else None)
-	_sync_queue_ticket_for_visit(invoice_visit, status="Completed", timestamp_field="completed_at")
-	invoice_visit.add_comment("Comment", _("Case completed by {0}.").format(frappe.session.user))
+	invoice_items, total_billable_amount = get_billable_invoice_items(visit, allow_non_invoiceable=True)
+	if invoice_items and flt(total_billable_amount) > 0:
+		invoice_result = _create_sales_invoice_for_visit(visit.name)
+		sales_invoice = invoice_result.get("sales_invoice")
+		if not sales_invoice or not sales_invoice.get("name"):
+			frappe.throw(_("Draft Sales Invoice could not be created for this visit."))
+		completed_visit = invoice_result["visit"]
+		for fieldname in ("diagnosis", "doctor_note"):
+			if visit.get(fieldname) and not completed_visit.get(fieldname):
+				completed_visit.set(fieldname, visit.get(fieldname))
+		clinical_state.transition_status(completed_visit, "Completed", action="complete_case")
+		_mark_visit_invoiced(completed_visit, invoice_result["sales_invoice"], invoice_result["total_billable_amount"])
+	else:
+		completed_visit = visit
+		clinical_state.transition_status(completed_visit, "Completed", action="complete_case")
+		completed_visit.sales_invoice = None
+		completed_visit.billed = 0
+		completed_visit.total_billable_amount = flt(total_billable_amount)
+		if completed_visit.meta.has_field("billing_status"):
+			completed_visit.billing_status = "Unbilled"
+		completed_visit.save(ignore_permissions=True)
+	sync_completed_visit(completed_visit, outcome=payload.get("outcome") if payload else None)
+	_sync_queue_ticket_for_visit(completed_visit, status="Completed", timestamp_field="completed_at")
+	completed_visit.add_comment("Comment", _("Case completed by {0}.").format(frappe.session.user))
 
 
 def _assert_visit_not_checked_in_boarding(visit_name: str, *, action: str | None = None):
@@ -3389,17 +3431,70 @@ def _disease_label(disease: str | None) -> str | None:
 	return frappe.db.get_value("Disease", disease, "disease_name")
 
 
-def _ensure_disease(row: dict) -> str | None:
+def _resolve_disease_key(disease_name: str | None, species: str | None = None) -> str | None:
+	"""Resolve a Disease primary key from a human-readable disease name.
+
+	Looks up by FIELD, never by primary key. The two are the same string under the
+	current `field:disease_name` naming, so this is behaviour-preserving today; they
+	diverge once Disease moves to an autoname series, at which point a primary-key
+	lookup on a typed name would miss every time.
+
+	Returns the actual `name` (primary key), or None if nothing matches.
+	"""
+	disease_name = cstr(disease_name).strip()
+	if not disease_name:
+		return None
+	species = cstr(species).strip()
+
+	# Most specific match first. A species-less record is the generic catalogue
+	# entry and is preferred over an arbitrary other-species one.
+	filter_sets = []
+	if species:
+		filter_sets.append({"disease_name": disease_name, "species": species})
+		filter_sets.append({"disease_name": disease_name, "species": ""})
+	filter_sets.append({"disease_name": disease_name})
+
+	for filters in filter_sets:
+		# get_all with an explicit order_by so the result is deterministic once
+		# duplicate disease_names become possible.
+		match = frappe.db.get_all(
+			"Disease", filters=filters, fields=["name"], order_by="creation asc", limit=1
+		)
+		if match:
+			return match[0].name
+	return None
+
+
+def _patient_species(visit) -> str | None:
+	"""The patient's animal type, used to disambiguate same-named Disease records.
+
+	Pet carries two species-ish fields and only one of them is right here:
+	`animal_species` is the biological class (Mammal, Bird, Reptile) while
+	`animal_type` is the animal (Dog, Cat, Rabbit). `Disease.species` holds
+	animal_type values, so that is the one to match on - threading animal_species
+	would never match and would silently defeat the lookup it is meant to sharpen.
+
+	Resolved once per save by the caller, never per diagnosis row.
+	"""
+	pet = cstr(getattr(visit, "animal_patient", "")).strip()
+	if not pet:
+		return None
+	return cstr(frappe.db.get_value("Pet", pet, "animal_type")).strip() or None
+
+
+def _ensure_disease(row: dict, default_species: str | None = None) -> str | None:
 	disease_name = cstr(row.get("disease_name") or row.get("disease")).strip()
 	if not disease_name:
 		return None
-	if frappe.db.exists("Disease", disease_name):
-		return disease_name
+	species = cstr(row.get("species")).strip() or cstr(default_species).strip()
+	existing = _resolve_disease_key(disease_name, species)
+	if existing:
+		return existing
 	doc = frappe.get_doc(
 		{
 			"doctype": "Disease",
 			"disease_name": disease_name,
-			"species": row.get("species"),
+			"species": species,
 			"category_a": row.get("category_a") or row.get("category"),
 			"active": 1,
 		}
