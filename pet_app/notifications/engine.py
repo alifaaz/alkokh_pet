@@ -8,6 +8,7 @@ from frappe import _
 from frappe.utils import cint, cstr, get_datetime, now_datetime
 
 from pet_app.notifications.channels.dummy import DummyChannel
+from pet_app.notifications.channels.onesignal import OneSignalPushChannel
 from pet_app.notifications.channels.whatsapp_meta import WhatsAppMetaChannel
 from pet_app.notifications.consent import assert_consent_allowed
 from pet_app.notifications.context import (
@@ -47,6 +48,11 @@ def queue_notification(
 	message_type="Text",
 	interactive=None,
 	media_file=None,
+	push_user=None,
+	push_title=None,
+	push_body=None,
+	push_url=None,
+	push_data=None,
 ):
 	try:
 		if getattr(frappe.flags, "pet_app_whatsapp_simulation", False):
@@ -59,6 +65,7 @@ def queue_notification(
 		context = coerce_context(context)
 		if source_doctype and source_name:
 			context = build_document_context(source_doctype, source_name, context)
+
 		template = resolve_template(event_key=event_key, template_key=template_key, channel=channel)
 		account = resolve_whatsapp_account(template=template, settings=settings) if channel == "WhatsApp" else None
 		phone = normalize_phone(
@@ -66,10 +73,13 @@ def queue_notification(
 			settings.get("default_country_code"),
 		)
 		email = recipient_email(recipient_type, recipient_name, to_email)
+		push_user = _resolve_push_user(recipient_type, recipient_name, push_user) if channel == "Push" else push_user
 		if channel == "WhatsApp" and not phone:
 			return api_error(_("Recipient phone is required."), code="VALIDATION_ERROR")
 		if channel == "Email" and not email:
 			return api_error(_("Recipient email is required."), code="VALIDATION_ERROR")
+		if channel == "Push" and not push_user:
+			return api_error(_("Push notification user is required."), code="VALIDATION_ERROR")
 		if channel == "WhatsApp" and not conversation:
 			from pet_app.notifications.inbox import get_or_create_conversation
 
@@ -84,9 +94,9 @@ def queue_notification(
 			if existing:
 				return api_success({"queue": queue_payload(frappe.get_doc("Pet App Notification Queue", existing))}, meta={"duplicate": True})
 		elif cint(manual):
-			idempotency_key = _manual_idempotency_key(event_key, recipient_type, recipient_name, phone)
+			idempotency_key = _manual_idempotency_key(event_key, recipient_type, recipient_name, phone or push_user)
 		else:
-			idempotency_key = _idempotency_key(event_key, recipient_type, recipient_name, source_doctype, source_name, template.template_key if template else template_key, phone)
+			idempotency_key = _idempotency_key(event_key, recipient_type, recipient_name, source_doctype, source_name, template.template_key if template else template_key, phone or push_user)
 			existing = frappe.db.get_value("Pet App Notification Queue", {"idempotency_key": idempotency_key}, "name")
 			if existing:
 				return api_success({"queue": queue_payload(frappe.get_doc("Pet App Notification Queue", existing))}, meta={"duplicate": True})
@@ -110,7 +120,7 @@ def queue_notification(
 
 		masked_context = mask_sensitive_context(context) if cint(settings.get("mask_sensitive_values")) else context
 		rendered_preview = render_preview(template, context, mask_sensitive=bool(cint(settings.get("mask_sensitive_values")))) if template else ""
-		status = "Queued" if cint(settings.get("enabled")) else "Skipped"
+		status = "Queued" if _channel_enabled(channel, settings) else "Skipped"
 		doc = frappe.get_doc(
 			{
 				"doctype": "Pet App Notification Queue",
@@ -132,7 +142,7 @@ def queue_notification(
 				"source_title": _source_title(source_doctype, source_name),
 				"scheduled_at": scheduled_at,
 				"queued_at": now_datetime(),
-				"provider": account.provider if account else None,
+				"provider": "OneSignal" if channel == "Push" else account.provider if account else None,
 				"provider_account": account.name if account else None,
 				"conversation": conversation,
 				"action_request": action_request,
@@ -140,6 +150,11 @@ def queue_notification(
 				"interactive_json": json.dumps(interactive, default=str) if interactive else None,
 				"media_file": media_file or (template.get("media_file") if template else None),
 				"delivery_mode": template.get("delivery_mode") if template else None,
+				"push_user": push_user,
+				"push_title": push_title,
+				"push_body": push_body,
+				"push_url": _absolute_url(push_url),
+				"push_data_json": json.dumps(push_data or {}, default=str) if push_data else None,
 				"idempotency_key": idempotency_key,
 				"dedupe_key": idempotency_key,
 				"manual": cint(manual),
@@ -149,6 +164,39 @@ def queue_notification(
 		return api_success({"queue": queue_payload(doc)}, meta={"scheduled": str(scheduled_at)})
 	except Exception as exc:
 		return _error_response(exc)
+
+
+def queue_push_notification(
+	user,
+	title,
+	body=None,
+	url=None,
+	data=None,
+	event_key="push.manual",
+	source_doctype=None,
+	source_name=None,
+	send_after=None,
+	priority="default",
+	idempotency_key=None,
+	manual=False,
+):
+	return queue_notification(
+		event_key=event_key,
+		recipient_type="User",
+		recipient_name=user,
+		channel="Push",
+		source_doctype=source_doctype,
+		source_name=source_name,
+		send_after=send_after,
+		priority=priority,
+		idempotency_key=idempotency_key,
+		manual=manual,
+		push_user=user,
+		push_title=title,
+		push_body=body or title,
+		push_url=url,
+		push_data=data or {},
+	)
 
 
 def send_whatsapp_template(
@@ -238,10 +286,12 @@ def process_notification_queue(queue_name):
 		doc.provider_error_message = None
 		doc.save(ignore_permissions=True)
 		create_log(doc, status="Sent")
-		from pet_app.notifications.inbox import record_outbound_message
+		message = None
+		if doc.channel == "WhatsApp":
+			from pet_app.notifications.inbox import record_outbound_message
 
-		message = record_outbound_message(doc, response, message_type=sent_type)
-		if doc.get("action_request"):
+			message = record_outbound_message(doc, response, message_type=sent_type)
+		if doc.channel == "WhatsApp" and doc.get("action_request"):
 			frappe.db.set_value(
 				"Pet App WhatsApp Action Request",
 				doc.action_request,
@@ -293,8 +343,9 @@ def create_log(queue_doc, status=None, message=None, details=None):
 			"source_doctype": queue_doc.source_doctype,
 			"source_name": queue_doc.source_name,
 			"provider_message_id": queue_doc.provider_message_id,
+			"push_user": queue_doc.get("push_user"),
 			"event_datetime": now_datetime(),
-			"message": message if message is not None else queue_doc.rendered_preview,
+			"message": message if message is not None else (queue_doc.get("push_body") or queue_doc.rendered_preview),
 			"details_json": json.dumps(details or {}, default=str),
 		}
 	)
@@ -310,6 +361,8 @@ def get_settings() -> dict:
 
 
 def resolve_template(event_key=None, template_key=None, channel="WhatsApp"):
+	if channel == "Push":
+		return None
 	if not frappe.db.exists("DocType", "Pet App WhatsApp Template"):
 		return None
 	name = None
@@ -359,6 +412,10 @@ def queue_payload(doc) -> dict:
 		"action_request": doc.get("action_request"),
 		"message_type": doc.get("message_type"),
 		"delivery_mode": doc.get("delivery_mode"),
+		"push_user": doc.get("push_user"),
+		"push_title": doc.get("push_title"),
+		"push_body": doc.get("push_body"),
+		"push_url": doc.get("push_url"),
 	}
 
 
@@ -373,10 +430,11 @@ def _mark_failed(queue_name, exc):
 		doc.retry_count = cint(doc.retry_count) + 1
 		doc.next_retry_at = now_datetime() + timedelta(minutes=cint(settings.get("retry_after_minutes") or 5))
 		doc.save(ignore_permissions=True)
-		from pet_app.notifications.inbox import record_failed_outbound_message
+		if doc.channel == "WhatsApp":
+			from pet_app.notifications.inbox import record_failed_outbound_message
 
-		record_failed_outbound_message(doc, doc.provider_error_message)
-		if doc.get("action_request"):
+			record_failed_outbound_message(doc, doc.provider_error_message)
+		if doc.channel == "WhatsApp" and doc.get("action_request"):
 			from pet_app.notifications.actions import mark_action_failed
 
 			mark_action_failed(
@@ -391,6 +449,8 @@ def _mark_failed(queue_name, exc):
 
 
 def _channel_for(queue_doc, template=None):
+	if queue_doc.channel == "Push":
+		return OneSignalPushChannel(settings=get_settings())
 	if queue_doc.channel != "WhatsApp":
 		return DummyChannel(settings=get_settings())
 	account = resolve_whatsapp_account(template=template, settings=get_settings())
@@ -402,6 +462,21 @@ def _channel_for(queue_doc, template=None):
 def _send_queue_message(doc, template, context, channel):
 	from frappe.utils.file_manager import get_file
 	from pet_app.notifications.inbox import session_is_open
+
+	if doc.channel == "Push":
+		data = json.loads(doc.push_data_json) if doc.get("push_data_json") else {}
+		return (
+			channel.send_push(
+				user=doc.push_user,
+				title=doc.push_title or doc.event_key,
+				body=doc.push_body or doc.rendered_preview or doc.event_key,
+				url=doc.push_url,
+				data=data,
+				queue=doc,
+			),
+			"Push",
+			"Complete",
+		)
 
 	delivery_mode = cstr(doc.get("delivery_mode") or (template.get("delivery_mode") if template else None) or "Meta Template")
 	conversation_open = bool(doc.get("conversation") and session_is_open(doc.conversation))
@@ -499,6 +574,42 @@ def _time_value(value):
 	if hasattr(value, "hour"):
 		return value
 	return datetime.strptime(cstr(value), "%H:%M:%S" if len(cstr(value).split(":")) == 3 else "%H:%M").time()
+
+
+def _channel_enabled(channel, settings) -> bool:
+	if not cint(settings.get("enabled")):
+		return False
+	if channel == "Push":
+		return bool(cint(settings.get("onesignal_enabled")))
+	return True
+
+
+def _resolve_push_user(recipient_type, recipient_name=None, push_user=None):
+	if push_user:
+		return push_user if frappe.db.exists("User", push_user) else None
+	if not recipient_name:
+		return None
+	if recipient_type == "User":
+		return recipient_name if frappe.db.exists("User", recipient_name) else None
+	if recipient_type == "Guardian":
+		return frappe.db.get_value("Guardian", recipient_name, "user_id")
+	if recipient_type == "Customer":
+		guardian = frappe.db.get_value("Guardian", {"customer_id": recipient_name}, "name")
+		return frappe.db.get_value("Guardian", guardian, "user_id") if guardian else None
+	if recipient_type == "Doctor":
+		return frappe.db.get_value("Healthcare Practitioner", recipient_name, "user_id")
+	return None
+
+
+def _absolute_url(url):
+	text = cstr(url).strip()
+	if not text:
+		return None
+	if text.startswith(("http://", "https://")):
+		return text
+	if not text.startswith("/"):
+		text = f"/{text}"
+	return frappe.utils.get_url(text)
 
 
 def _idempotency_key(*parts) -> str:

@@ -204,7 +204,7 @@ before_tests = "pet_app.tests.bootstrap.before_tests"
 # Request Events
 # ----------------
 before_request = ["pet_app.api.auth_api.set_cors_for_oauth_token_endpoint"]
-# after_request = ["pet_app.utils.after_request"]
+after_request = ["pet_app.api.session_guard.after_request"]
 
 # Job Events
 # ----------
@@ -238,9 +238,9 @@ before_request = ["pet_app.api.auth_api.set_cors_for_oauth_token_endpoint"]
 # Authentication and authorization
 # --------------------------------
 
-# auth_hooks = [
-# 	"pet_app.auth.validate"
-# ]
+auth_hooks = [
+    "pet_app.api.session_guard.enforce_authenticated_api_access",
+]
 
 # Automatically update python controller files with type annotations for this app.
 # export_python_type_annotations = True
@@ -251,17 +251,59 @@ before_request = ["pet_app.api.auth_api.set_cors_for_oauth_token_endpoint"]
 
 
 doc_events = {
-    "*": {
-        "after_insert": "pet_app.notifications.actions.after_insert",
-        "on_update": "pet_app.notifications.actions.on_update",
-        "on_submit": "pet_app.notifications.actions.on_submit",
-    },
-    "Pet App WhatsApp Action Rule": {
-        "validate": "pet_app.notifications.actions.validate_action_rule",
-    },
+	"*": {
+		"after_insert": "pet_app.notifications.actions.after_insert",
+		"on_update": "pet_app.notifications.actions.on_update",
+		"on_submit": "pet_app.notifications.actions.on_submit",
+	},
+	"Notification Log": {
+		"after_insert": "pet_app.notifications.push.mirror_notification_log",
+	},
+	"Pet App WhatsApp Action Rule": {
+		"validate": "pet_app.notifications.actions.validate_action_rule",
+	},
     "User": {
         "before_validate": "pet_app.utils.role_profiles.before_validate_user_role_profiles",
         "before_save": "pet_app.utils.role_profiles.before_save_user_role_profiles",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "User Role Profile": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "Has Role": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "Role Profile": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "User Permission": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "DocPerm": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "Custom DocPerm": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "Pet App Access Settings": {
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+    },
+    "Pet App Page Access": {
+        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
     },
     "Vet Visit": {
         "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
@@ -293,22 +335,67 @@ doc_events = {
     },
     "Sales Invoice": {
         "before_insert": "pet_app.utils.sales_invoice_guard.before_insert",
-        "on_cancel": "pet_app.utils.visit_billing.on_sales_invoice_cancel",
+        "on_submit": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_cancel": [
+            "pet_app.utils.visit_billing.on_sales_invoice_cancel",
+            "pet_app.api.mobile.home_builder.clear_home_cache",
+        ],
         "validate": "pet_app.utils.sales_invoice_guard.fix_due_date",
     },
+    "Stock Entry": {
+        "on_submit": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_cancel": "pet_app.api.mobile.home_builder.clear_home_cache",
+    },
     "Product": {
-        "after_insert": "pet_app.api.product.sync_product_item",
-        "on_update": "pet_app.api.product.sync_product_item",
+        "after_insert": [
+            "pet_app.api.product.sync_product_item",
+            "pet_app.api.mobile.home_builder.clear_home_cache",
+        ],
+        "on_update": [
+            "pet_app.api.product.sync_product_item",
+            "pet_app.api.mobile.home_builder.clear_home_cache",
+        ],
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
+    },
+    "Product Category": {
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
     "Item": {
         "on_update": "pet_app.api.product.sync_item_from_product_projection",
     },
     "Item Price": {
-        "after_insert": "pet_app.api.product.sync_item_price_from_product_projection",
-        "on_update": "pet_app.api.product.sync_item_price_from_product_projection",
+        "after_insert": [
+            "pet_app.api.product.sync_item_price_from_product_projection",
+            "pet_app.api.mobile.home_builder.clear_home_cache",
+        ],
+        "on_update": [
+            "pet_app.api.product.sync_item_price_from_product_projection",
+            "pet_app.api.mobile.home_builder.clear_home_cache",
+        ],
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
     "Brand": {
-        "before_save": "pet_app.api.product.before_save"
+        "before_save": "pet_app.api.product.before_save",
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
+    },
+    "Mobile Home Banner": {
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
+    },
+    "Mobile Home Product Collection": {
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
+    },
+    "Mobile Home Filter": {
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
     "Item Group": {
         "before_save": "pet_app.api.product.before_save",

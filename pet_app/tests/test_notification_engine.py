@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 from datetime import timedelta
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date, now_datetime
 
+from pet_app.api import notifications as notifications_api
+from pet_app.api import push as push_api
+from pet_app.api.mobile import config as mobile_config
 from pet_app.api.whatsapp import _verify_signature, _verify_token, webhook
 from pet_app.notifications import engine
 from pet_app.notifications.channels.whatsapp_meta import WhatsAppMetaAPIError, WhatsAppMetaChannel, media_mime_type
@@ -27,6 +30,11 @@ class TestNotificationEngine(FrappeTestCase):
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
+		if frappe.db.exists("DocType", "Pet App Notification Settings") and frappe.get_meta("Pet App Notification Settings").has_field("onesignal_enabled"):
+			frappe.db.set_single_value("Pet App Notification Settings", "onesignal_enabled", 0)
+			frappe.db.set_single_value("Pet App Notification Settings", "onesignal_mirror_frappe_notifications", 0)
+			if frappe.get_meta("Pet App Notification Settings").has_field("push_frontend_base_url"):
+				frappe.db.set_single_value("Pet App Notification Settings", "push_frontend_base_url", "")
 
 	def test_queue_notification_idempotency_and_dummy_send_masks_otp(self):
 		guardian = self._make_guardian()
@@ -387,6 +395,359 @@ class TestNotificationEngine(FrappeTestCase):
 	def test_meta_media_upload_uses_supported_mime_type(self):
 		self.assertEqual(media_mime_type("alkokh-whatsapp-live-test.pdf"), "application/pdf")
 
+	def test_push_queue_uses_onesignal_dry_run_without_template_or_phone(self):
+		self._enable_onesignal(dry_run=1)
+		user = self._make_user()
+		key = f"push-{frappe.generate_hash(length=10)}"
+
+		queued = engine.queue_push_notification(
+			user=user.name,
+			title="New assignment",
+			body="Please review the visit.",
+			url="/app/user/" + user.name,
+			data={"kind": "assignment"},
+			idempotency_key=key,
+		)
+		duplicate = engine.queue_push_notification(
+			user=user.name,
+			title="New assignment",
+			body="Please review the visit.",
+			idempotency_key=key,
+		)
+		sent = engine.process_notification_queue(queued["data"]["queue"]["name"])
+
+		self.assertTrue(queued["ok"])
+		self.assertTrue(duplicate["meta"]["duplicate"])
+		self.assertEqual(sent["data"]["queue"]["channel"], "Push")
+		self.assertEqual(sent["data"]["queue"]["provider"], "OneSignal")
+		self.assertEqual(sent["data"]["queue"]["status"], "Sent")
+		self.assertTrue(sent["data"]["queue"]["provider_message_id"].startswith("dry-run-"))
+		log = frappe.db.get_value("Pet App Notification Log", {"queue": sent["data"]["queue"]["name"]}, ["message", "push_user"], as_dict=True)
+		self.assertEqual(log.message, "Please review the visit.")
+		self.assertEqual(log.push_user, user.name)
+
+	def test_onesignal_provider_posts_external_user_alias(self):
+		self._enable_onesignal(dry_run=0)
+		user = self._make_user()
+		settings = frappe.get_single("Pet App Notification Settings")
+		settings.onesignal_rest_api_key = "rest-api-key"
+		settings.save(ignore_permissions=True)
+		response = Mock(ok=True)
+		response.json.return_value = {"id": "onesignal-message-id"}
+
+		with patch("pet_app.notifications.channels.onesignal.requests.post", return_value=response) as mocked:
+			queued = engine.queue_push_notification(
+				user=user.name,
+				title="New mention",
+				body="You were mentioned.",
+				url="/app/user/" + user.name,
+				idempotency_key=f"onesignal-post-{frappe.generate_hash(length=10)}",
+			)
+			sent = engine.process_notification_queue(queued["data"]["queue"]["name"])
+
+		self.assertEqual(sent["data"]["queue"]["provider_message_id"], "onesignal-message-id")
+		payload = mocked.call_args.kwargs["data"]
+		self.assertIn('"target_channel": "push"', payload)
+		self.assertIn(user.name, payload)
+		self.assertEqual(mocked.call_args.kwargs["headers"]["Authorization"], "Key rest-api-key")
+
+	def test_onesignal_provider_surfaces_invalid_alias_errors(self):
+		self._enable_onesignal(dry_run=0)
+		user = self._make_user()
+		settings = frappe.get_single("Pet App Notification Settings")
+		settings.onesignal_rest_api_key = "rest-api-key"
+		settings.save(ignore_permissions=True)
+		response = Mock(ok=True)
+		response.json.return_value = {"id": "", "errors": {"invalid_aliases": {"external_id": [user.name]}}}
+
+		with patch("pet_app.notifications.channels.onesignal.requests.post", return_value=response):
+			queued = engine.queue_push_notification(
+				user=user.name,
+				title="New mention",
+				body="You were mentioned.",
+				idempotency_key=f"onesignal-invalid-alias-{frappe.generate_hash(length=10)}",
+			)
+			sent = engine.process_notification_queue(queued["data"]["queue"]["name"])
+
+		self.assertFalse(sent["ok"])
+		queue = frappe.get_doc("Pet App Notification Queue", queued["data"]["queue"]["name"])
+		self.assertEqual(queue.status, "Failed")
+		self.assertIn("invalid_aliases", queue.provider_error_message)
+		self.assertIn(user.name, queue.provider_error_message)
+
+	def test_frappe_notification_log_is_mirrored_to_push(self):
+		self._enable_onesignal(dry_run=1, mirror=1)
+		user = self._make_user()
+		log = frappe.get_doc(
+			{
+				"doctype": "Notification Log",
+				"for_user": user.name,
+				"from_user": "Administrator",
+				"type": "Alert",
+				"subject": "<b>Vet Visit assigned</b>",
+				"document_type": "User",
+				"document_name": user.name,
+			}
+		).insert(ignore_permissions=True)
+
+		queue_name = frappe.db.get_value(
+			"Pet App Notification Queue",
+			{"idempotency_key": f"frappe-notification-log:{log.name}:push"},
+			"name",
+		)
+		self.assertTrue(queue_name)
+		queue = frappe.get_doc("Pet App Notification Queue", queue_name)
+		self.assertEqual(queue.channel, "Push")
+		self.assertEqual(queue.push_user, user.name)
+		self.assertEqual(queue.push_title, "Vet Visit assigned")
+		self.assertEqual(queue.status, "Sent")
+		admin_queue_name = frappe.db.get_value(
+			"Pet App Notification Queue",
+			{"idempotency_key": f"frappe-notification-log:{log.name}:push:Administrator"},
+			"name",
+		)
+		self.assertTrue(admin_queue_name)
+		admin_queue = frappe.get_doc("Pet App Notification Queue", admin_queue_name)
+		self.assertEqual(admin_queue.channel, "Push")
+		self.assertEqual(admin_queue.push_user, "Administrator")
+		self.assertEqual(admin_queue.push_title, "Vet Visit assigned")
+		self.assertEqual(admin_queue.status, "Sent")
+		self.assertEqual(frappe.db.count("Pet App Notification Queue", {"source_doctype": "Notification Log", "source_name": log.name, "channel": "Push"}), 2)
+
+	def test_frappe_notification_log_push_uses_frontend_base_url(self):
+		self._enable_onesignal(dry_run=1, mirror=1)
+		frappe.db.set_single_value("Pet App Notification Settings", "push_frontend_base_url", "clinic.example.com")
+		user = self._make_user()
+		log = frappe.get_doc(
+			{
+				"doctype": "Notification Log",
+				"for_user": user.name,
+				"from_user": "Administrator",
+				"type": "Alert",
+				"subject": "Service assigned",
+				"document_type": "PetCareService",
+				"document_name": "PetCareService-02209",
+			}
+		).insert(ignore_permissions=True)
+
+		queue_name = frappe.db.get_value(
+			"Pet App Notification Queue",
+			{"idempotency_key": f"frappe-notification-log:{log.name}:push"},
+			"name",
+		)
+		admin_queue_name = frappe.db.get_value(
+			"Pet App Notification Queue",
+			{"idempotency_key": f"frappe-notification-log:{log.name}:push:Administrator"},
+			"name",
+		)
+
+		self.assertEqual(
+			frappe.db.get_value("Pet App Notification Queue", queue_name, "push_url"),
+			"https://clinic.example.com/healthcare/services/PetCareService-02209",
+		)
+		self.assertEqual(
+			frappe.db.get_value("Pet App Notification Queue", admin_queue_name, "push_url"),
+			"https://clinic.example.com/healthcare/services/PetCareService-02209",
+		)
+
+	def test_push_subscription_api_upserts_and_unregisters(self):
+		self._enable_onesignal(dry_run=1)
+		user = self._make_user()
+		frappe.set_user(user.name)
+
+		config = push_api.get_config()
+		self.assertTrue(config["ok"], config)
+		self.assertTrue(config["data"]["enabled"])
+		self.assertEqual(config["data"]["external_id"], user.name)
+		self.assertNotIn("rest_api_key", frappe.as_json(config["data"]))
+		self.assertTrue(mobile_config.get_config()["data"]["feature_flags"]["push_notifications"])
+
+		first = push_api.register_subscription(subscription_id="push-subscription", platform="web", onesignal_id="onesignal-id")
+		second = push_api.register_subscription(subscription_id="push-subscription", platform="android", onesignal_id="onesignal-id", token="push-token", opted_in=1)
+		third = push_api.register_subscription(subscription_id="push-subscription-2", platform="web", onesignal_id="onesignal-id", token="push-token-2", opted_in=1)
+		self.assertTrue(first["ok"], first)
+		self.assertTrue(second["ok"], second)
+		self.assertTrue(third["ok"], third)
+		self.assertEqual(first["data"]["subscription"]["id"], second["data"]["subscription"]["id"])
+		self.assertNotEqual(second["data"]["subscription"]["id"], third["data"]["subscription"]["id"])
+		self.assertEqual(frappe.db.count("Pet App Push Subscription", {"user": user.name}), 2)
+		self.assertTrue(second["data"]["subscription"]["token_present"])
+		self.assertTrue(second["data"]["subscription"]["opted_in"])
+		self.assertTrue(third["data"]["subscription"]["token_present"])
+		self.assertEqual(second["data"]["subscription"]["onesignal_app_id"], "onesignal-app-id")
+		self.assertEqual(third["data"]["subscription"]["onesignal_app_id"], "onesignal-app-id")
+		listed = push_api.list_subscriptions()
+		self.assertTrue(listed["ok"], listed)
+		self.assertEqual(listed["data"]["active_count"], 2)
+		self.assertEqual(
+			{row["subscription_id"] for row in listed["data"]["subscriptions"]},
+			{"push-subscription", "push-subscription-2"},
+		)
+
+		deleted = push_api.unregister_subscription(subscription_id="push-subscription")
+		self.assertTrue(deleted["ok"], deleted)
+		self.assertEqual(
+			frappe.db.get_value("Pet App Push Subscription", {"subscription_id": "push-subscription"}, "disabled"),
+			1,
+		)
+		self.assertEqual(push_api.list_subscriptions()["data"]["active_count"], 1)
+
+	def test_manual_push_registration_and_test_send_api(self):
+		self._enable_onesignal(dry_run=1)
+		frappe.db.set_single_value("Pet App Notification Settings", "push_frontend_base_url", "https://clinic.example.com")
+		user = self._make_user()
+		frappe.set_user("Administrator")
+		record = self._onesignal_user_record(user.name, subscription_id="manual-subscription")
+
+		with patch("pet_app.notifications.channels.onesignal.OneSignalPushChannel.get_user_by_alias", return_value=record):
+			registered = push_api.manual_register_subscription(
+				user=user.name,
+				subscription_id="manual-subscription",
+				onesignal_id="manual-onesignal-id",
+				token="manual-push-token",
+				opted_in=1,
+				permission="granted",
+			)
+			sent = push_api.send_test_push(user=user.name, subscription_id="manual-subscription", title="Manual test", body="Hello from test")
+
+		self.assertTrue(registered["ok"], registered)
+		self.assertEqual(registered["data"]["subscription"]["user"], user.name)
+		self.assertTrue(registered["data"]["subscription"]["token_present"])
+		self.assertTrue(registered["data"]["subscription"]["opted_in"])
+		self.assertTrue(sent["ok"], sent)
+		self.assertTrue(sent["data"]["accepted"])
+		self.assertTrue(sent["data"]["dry_run"])
+		self.assertEqual(sent["data"]["click_url"], "https://clinic.example.com")
+		self.assertTrue(sent["data"]["provider_message_id"].startswith("dry-run-"))
+
+	def test_onesignal_status_api_sanitizes_tokens(self):
+		self._enable_onesignal(dry_run=0)
+		user = self._make_user()
+		frappe.set_user(user.name)
+		push_api.register_subscription(subscription_id="subscription-id", platform="web", onesignal_id="onesignal-id", token="local-token", opted_in=1)
+		push_api.register_subscription(subscription_id="subscription-id-2", platform="web", onesignal_id="onesignal-id", token="local-token-2", opted_in=1)
+		settings = frappe.get_single("Pet App Notification Settings")
+		settings.onesignal_rest_api_key = "rest-api-key"
+		settings.save(ignore_permissions=True)
+		frappe.set_user("Administrator")
+		response = Mock(ok=True, status_code=200)
+		response.json.return_value = {
+			"identity": {"external_id": user.name, "onesignal_id": "onesignal-id"},
+			"properties": {"country": "IQ", "ip": "127.0.0.1"},
+			"subscriptions": [
+				{
+					"id": "subscription-id",
+					"app_id": "onesignal-app-id",
+					"type": "ChromePush",
+					"enabled": True,
+					"notification_types": 1,
+					"token": "secret-token",
+				},
+				{
+					"id": "subscription-id-2",
+					"app_id": "onesignal-app-id",
+					"type": "ChromePush",
+					"enabled": True,
+					"notification_types": 1,
+					"token": "secret-token-2",
+				},
+				{
+					"id": "subscription-id-disabled",
+					"app_id": "onesignal-app-id",
+					"type": "ChromePush",
+					"enabled": False,
+					"notification_types": -2,
+					"token": None,
+				}
+			],
+		}
+
+		with patch("pet_app.notifications.channels.onesignal.requests.get", return_value=response) as mocked:
+			status = push_api.get_onesignal_status(user=user.name)
+			exact = push_api.get_onesignal_status(user=user.name, subscription_id="subscription-id-2")
+			missing = push_api.get_onesignal_status(user=user.name, subscription_id="missing-subscription-id")
+
+		self.assertTrue(status["ok"], status)
+		self.assertEqual(status["data"]["user"], user.name)
+		self.assertEqual(status["data"]["external_id"], user.name)
+		self.assertEqual(status["data"]["onesignal_id"], "onesignal-id")
+		self.assertEqual(status["data"]["subscription_id"], "subscription-id")
+		self.assertTrue(status["data"]["enabled"])
+		self.assertTrue(status["data"]["token_present"])
+		self.assertEqual(status["data"]["sendable_subscription_count"], 2)
+		self.assertEqual(set(status["data"]["sendable_subscription_ids"]), {"subscription-id", "subscription-id-2"})
+		self.assertEqual(status["data"]["local_active_count"], 2)
+		self.assertEqual(len(status["data"]["local_subscriptions"]), 2)
+		self.assertNotIn("secret-token", frappe.as_json(status["data"]))
+		self.assertNotIn("secret-token-2", frappe.as_json(status["data"]))
+		self.assertEqual(mocked.call_args.kwargs["headers"]["Authorization"], "Key rest-api-key")
+
+		self.assertTrue(exact["ok"], exact)
+		self.assertEqual(exact["data"]["subscription_id"], "subscription-id-2")
+		self.assertTrue(exact["data"]["subscription_found"])
+		self.assertTrue(exact["data"]["enabled"])
+		self.assertEqual(exact["data"]["sendable_subscription_count"], 1)
+		self.assertEqual(exact["data"]["sendable_subscription_ids"], ["subscription-id-2"])
+		self.assertEqual(len(exact["data"]["subscriptions"]), 1)
+		self.assertEqual(len(exact["data"]["local_subscriptions"]), 1)
+
+		self.assertTrue(missing["ok"], missing)
+		self.assertEqual(missing["data"]["subscription_id"], "missing-subscription-id")
+		self.assertFalse(missing["data"]["subscription_found"])
+		self.assertFalse(missing["data"]["enabled"])
+		self.assertFalse(missing["data"]["token_present"])
+		self.assertEqual(missing["data"]["sendable_subscription_count"], 0)
+		self.assertEqual(missing["data"]["subscriptions"], [])
+		self.assertEqual(missing["data"]["local_subscriptions"], [])
+
+	def test_onesignal_status_no_record_is_not_server_error(self):
+		self._enable_onesignal(dry_run=0)
+		user = self._make_user()
+		frappe.set_user(user.name)
+		response = Mock(ok=False, status_code=404)
+		response.json.return_value = {"errors": ["not found"]}
+
+		with patch("pet_app.notifications.channels.onesignal.requests.get", return_value=response):
+			status = push_api.get_onesignal_status()
+
+		self.assertTrue(status["ok"], status)
+		self.assertEqual(status["data"]["user"], user.name)
+		self.assertIsNone(status["data"]["onesignal_id"])
+		self.assertFalse(status["data"]["enabled"])
+		self.assertFalse(status["data"]["token_present"])
+
+	def test_push_debug_api_blocks_cross_user_for_normal_user(self):
+		self._enable_onesignal(dry_run=0)
+		current = self._make_user()
+		other = self._make_user()
+		frappe.set_user(current.name)
+
+		status = push_api.get_onesignal_status(user=other.name)
+
+		self.assertFalse(status["ok"])
+		self.assertEqual(status["meta"]["code"], "PUSH_USER_FORBIDDEN")
+
+	def test_notification_settings_api_sanitizes_onesignal_rest_key(self):
+		self._enable_onesignal(dry_run=0)
+		frappe.set_user("Administrator")
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_rest_api_key", "server-secret-key")
+
+		read = notifications_api.get_notification_settings()
+		blank_update = notifications_api.update_notification_settings(onesignal_rest_api_key="", push_frontend_base_url="https://clinic.example.com")
+		updated = notifications_api.get_notification_settings()
+
+		self.assertTrue(read["ok"], read)
+		self.assertTrue(read["data"]["settings"]["onesignal_rest_api_key_configured"])
+		self.assertNotIn("onesignal_rest_api_key", read["data"]["settings"])
+		self.assertTrue(blank_update["ok"], blank_update)
+		self.assertNotIn("server-secret-key", frappe.as_json(blank_update["data"]["settings"]))
+		self.assertEqual(updated["data"]["settings"]["push_frontend_base_url"], "https://clinic.example.com")
+		self.assertTrue(updated["data"]["settings"]["onesignal_rest_api_key_configured"])
+		self.assertEqual(
+			frappe.get_single("Pet App Notification Settings").get_password("onesignal_rest_api_key"),
+			"server-secret-key",
+		)
+
 	def test_whatsapp_webhook_verification_returns_raw_challenge(self):
 		token = f"verify-{frappe.generate_hash(length=10)}"
 		challenge = f"challenge-{frappe.generate_hash(length=10)}"
@@ -435,12 +796,14 @@ class TestNotificationEngine(FrappeTestCase):
 		pet = frappe.get_doc(
 			{
 				"doctype": "Pet",
-				"pet_name": f"Notification Pet {suffix}",
-				"animal_species": "Mammal",
-				"animal_type": "Dog",
-				"pet_status": "Approved",
-			}
-		).insert(ignore_permissions=True)
+					"pet_name": f"Notification Pet {suffix}",
+					"animal_species": "Mammal",
+					"animal_type": "Dog",
+					"birth_date": "2024-01-01",
+					"pet_status": "Approved",
+					"weight": 12,
+				}
+			).insert(ignore_permissions=True)
 		frappe.get_doc(
 			{
 				"doctype": "PetGuardian",
@@ -450,6 +813,44 @@ class TestNotificationEngine(FrappeTestCase):
 			}
 		).insert(ignore_permissions=True)
 		return guardian, pet
+
+	def _make_user(self):
+		suffix = frappe.generate_hash(length=8)
+		return frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": f"push.{suffix}@example.com",
+				"first_name": "Push",
+				"enabled": 1,
+				"send_welcome_email": 0,
+			}
+		).insert(ignore_permissions=True)
+
+	def _enable_onesignal(self, dry_run=1, mirror=0):
+		frappe.db.set_single_value("Pet App Notification Settings", "enabled", 1)
+		frappe.db.set_single_value("Pet App Notification Settings", "dry_run", dry_run)
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_enabled", 1)
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_web_enabled", 1)
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_mobile_enabled", 1)
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_mirror_frappe_notifications", mirror)
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_app_id", "onesignal-app-id")
+		frappe.db.set_single_value("Pet App Notification Settings", "onesignal_rest_api_key", "rest-api-key")
+
+	def _onesignal_user_record(self, user, subscription_id="subscription-id", *, enabled=True, token="secret-token"):
+		return {
+			"identity": {"external_id": user, "onesignal_id": "manual-onesignal-id"},
+			"properties": {"country": "IQ"},
+			"subscriptions": [
+				{
+					"id": subscription_id,
+					"app_id": "onesignal-app-id",
+					"type": "ChromePush",
+					"enabled": enabled,
+					"notification_types": 1,
+					"token": token,
+				}
+			],
+		}
 
 	def _make_template(self, category="Utility"):
 		suffix = frappe.generate_hash(length=8)
