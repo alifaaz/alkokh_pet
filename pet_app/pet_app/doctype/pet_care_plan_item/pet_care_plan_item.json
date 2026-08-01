@@ -103,7 +103,7 @@
    "fieldname": "plan_type",
    "fieldtype": "Select",
    "label": "Plan Type",
-   "options": "Medication\nWound Care\nLab Recheck\nImaging Recheck\nProcedure\nFollow-up Visit\nMonitoring\nVaccination\nDeworming\nOwner Instruction\nBoarding Review\nOther",
+   "options": "Medication\nInjection\nWound Care\nLab Recheck\nImaging Recheck\nProcedure\nFollow-up Visit\nMonitoring\nVaccination\nDeworming\nOwner Instruction\nBoarding Review\nOther",
    "reqd": 1,
    "in_list_view": 1,
    "in_standard_filter": 1

@@ -3,6 +3,7 @@ from frappe import _
 from frappe.utils import cstr, flt, now_datetime
 from frappe.model.document import Document
 from pet_app.api.link_aliases import with_link_aliases
+from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import standardize_response
 from pet_app.utils.visit_billing import (
     assert_boarding_billable_item_can_cancel,
@@ -167,6 +168,8 @@ def bulk_create_pet_care_services(entries=None, services=None):
     items = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(items, list):
         frappe.throw(_("services must be a list."))
+
+    require_doctype_permission("PetCareService", "create")
 
     created = []
     failed = []

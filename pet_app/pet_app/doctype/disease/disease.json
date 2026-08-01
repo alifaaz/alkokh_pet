@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:disease_name",
+ "autoname": "DISEASE-.#####",
  "creation": "2026-05-02 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -16,15 +16,16 @@
   {
    "fieldname": "disease_name",
    "fieldtype": "Data",
+   "in_global_search": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Disease Name",
-   "reqd": 1,
-   "unique": 1
+   "reqd": 1
   },
   {
    "fieldname": "arabic_name",
    "fieldtype": "Data",
+   "in_global_search": 1,
    "label": "Arabic Name"
   },
   {
@@ -32,6 +33,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Species",
+   "not_nullable": 1,
    "options": "\nDog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther\nMammal\nAmphibian\nInsect\nArachnid\nCrustacean"
   },
   {
@@ -56,7 +58,7 @@
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Disease",
- "naming_rule": "By fieldname",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -95,8 +97,9 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
- "search_fields": "disease_name,species,category_a",
- "show_name_in_global_search": 1,
+ "search_fields": "species,category_a",
+ "show_name_in_global_search": 0,
+ "show_title_field_in_link": 1,
  "sort_field": "disease_name",
  "sort_order": "ASC",
  "states": [],

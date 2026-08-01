@@ -87,6 +87,25 @@ def _mobile_catalog_endpoint(fn):
 	return wrapper
 
 
+def _mobile_catalog_admin_endpoint(fn):
+	@functools.wraps(fn)
+	def wrapper(*args, **kwargs):
+		kwargs.pop("cmd", None)
+		try:
+			from pet_app.api.mobile import home_builder
+
+			home_builder._require_admin()
+			return ok(fn(*args, **kwargs))
+		except frappe.PermissionError as exc:
+			return error("PERMISSION_DENIED", cstr(exc) or _("Not permitted."), 403)
+		except MobileCatalogError as exc:
+			return error(exc.code, exc.message, exc.http_status)
+		except Exception as exc:
+			return error(getattr(exc, "code", None) or exc.__class__.__name__, cstr(exc), 400)
+
+	return wrapper
+
+
 def _published_product_filters():
 	return {"status": "Active"}
 
@@ -855,6 +874,15 @@ def home(**kwargs):
 @frappe.whitelist(allow_guest=True, methods=["GET"])
 @_mobile_catalog_endpoint
 def home_v2(lang=None, **kwargs):
+	from pet_app.api.mobile import home_builder
+
+	published = home_builder.resolve_active_home(
+		locale=lang or kwargs.get("locale"),
+		filter_key=kwargs.get("filter_key") or kwargs.get("filterKey") or kwargs.get("filter") or "all",
+	)
+	if published:
+		return published
+
 	blocks = []
 	blocks.extend(_home_banner_blocks())
 	for block in (
@@ -871,6 +899,7 @@ def home_v2(lang=None, **kwargs):
 		block.pop("sort_order", None)
 
 	return {
+		"schema_version": HOME_SCHEMA_VERSION,
 		"version": HOME_SCHEMA_VERSION,
 		"updated_at": _home_updated_at(),
 		"cache_ttl_seconds": HOME_CACHE_TTL_SECONDS,
@@ -878,3 +907,31 @@ def home_v2(lang=None, **kwargs):
 		"filters": _home_filters(),
 		"blocks": blocks,
 	}
+
+
+@frappe.whitelist(methods=["GET"])
+@_mobile_catalog_admin_endpoint
+def home_draft(lang=None, locale=None, filter_key="all", **kwargs):
+	from pet_app.api.mobile import home_builder
+
+	return home_builder.resolve_draft_home(
+		locale=lang or locale or kwargs.get("locale"),
+		filter_key=kwargs.get("filter_key") or kwargs.get("filterKey") or kwargs.get("filter") or filter_key or "all",
+	)
+
+
+@frappe.whitelist(allow_guest=True, methods=["GET"])
+@_mobile_catalog_endpoint
+def home_block_v2(block_id=None, locale=None, filter_key="all", limit_start=0, limit_page_length=20, **kwargs):
+	from pet_app.api.mobile import home_builder
+
+	payload = home_builder.resolve_active_home_block(
+		block_id=block_id,
+		locale=locale or kwargs.get("lang"),
+		filter_key=kwargs.get("filter_key") or kwargs.get("filterKey") or kwargs.get("filter") or filter_key or "all",
+		limit_start=limit_start,
+		limit_page_length=limit_page_length,
+	)
+	if not payload:
+		raise MobileCatalogError(CATALOG_NOT_FOUND, _("Home block was not found."), 404)
+	return payload

@@ -119,11 +119,15 @@ def top_diagnoses(date_from=None, date_to=None, limit=20):
 		values["limit"] = limit
 		rows = frappe.db.sql(
 			f"""
-			select coalesce(d.disease, v.illness, 'Unspecified') as diagnosis, count(*) as total
-			from `tabVet Visit` v
-			left join `tabVisit Diagnosis` d on d.parent = v.name and d.parenttype = 'Vet Visit'
-			where v.docstatus < 2 {conditions}
-			group by diagnosis
+			select t.diagnosis_label as diagnosis, count(*) as total
+			from (
+				select coalesce(dis.disease_name, d.disease, v.illness, 'Unspecified') as diagnosis_label
+				from `tabVet Visit` v
+				left join `tabVisit Diagnosis` d on d.parent = v.name and d.parenttype = 'Vet Visit'
+				left join `tabDisease` dis on dis.name = d.disease
+				where v.docstatus < 2 {conditions}
+			) t
+			group by t.diagnosis_label
 			order by total desc
 			limit %(limit)s
 			""",

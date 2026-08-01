@@ -5,6 +5,7 @@ import json
 import frappe
 from frappe import _
 from frappe.utils import cint, cstr, now_datetime
+from frappe.utils.password import get_decrypted_password
 
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import fail, ok, standardize_response
@@ -22,7 +23,7 @@ from pet_app.utils.api_response import api_error, api_success
 def get_notification_settings():
 	try:
 		require_doctype_permission("Pet App Notification Settings", "read")
-		return api_success({"settings": engine.get_settings()})
+		return api_success({"settings": _settings_payload(frappe.get_single("Pet App Notification Settings"))})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -34,10 +35,15 @@ def update_notification_settings(data=None, **kwargs):
 		payload = _payload(data, kwargs)
 		doc = frappe.get_single("Pet App Notification Settings")
 		for key, value in payload.items():
+			if key == "onesignal_rest_api_key" and not cstr(value).strip():
+				continue
+			if key == "onesignal_rest_api_key_configured":
+				continue
 			if doc.meta.has_field(key):
 				doc.set(key, value)
 		doc.save(ignore_permissions=True)
-		return api_success({"settings": doc.as_dict()})
+		frappe.clear_cache(doctype="Pet App Notification Settings")
+		return api_success({"settings": _settings_payload(doc)})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -391,6 +397,20 @@ def _get_template(name):
 
 def _doc_payload(doc) -> dict:
 	return {field.fieldname: doc.get(field.fieldname) for field in doc.meta.fields}
+
+
+def _settings_payload(doc) -> dict:
+	data = _doc_payload(doc)
+	data.pop("onesignal_rest_api_key", None)
+	data["onesignal_rest_api_key_configured"] = bool(
+		get_decrypted_password(
+			"Pet App Notification Settings",
+			"Pet App Notification Settings",
+			"onesignal_rest_api_key",
+			raise_exception=False,
+		)
+	)
+	return data
 
 
 def _payload(data, kwargs) -> dict:

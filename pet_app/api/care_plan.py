@@ -33,8 +33,10 @@ from pet_app.workflows import clinical_state
 
 ACTIVE_PLAN_STATUSES = {"Planned", "Scheduled", "In Progress", "Overdue"}
 PLAN_TERMINAL_STATUSES = {"Done", "Cancelled", "Converted To Visit"}
+MEDICATION_PLAN_TYPES = {"Medication", "Injection"}
 EPISODE_PLAN_ITEM_TYPE_MAP = {
 	"Medication": "Medication",
+	"Injection": "Medication",
 	"Deworming": "Medication",
 	"Lab Recheck": "Lab Test",
 	"Imaging Recheck": "Imaging",
@@ -537,6 +539,7 @@ def _episode_plan_item_payload(row) -> dict:
 
 def _enrich_episode_plan_item_display(items: list[dict]) -> None:
 	enrich_link_aliases(items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+	_enrich_medication_plan_item_fields(items)
 	appointment_times = _appointment_scheduled_time_map(item.get("appointment") for item in items)
 	for item in items:
 		item["assigned_to"] = item.get("doctor")
@@ -547,6 +550,138 @@ def _enrich_episode_plan_item_display(items: list[dict]) -> None:
 			item["scheduled_date"] = cstr(getdate(scheduled_time))
 		elif item.get("status") == "Scheduled" and item.get("due_date"):
 			item["scheduled_date"] = item.get("due_date")
+
+
+def _enrich_medication_plan_item_fields(items: list[dict]) -> None:
+	linked_names = sorted(
+		{
+			cstr(item.get("linked_name")).strip()
+			for item in items
+			if _is_medication_plan_item(item)
+			and cstr(item.get("linked_doctype")).strip() == "Vet Visit Medication Item"
+			and cstr(item.get("linked_name")).strip()
+		}
+	)
+	if not linked_names:
+		for item in items:
+			if _is_medication_plan_item(item):
+				item.setdefault("medication", item.get("title"))
+				item.setdefault("dose", item.get("dosage"))
+				item.setdefault("duration", _duration_label(item.get("duration_days")))
+		return
+
+	rows = frappe.get_all(
+		"Vet Visit Medication Item",
+		filters={"name": ["in", linked_names]},
+		fields=[
+			"name",
+			"parent",
+			"medication",
+			"medication_item",
+			"qty",
+			"dispense_uom",
+			"stock_uom",
+			"conversion_factor",
+			"dosage",
+			"frequency",
+			"duration_days",
+			"instructions",
+			"warehouse",
+			"dispense_status",
+			"dispensed_qty",
+			"dispensed_by",
+			"dispensed_at",
+			"batch_no",
+			"expiry_date",
+		],
+		ignore_permissions=True,
+	)
+	medication_rows = {row.name: dict(row) for row in rows}
+	medication_names = sorted({cstr(row.get("medication")).strip() for row in rows if cstr(row.get("medication")).strip()})
+	item_codes = sorted({cstr(row.get("medication_item")).strip() for row in rows if cstr(row.get("medication_item")).strip()})
+	medication_labels = _medication_label_map(medication_names)
+	item_labels = _item_label_map(item_codes)
+
+	for item in items:
+		if not _is_medication_plan_item(item):
+			continue
+		row = medication_rows.get(cstr(item.get("linked_name")).strip())
+		if not row:
+			item.setdefault("medication", item.get("title"))
+			item.setdefault("dose", item.get("dosage"))
+			item.setdefault("duration", _duration_label(item.get("duration_days")))
+			continue
+
+		medication = cstr(row.get("medication")).strip()
+		medication_item = cstr(row.get("medication_item")).strip()
+		dosage = row.get("dosage")
+		duration_days = row.get("duration_days") if row.get("duration_days") not in (None, "") else item.get("duration_days")
+
+		item["medication"] = medication or medication_item or item.get("title")
+		item["medication_name"] = medication_labels.get(medication) or item_labels.get(medication_item) or item["medication"]
+		item["medication_item"] = medication_item or None
+		item["medication_row"] = row.get("name")
+		item["medication_visit"] = row.get("parent")
+		item["dose"] = dosage
+		item["dosage"] = dosage
+		item["frequency"] = row.get("frequency") or item.get("frequency")
+		item["duration_days"] = duration_days
+		item["duration"] = _duration_label(duration_days)
+		item["qty"] = row.get("qty")
+		item["dispense_uom"] = row.get("dispense_uom")
+		item["stock_uom"] = row.get("stock_uom")
+		item["conversion_factor"] = row.get("conversion_factor")
+		item["warehouse"] = row.get("warehouse")
+		item["dispense_status"] = row.get("dispense_status")
+		item["dispensed_qty"] = row.get("dispensed_qty")
+		item["dispensed_by"] = row.get("dispensed_by")
+		item["dispensed_at"] = row.get("dispensed_at")
+		item["batch_no"] = row.get("batch_no")
+		item["expiry_date"] = row.get("expiry_date")
+		if row.get("instructions") and not item.get("instructions"):
+			item["instructions"] = row.get("instructions")
+			item["owner_instructions"] = row.get("instructions")
+
+
+def _is_medication_plan_item(item: dict) -> bool:
+	return cstr(item.get("plan_type")).strip() in MEDICATION_PLAN_TYPES or cstr(item.get("medication")).strip()
+
+
+def _medication_label_map(medication_names: list[str]) -> dict[str, str]:
+	if not medication_names:
+		return {}
+	return {
+		row.name: row.get("medication_name") or row.name
+		for row in frappe.get_all(
+			"Medication",
+			filters={"name": ["in", medication_names]},
+			fields=["name", "medication_name"],
+			ignore_permissions=True,
+		)
+	}
+
+
+def _item_label_map(item_codes: list[str]) -> dict[str, str]:
+	if not item_codes:
+		return {}
+	return {
+		row.name: row.get("item_name") or row.name
+		for row in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "item_name"],
+			ignore_permissions=True,
+		)
+	}
+
+
+def _duration_label(duration_days) -> str | None:
+	if duration_days in (None, ""):
+		return None
+	days = cint(duration_days)
+	if days <= 0:
+		return None
+	return _("{0} day").format(days) if days == 1 else _("{0} days").format(days)
 
 
 def _appointment_scheduled_time_map(appointment_names) -> dict[str, object]:

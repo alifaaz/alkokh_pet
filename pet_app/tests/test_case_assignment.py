@@ -15,6 +15,7 @@ class TestCaseAssignment(FrappeTestCase):
 		super().setUpClass()
 		frappe.reload_doc("pet_app", "doctype", "pet_care_episode_assigned_practitioner")
 		frappe.reload_doc("pet_app", "doctype", "pet_care_episode")
+		frappe.reload_doc("pet_app", "doctype", "pet_care_plan_item")
 		frappe.reload_doc("pet_app", "doctype", "visit_referral")
 		frappe.reload_doc("pet_app", "doctype", "vet_visit")
 
@@ -367,6 +368,65 @@ class TestCaseAssignment(FrappeTestCase):
 		self.assertEqual(items_by_name[converted.name]["status"], "Converted to Visit")
 		self.assertEqual(result["data"]["plan_items"][-1]["name"], converted.name)
 
+	def test_case_plan_payloads_include_linked_medication_fields(self):
+		primary = self._make_doctor()
+		episode = self._make_episode(primary)
+		visit = self._make_visit(episode, primary)
+		item = self._make_item("Case Medication")
+		visit.append(
+			"prescribed_medications",
+			{
+				"medication_item": item.name,
+				"qty": 2,
+				"rate": 10,
+				"dosage": "1 tablet",
+				"frequency": "BID",
+				"duration_days": 5,
+				"instructions": "Give with food",
+				"dispense_status": "Pending Dispense",
+				"dispensed_qty": 1,
+			},
+		)
+		visit.save(ignore_permissions=True)
+		visit.reload()
+		medication_row = visit.prescribed_medications[0]
+		plan = self._make_plan_item(
+			episode,
+			visit,
+			primary,
+			plan_type="Medication",
+			title="Give antibiotic",
+			due_date="2026-07-10",
+			linked_doctype="Vet Visit Medication Item",
+			linked_name=medication_row.name,
+		)
+
+		table = care_plan.get_case_follow_up_table(filters={"pet": episode.pet})
+		detail = care_plan.get_care_episode_detail(episode=episode.name)
+		plan_payload = care_plan.get_care_episode_plan(episode=episode.name)
+
+		self.assertTrue(table["ok"], msg=table)
+		self.assertTrue(detail["ok"], msg=detail)
+		self.assertTrue(plan_payload["ok"], msg=plan_payload)
+
+		table_item = _item_by_name(table["data"]["cases"][0]["items"], plan.name)
+		detail_item = _item_by_name(detail["data"]["items"], plan.name)
+		plan_item = _item_by_name(plan_payload["data"]["plan_items"], plan.name)
+		for item_payload in (table_item, detail_item, plan_item):
+			self.assertEqual(item_payload["medication_item"], item.name)
+			self.assertEqual(item_payload["medication_name"], item.item_name)
+			self.assertEqual(item_payload["medication_row"], medication_row.name)
+			self.assertEqual(item_payload["medication_visit"], visit.name)
+			self.assertEqual(item_payload["dose"], "1 tablet")
+			self.assertEqual(item_payload["dosage"], "1 tablet")
+			self.assertEqual(item_payload["frequency"], "BID")
+			self.assertEqual(item_payload["duration_days"], 5)
+			self.assertEqual(item_payload["duration"], "5 days")
+			self.assertEqual(item_payload["qty"], 2)
+			self.assertEqual(item_payload["instructions"], "Give with food")
+			self.assertEqual(item_payload["dispense_status"], "Pending Dispense")
+			self.assertEqual(item_payload["dispensed_qty"], 1)
+
 	def test_get_case_follow_up_table_groups_case_items_and_states(self):
 		primary = self._make_doctor()
 		episode = self._make_episode(primary)
@@ -519,6 +579,8 @@ class TestCaseAssignment(FrappeTestCase):
 		due_time=None,
 		instructions=None,
 		converted_visit=None,
+		linked_doctype=None,
+		linked_name=None,
 	):
 		data = {
 			"doctype": "Pet Care Plan Item",
@@ -533,6 +595,8 @@ class TestCaseAssignment(FrappeTestCase):
 			"status": status,
 			"priority": "Normal",
 			"instructions": instructions,
+			"linked_doctype": linked_doctype,
+			"linked_name": linked_name,
 			"due_date": due_date,
 			"due_time": due_time,
 		}
@@ -548,6 +612,19 @@ class TestCaseAssignment(FrappeTestCase):
 			doc.db_insert()
 			return frappe.get_doc("Pet Care Plan Item", doc.name)
 		return doc.insert(ignore_permissions=True)
+
+	def _make_item(self, label):
+		suffix = frappe.generate_hash(length=8)
+		return frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": f"{label} Item {suffix}",
+				"item_name": f"{label} Item {suffix}",
+				"item_group": "All Item Groups",
+				"stock_uom": "Nos",
+				"is_stock_item": 0,
+			}
+		).insert(ignore_permissions=True, ignore_mandatory=True)
 
 	def _add_to_team(self, episode, doctor, role="Treating Doctor"):
 		episode_doc = frappe.get_doc("Pet Care Episode", episode.name)
@@ -571,6 +648,8 @@ class TestCaseAssignment(FrappeTestCase):
 				"pet_name": f"Pet {suffix}",
 				"animal_species": "Mammal",
 				"animal_type": "Dog",
+				"birth_date": "2020-01-01",
+				"weight": 10,
 				"pet_status": "Approved",
 			}
 		).insert(ignore_permissions=True)
@@ -629,3 +708,7 @@ class TestCaseAssignment(FrappeTestCase):
 
 def _team_practitioners(result: dict) -> list[str]:
 	return [row["practitioner"] for row in result["data"]["care_team"]]
+
+
+def _item_by_name(items: list[dict], name: str) -> dict:
+	return next(row for row in items if row["name"] == name)

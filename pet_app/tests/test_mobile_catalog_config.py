@@ -38,6 +38,7 @@ class TestMobileCatalogConfig(FrappeTestCase):
 
 		self.assertTrue(response["ok"], response)
 		data = response["data"]
+		self.assertEqual(data["schema_version"], 2)
 		self.assertEqual(data["version"], 2)
 		self.assertIn("updated_at", data)
 		self.assertEqual(data["cache_ttl_seconds"], 300)

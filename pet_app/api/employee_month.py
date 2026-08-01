@@ -9,6 +9,8 @@ from frappe import _
 from frappe.utils import cint, cstr, flt, getdate
 
 from pet_app.api.dashboard import _require_analytics_access
+from pet_app.api.permissions import get_user_roles
+from pet_app.api.scoreboard import RECORD_DOCTYPES as SCOREBOARD_RECORD_DOCTYPES
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -63,6 +65,26 @@ CLINICAL_CONFIGS = (
 	},
 )
 
+STAFF_GROUPS = OrderedDict(
+	(
+		("coordinators", {"label": "Coordinator", "roles": {"Coordinator", "Coordinatorr"}}),
+		("cashiers", {"label": "Cashier", "roles": {"Cashier", "POS Cashier"}}),
+		("receptionists", {"label": "Receptionist", "roles": {"Receptionist", "Reception"}}),
+		("other_staff", {"label": "Other", "roles": set()}),
+	)
+)
+
+STAFF_EXCLUDED_ROLES = {
+	"All",
+	"Guest",
+	"Administrator",
+	"System Manager",
+}
+
+STAFF_EXCLUDED_USERS = {"Administrator", "Guest"}
+
+STAFF_RECORD_DOCTYPES = tuple(SCOREBOARD_RECORD_DOCTYPES)
+
 
 @frappe.whitelist()
 def get_employee_month_dashboard(date_from=None, date_to=None):
@@ -72,11 +94,17 @@ def get_employee_month_dashboard(date_from=None, date_to=None):
 	prev_from, prev_to = _previous_range(df, dt)
 
 	practitioners = _active_practitioners()
-	return {
+	clinical_groups = {
 		"service_providers": _safe_group(
 			lambda: _build_service_providers(practitioners, df, dt, prev_from, prev_to)
 		),
 		"doctors": _safe_group(lambda: _build_doctors(practitioners, df, dt, prev_from, prev_to)),
+	}
+	clinical_user_ids = _clinical_group_user_ids(practitioners, clinical_groups)
+	staff_groups = _safe_staff_groups(clinical_user_ids, df, dt, prev_from, prev_to)
+	return {
+		**clinical_groups,
+		**staff_groups,
 	}
 
 
@@ -176,6 +204,7 @@ def _active_practitioners():
 			"image": _public_image_url(row.get("photo") or _user_image(row.get("user_id"))),
 			"practitioner_type": row.get("practitioner_type"),
 			"specialization": row.get("specialization"),
+			"user_id": row.get("user_id"),
 		}
 	return practitioners
 
@@ -364,6 +393,215 @@ def _rating_stats(practitioner_ids, df, dt):
 	}
 
 
+def _clinical_group_user_ids(practitioners, clinical_groups):
+	user_ids = set()
+	for group_key in ("service_providers", "doctors"):
+		for row in clinical_groups.get(group_key, {}).get("leaderboard") or []:
+			practitioner = practitioners.get(row.get("practitioner_id")) or {}
+			user_id = practitioner.get("user_id")
+			if user_id:
+				user_ids.add(user_id)
+	return user_ids
+
+
+def _safe_staff_groups(clinical_user_ids, df, dt, prev_from, prev_to):
+	try:
+		return _build_staff_groups(clinical_user_ids, df, dt, prev_from, prev_to)
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "employee-month-dashboard-staff")
+		return {group_key: _empty_group() for group_key in STAFF_GROUPS}
+
+
+def _build_staff_groups(clinical_user_ids, df, dt, prev_from, prev_to):
+	users = _staff_users(clinical_user_ids)
+	current = _staff_activity_counts(list(users), df, dt)
+	previous = _staff_activity_counts(list(users), prev_from, prev_to)
+
+	groups = {group_key: [] for group_key in STAFF_GROUPS}
+	for user, user_info in users.items():
+		group_key = user_info.get("group_key")
+		if group_key in groups:
+			groups[group_key].append(user)
+
+	return {
+		group_key: _build_staff_group(group_key, target_users, users, current, previous)
+		for group_key, target_users in groups.items()
+	}
+
+
+def _build_staff_group(group_key, target_users, users, current, previous):
+	if not target_users:
+		return _empty_group()
+
+	rows = []
+	for user in sorted(target_users):
+		activity = current.get(user) or {"total": 0, "by_doctype": []}
+		completed = cint(activity.get("total"))
+		if completed <= 0:
+			continue
+		user_info = users[user]
+		rows.append(
+			{
+				"rank": 0,
+				"practitioner_id": user,
+				"name": user_info.get("name") or user,
+				"image": _public_image_url(user_info.get("image")),
+				"practitioner_type": user_info.get("label") or STAFF_GROUPS[group_key]["label"],
+				"specialization": None,
+				"completed_count": completed,
+				"primary_metric_label": "Documents created",
+				"rating_average": None,
+				"rating_count": 0,
+				"on_time_rate": None,
+				"score": 0,
+				"delta": _delta_text(completed, (previous.get(user) or {}).get("total", 0)),
+				"badges": [],
+				"by_doctype": activity.get("by_doctype") or [],
+			}
+		)
+
+	return _rank_staff_group(rows)
+
+
+def _staff_users(clinical_user_ids):
+	if not _doctype_exists("User"):
+		return {}
+
+	try:
+		rows = frappe.get_all(
+			"User",
+			filters=[["enabled", "=", 1], ["user_type", "=", "System User"]],
+			fields=["name", "full_name", "user_image", "enabled", "user_type"],
+			ignore_permissions=True,
+		)
+	except Exception:
+		return {}
+
+	roles_by_user = _roles_for_users([row.get("name") for row in rows if row.get("name")])
+	users = OrderedDict()
+	for row in rows:
+		user = row.get("name")
+		if not user or user in STAFF_EXCLUDED_USERS or user in clinical_user_ids:
+			continue
+		roles = roles_by_user.get(user, set())
+		group_key, label = _staff_group_for_roles(roles)
+		if not group_key:
+			continue
+		users[user] = {
+			"user": user,
+			"name": row.get("full_name") or user,
+			"image": row.get("user_image"),
+			"roles": roles,
+			"group_key": group_key,
+			"label": label,
+		}
+
+	return users
+
+
+def _roles_for_users(users):
+	roles_by_user = {}
+	for user in users or []:
+		if not user:
+			continue
+		try:
+			roles_by_user[user] = set(get_user_roles(user) or [])
+		except Exception:
+			roles_by_user[user] = set()
+	return roles_by_user
+
+
+def _staff_group_for_roles(roles):
+	roles = set(roles or [])
+	for group_key, config in STAFF_GROUPS.items():
+		if group_key == "other_staff":
+			continue
+		if roles & config["roles"]:
+			return group_key, config["label"]
+	if roles and not roles <= STAFF_EXCLUDED_ROLES:
+		return "other_staff", STAFF_GROUPS["other_staff"]["label"]
+	return None, None
+
+
+def _staff_activity_counts(users, df, dt):
+	stats = {user: {"total": 0, "by_doctype": []} for user in users}
+	if not users:
+		return stats
+
+	for doctype, label in STAFF_RECORD_DOCTYPES:
+		if not _doctype_exists(doctype):
+			continue
+		for user in users:
+			count = _staff_doctype_activity_count(doctype, user, df, dt)
+			if count <= 0:
+				continue
+			stats[user]["total"] += count
+			stats[user]["by_doctype"].append({"doctype": doctype, "label": _(label), "count": count})
+
+	for data in stats.values():
+		data["by_doctype"].sort(key=lambda row: (-cint(row.get("count")), cstr(row.get("label")).lower()))
+	return stats
+
+
+def _staff_doctype_activity_count(doctype, user, df, dt):
+	seen = set()
+	filters = [["owner", "=", user]] + _datetime_filters("creation", df, dt)
+	try:
+		created = frappe.get_all(doctype, filters=filters, pluck="name", ignore_permissions=True)
+	except Exception:
+		created = []
+	seen.update(name for name in created if name)
+
+	if _is_submittable(doctype):
+		try:
+			submitted = frappe.get_all(
+				doctype,
+				filters=[
+					["docstatus", "=", 1],
+					["modified_by", "=", user],
+					* _datetime_filters("modified", df, dt),
+				],
+				pluck="name",
+				ignore_permissions=True,
+			)
+		except Exception:
+			submitted = []
+		seen.update(name for name in submitted if name)
+
+	return len(seen)
+
+
+def _is_submittable(doctype):
+	try:
+		return bool(cint(getattr(frappe.get_meta(doctype), "is_submittable", 0)))
+	except Exception:
+		return False
+
+
+def _rank_staff_group(rows):
+	if not rows:
+		return _empty_group()
+
+	max_completed = max(cint(row.get("completed_count")) for row in rows) or 0
+	for row in rows:
+		row["score"] = int(round(cint(row.get("completed_count")) / max_completed * 100)) if max_completed else 0
+
+	rows.sort(key=lambda row: (-cint(row.get("completed_count")), cstr(row.get("name")).lower()))
+	for index, row in enumerate(rows, start=1):
+		row["rank"] = index
+
+	return {
+		"winner": rows[0] if rows else None,
+		"summary": {
+			"total_people": len(rows),
+			"total_completed": sum(cint(row.get("completed_count")) for row in rows),
+			"average_rating": None,
+			"top_score": max((cint(row.get("score")) for row in rows), default=0),
+		},
+		"leaderboard": rows,
+	}
+
+
 def _rank_group(rows, doctor_group):
 	if not rows:
 		return _empty_group()
@@ -543,6 +781,10 @@ def _status_in(value, statuses):
 
 def _base_filters(doctype):
 	return [["docstatus", "<", 2]] if _has_field(doctype, "docstatus") else []
+
+
+def _datetime_filters(field, df, dt):
+	return [[field, ">=", f"{df} 00:00:00"], [field, "<=", f"{dt} 23:59:59"]]
 
 
 def _existing_fields(doctype, fields):

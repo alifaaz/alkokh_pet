@@ -16,6 +16,9 @@ ADMIN_ROLES = {"Administrator", "System Manager", "Pet App Admin"}
 PAGE_ACCESS_SETTINGS_DOCTYPE = "Pet App Access Settings"
 PAGE_ACCESS_CHILD_DOCTYPE = "Pet App Page Access"
 PAGE_ACCESS_FULL_ACCESS_ROLES = {"Administrator", "System Manager", "Pet App Admin"}
+ACCESS_SNAPSHOT_CACHE_TTL_SECONDS = 60
+ACCESS_SNAPSHOT_CACHE_VERSION_KEY = "pet_app:access_snapshot:version"
+ACCESS_SNAPSHOT_CACHE_KEY_PREFIX = "pet_app:access_snapshot"
 
 RESTRICTION_TYPES = ("warehouse", "cashier_profile", "practitioner", "branch")
 RESTRICTION_ALIASES = {"doctor": "practitioner"}
@@ -168,7 +171,28 @@ def get_current_access():
 	user = frappe.session.user
 	if not user or user == "Guest":
 		frappe.throw(_("Authentication required"), frappe.PermissionError)
-	return build_access_snapshot(user)
+	return get_cached_access_snapshot(user)
+
+
+def get_cached_access_snapshot(user: str) -> dict:
+	cache = frappe.cache()
+	version = _access_snapshot_cache_version()
+	cache_key = f"{ACCESS_SNAPSHOT_CACHE_KEY_PREFIX}:{version}:{user}"
+	cached = cache.get_value(cache_key)
+	if cached:
+		return cached
+
+	snapshot = build_access_snapshot(user)
+	cache.set_value(cache_key, snapshot, expires_in_sec=ACCESS_SNAPSHOT_CACHE_TTL_SECONDS)
+	return snapshot
+
+
+def clear_access_snapshot_cache(*args, **kwargs):
+	frappe.cache().set_value(ACCESS_SNAPSHOT_CACHE_VERSION_KEY, frappe.generate_hash(length=12))
+
+
+def _access_snapshot_cache_version() -> str:
+	return cstr(frappe.cache().get_value(ACCESS_SNAPSHOT_CACHE_VERSION_KEY) or "0")
 
 
 def build_access_snapshot(user: str | None = None) -> dict:

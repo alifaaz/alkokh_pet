@@ -324,6 +324,8 @@ For stock medications, `_get_stock_invoice_context()` now resolves a warehouse o
 
 ### Invoice preconditions and errors
 
+Explicit invoice creation remains strict: the invoice endpoint still raises the errors below. `complete_case` now preflights invoice items first; when there are no billable rows, no active billable rows, or validated active rows total zero, it skips Sales Invoice creation and completes the visit with `sales_invoice = None`, `billed = 0`, and zero total. Active malformed billable rows still fail completion and roll back the clinical save.
+
 | Condition | Error |
 | --- | --- |
 | Missing visit name | `Vet Visit is required.` (`vet_visit.py:721-722`) |
@@ -331,12 +333,12 @@ For stock medications, `_get_stock_invoice_context()` now resolves a warehouse o
 | Existing linked invoice | `Vet Visit {visit} is already billed with Sales Invoice {invoice}.` (`vet_visit.py:727-732`, lock check also at `vet_visit.py:967-972`) |
 | Missing customer | `Customer is required before invoicing this visit.` (`vet_visit.py:734-735`) |
 | Pending Lab in strict mode | `Complete all Lab records before creating the invoice.` (`vet_visit.py:930` and following strict checks) |
-| Missing billable child table rows | `Add at least one billable item before invoicing.` (`vet_visit.py:856-858`) |
+| Missing billable child table rows | Direct invoice creation: `Add at least one billable item before invoicing.` Completion: skip invoice and complete without billing. |
 | Missing billable item code | `Billable item row {idx} is missing Item Code.` (`vet_visit.py:807-808`) |
 | Billable qty <= 0 | `Billable item row {idx} must have Qty greater than zero.` (`vet_visit.py:810-813`) |
 | Billable rate < 0 | `Billable item row {idx} must not have a negative Rate.` (`vet_visit.py:811-815`) |
-| No active billable items | `Add at least one active billable item before invoicing.` (`vet_visit.py:892-893`) |
-| Total <= 0 | `Total billable amount must be greater than zero before invoicing.` (`vet_visit.py:894-895`) |
+| No active billable items | Direct invoice creation: `Add at least one active billable item before invoicing.` Completion: skip invoice and complete without billing. |
+| Total <= 0 | Direct invoice creation: `Total billable amount must be greater than zero before invoicing.` Completion: skip invoice after active rows pass item, quantity, rate, and stock warehouse validation. |
 | Stock item warehouse cannot resolve | `Warehouse is required to invoice medication {medication}. Set a Warehouse on the prescription row, Medication Default Warehouse, or Stock Settings Default Warehouse.` (`vet_visit.py:910-932`) |
 | Missing configured veterinary selling price list | `Price List Standard Selling is required for veterinary invoices.` |
 

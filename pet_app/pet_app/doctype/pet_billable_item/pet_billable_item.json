@@ -13,7 +13,12 @@
   "rate",
   "amount",
   "status",
+  "dispense_status",
+  "dispensed_qty",
+  "dispensed_by",
+  "dispensed_at",
   "note",
+  "care_episode",
   "linked_service_id",
   "linked_doctype",
   "linked_name",
@@ -71,9 +76,42 @@
    "options": "Draft\nBillable\nBilled\nCancelled"
   },
   {
+   "fieldname": "dispense_status",
+   "fieldtype": "Select",
+   "label": "Dispense Status",
+   "options": "\nPrescribed\nPending Dispense\nDispensed\nPartially Dispensed\nCancelled\nReturned"
+  },
+  {
+   "default": "0",
+   "fieldname": "dispensed_qty",
+   "fieldtype": "Float",
+   "label": "Dispensed Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dispensed_by",
+   "fieldtype": "Link",
+   "label": "Dispensed By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "dispensed_at",
+   "fieldtype": "Datetime",
+   "label": "Dispensed At",
+   "read_only": 1
+  },
+  {
    "fieldname": "note",
    "fieldtype": "Small Text",
    "label": "Note"
+  },
+  {
+   "fieldname": "care_episode",
+   "fieldtype": "Link",
+   "label": "Care Episode",
+   "options": "Pet Care Episode",
+   "read_only": 1
   },
   {
    "fieldname": "linked_service_id",

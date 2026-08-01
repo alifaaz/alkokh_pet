@@ -17,6 +17,16 @@
   "title",
   "subtitle",
   "button_title",
+  "localized_section",
+  "title_en",
+  "title_ar",
+  "subtitle_en",
+  "subtitle_ar",
+  "button_title_en",
+  "button_title_ar",
+  "schedule_section",
+  "starts_at",
+  "ends_at",
   "style_section",
   "gradient_start",
   "gradient_end",
@@ -97,6 +107,56 @@
    "label": "Button Title"
   },
   {
+   "fieldname": "localized_section",
+   "fieldtype": "Section Break",
+   "label": "Localized Content"
+  },
+  {
+   "fieldname": "title_en",
+   "fieldtype": "Data",
+   "label": "Title EN"
+  },
+  {
+   "fieldname": "title_ar",
+   "fieldtype": "Data",
+   "label": "Title AR"
+  },
+  {
+   "fieldname": "subtitle_en",
+   "fieldtype": "Small Text",
+   "label": "Subtitle EN"
+  },
+  {
+   "fieldname": "subtitle_ar",
+   "fieldtype": "Small Text",
+   "label": "Subtitle AR"
+  },
+  {
+   "fieldname": "button_title_en",
+   "fieldtype": "Data",
+   "label": "Button Title EN"
+  },
+  {
+   "fieldname": "button_title_ar",
+   "fieldtype": "Data",
+   "label": "Button Title AR"
+  },
+  {
+   "fieldname": "schedule_section",
+   "fieldtype": "Section Break",
+   "label": "Schedule"
+  },
+  {
+   "fieldname": "starts_at",
+   "fieldtype": "Datetime",
+   "label": "Starts At"
+  },
+  {
+   "fieldname": "ends_at",
+   "fieldtype": "Datetime",
+   "label": "Ends At"
+  },
+  {
    "fieldname": "style_section",
    "fieldtype": "Section Break",
    "label": "Style"
@@ -147,6 +207,20 @@
    "delete": 1,
    "read": 1,
    "role": "System Manager",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "Pet App Admin",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "E-commerce",
    "write": 1
   }
  ],
