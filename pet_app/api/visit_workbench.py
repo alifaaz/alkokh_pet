@@ -94,10 +94,20 @@ def _active_episode_payload(visit_doc) -> dict:
 	return _linked_doc_payload("Pet Care Episode", _active_episode_name_for_visit(visit_doc))
 
 
+def _visit_chose_wellness(visit_doc) -> bool:
+	return cstr(visit_doc.get("doctor_case_choice")).strip().lower() == "wellness"
+
+
 def _active_episode_name_for_visit(visit_doc) -> str | None:
 	episode_name = visit_doc.get("care_episode")
 	if episode_name:
 		return episode_name
+	# "wellness" is an explicit "this visit has no clinical case", so it must not
+	# inherit the pet's open episode - the write path already nulled care_episode
+	# on purpose. The pet-level fallback below stays for visits that simply have
+	# not chosen yet (case_choice_required), which is what it was there for.
+	if _visit_chose_wellness(visit_doc):
+		return None
 	if not visit_doc.get("animal_patient"):
 		return None
 	return frappe.db.get_value(
@@ -119,6 +129,10 @@ def _plan_items(visit_doc) -> list[dict]:
 	filters = {}
 	if visit_doc.get("care_episode"):
 		filters["care_episode"] = visit_doc.care_episode
+	elif _visit_chose_wellness(visit_doc):
+		# Same guard as _active_episode_name_for_visit: a wellness visit has no case,
+		# so the pet-level fallback would list another case's open items as its own.
+		return []
 	else:
 		filters["pet"] = visit_doc.animal_patient
 	filters["status"] = ["not in", ["Done", "Cancelled", "Converted To Visit"]]
