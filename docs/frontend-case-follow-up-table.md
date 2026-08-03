@@ -54,6 +54,11 @@ Important filters:
 - `doctor`: filters cases where the practitioner is primary doctor or assigned on plan items, and filters item rows to that doctor.
 - `pet`, `guardian`, `customer`: narrow the case table.
 - `episode_status` / `case_status`: filter by episode status.
+- `closed_only`: `0` | `1`, default `0`. Filters to exactly the population `metrics.closed_cases`
+  counts — the "Complete" card — i.e. episode status in `Resolved`, `Closed`, `Deceased`,
+  `Referred`, `Cancelled`. Send it **alone**: it overrides the `active_only` default, so
+  `closed_only: 1` returns the closed cases without also needing `active_only: 0`. An explicit
+  `episode_status` still wins over it.
 - `plan_type`: filter plan item type.
 - `item_status` / `plan_status`: filter raw `Pet Care Plan Item.status`.
 - `follow_up_state`: filter computed UI state.

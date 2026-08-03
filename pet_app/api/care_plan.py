@@ -8,7 +8,7 @@ from frappe import _
 from frappe.utils import cint, cstr, get_datetime, getdate, now_datetime, nowdate
 
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
-from pet_app.api.permissions import get_user_roles, require_doctype_permission, user_has_full_access
+from pet_app.api.permissions import is_clinical_user, require_doctype_permission
 from pet_app.api.response import fail, ok
 from pet_app.api.workspace import _assert_record_access, _has_field, _stamp_appointment_conversion
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
@@ -97,15 +97,6 @@ CASE_TABLE_EPISODE_FIELDS = [
 ]
 APPOINTMENT_PLAN_TYPES = {"Follow-up Visit", "Lab Recheck", "Imaging Recheck", "Procedure", "Vaccination"}
 MEDICATION_PAYLOAD_KEYS = {"medication", "medication_item", "qty", "dispense_uom", "stock_uom", "conversion_factor", "dosage", "frequency", "duration_days", "instructions", "warehouse"}
-CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner", "Healthcare Administrator"}
-GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
-
-
-def _has_plan_item_permission(ptype: str, user: str | None = None) -> bool:
-	try:
-		return bool(frappe.has_permission("Pet Care Plan Item", ptype=ptype, user=user or frappe.session.user))
-	except Exception:
-		return False
 
 
 @frappe.whitelist(methods=["POST"])
@@ -773,7 +764,24 @@ def _case_table_episode_filters(payload: dict) -> dict | None:
 
 	status_filter = payload.get("episode_status") or payload.get("case_status")
 	if status_filter:
+		# An explicit status list stays the most specific instruction and wins over both
+		# flags below, so `episode_status=Resolved` + `closed_only=1` narrows to Resolved
+		# rather than widening back out to all five.
 		filters["episode_status"] = ["in", _as_list(status_filter)]
+	elif _truthy(payload.get("closed_only")):
+		# The population behind metrics.closed_cases - the "Complete" card - selected via
+		# the SAME constant the metric counts with, so the card and the view it opens
+		# cannot drift. Includes Cancelled and Referred because closed_cases does.
+		#
+		# Checked BEFORE active_only, and deliberately not combined with it: every closed
+		# status is absent from ACTIVE_EPISODE_STATUSES, so letting active_only's default
+		# also apply would AND the two into the empty set and `closed_only=1` alone would
+		# return nothing. The flag has to work on its own without the caller remembering
+		# to send active_only=0.
+		#
+		# `_truthy`, not raw truthiness: HTTP sends `closed_only=0` as the string "0",
+		# which is truthy in Python - the same trap already handled for done_today.
+		filters["episode_status"] = ["in", sorted(CASE_TABLE_CLOSED_EPISODE_STATUSES)]
 	elif _truthy(payload.get("active_only"), default=True):
 		filters["episode_status"] = ["in", list(ACTIVE_EPISODE_STATUSES)]
 
@@ -1627,9 +1635,8 @@ def _assert_pet_access(pet: str, write=False):
 	if not pet or not frappe.db.exists("Pet", pet):
 		frappe.throw(_("Pet {0} was not found.").format(frappe.bold(pet)))
 	user = frappe.session.user
-	roles = get_user_roles(user)
 	plan_ptype = "write" if write else "read"
-	if user_has_full_access(user) or roles & CLINICAL_ROLES or _has_plan_item_permission(plan_ptype, user):
+	if is_clinical_user(plan_ptype, user):
 		return
 	guardian = frappe.db.get_value("Guardian", {"user_id": user}, "name")
 	if not write and guardian and frappe.db.exists("PetGuardian", {"guardian_id": guardian, "pet_id": pet}):
