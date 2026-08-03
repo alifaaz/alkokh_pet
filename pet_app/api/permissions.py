@@ -20,6 +20,26 @@ ACCESS_SNAPSHOT_CACHE_TTL_SECONDS = 60
 ACCESS_SNAPSHOT_CACHE_VERSION_KEY = "pet_app:access_snapshot:version"
 ACCESS_SNAPSHOT_CACHE_KEY_PREFIX = "pet_app:access_snapshot"
 
+# Staff-vs-guardian discriminator for the pet-scoped clinical endpoints.
+#
+# These endpoints ask a question DocPerms cannot answer: "may this user touch THIS
+# pet's record?" Staff may touch any pet; a guardian only their own. The doctype-level
+# authorization is a separate, earlier gate (require_doctype_permission) and stays
+# authoritative - nothing here grants a permission the role does not already hold.
+#
+# CLINICAL_ROLES alone used to answer it, which broke on any site that names its
+# clinical roles something else: a doctor with full write DocPerms on Pet Care Episode
+# was refused because he did not literally hold a role called "Doctor". So the role set
+# is now only a fast path, with is_clinical_user() falling back to the DocPerms the user
+# actually holds on the clinical doctypes below.
+CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner", "Healthcare Administrator"}
+GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
+# The fallback reads permissions on these, NOT on "Pet": guardian-portal roles hold read
+# on Pet (so they can see their own animals) and would otherwise be promoted to staff,
+# which would hand them every other guardian's records. No guardian role holds any
+# permission on these four.
+CLINICAL_PERMISSION_DOCTYPES = ("Vet Visit", "Pet Care Episode", "Pet Care Plan Item", "Pet Medical Profile")
+
 RESTRICTION_TYPES = ("warehouse", "cashier_profile", "practitioner", "branch")
 RESTRICTION_ALIASES = {"doctor": "practitioner"}
 RESTRICTION_RESPONSE_TYPES = (*RESTRICTION_TYPES, "doctor")
@@ -259,6 +279,20 @@ def require_doctype_permission(doctype: str, ptype: str, user: str | None = None
 	user = user or frappe.session.user
 	if not _doctype_exists(doctype) or not _has_doctype_permission(doctype, ptype, user):
 		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+
+def is_clinical_user(ptype: str = "read", user: str | None = None) -> bool:
+	"""True when the user acts on pets as staff rather than as a guardian.
+
+	``ptype`` is the access being attempted, so a read-only clinical role is not
+	silently promoted on a write path.
+	"""
+	user = user or frappe.session.user
+	if user_has_full_access(user):
+		return True
+	if get_user_roles(user) & CLINICAL_ROLES:
+		return True
+	return any(_has_doctype_permission(doctype, ptype, user) for doctype in CLINICAL_PERMISSION_DOCTYPES)
 
 
 def get_restrictions_for_user(user: str | None = None) -> dict[str, list[str]]:

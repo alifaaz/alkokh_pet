@@ -7,12 +7,10 @@ from frappe import _
 from frappe.utils import cint, cstr, now_datetime
 
 from pet_app.api.link_aliases import with_link_aliases
-from pet_app.api.permissions import get_user_roles, require_doctype_permission, user_has_full_access
+from pet_app.api.permissions import GUARDIAN_ROLES, get_user_roles, is_clinical_user, require_doctype_permission
 from pet_app.api.response import fail, ok
 
 
-GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
-CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare Practitioner", "Healthcare", "Healthcare Administrator"}
 MANAGER_ROLES = {"System Manager", "Pet App Admin", "Healthcare Administrator", "Clinic Manager"}
 OWNER_SAFE_ADDENDUM_TYPES = {"Clinical Correction", "Medication Correction", "Follow-up Note", "Clinical Note", "Correction", "Clarification"}
 
@@ -94,7 +92,7 @@ def approve_visit_addendum(addendum=None, data=None, **kwargs):
 def _assert_visit_access(visit_name: str, write=False):
 	if not frappe.db.exists("Vet Visit", visit_name):
 		frappe.throw(_("Vet Visit {0} was not found.").format(frappe.bold(visit_name)))
-	if user_has_full_access() or get_user_roles() & CLINICAL_ROLES:
+	if is_clinical_user("write" if write else "read"):
 		return
 	guardian = frappe.db.get_value("Guardian", {"user_id": frappe.session.user}, "name")
 	if guardian:
@@ -138,8 +136,12 @@ def _payload_for_addendum(doc, owner_safe=False) -> dict:
 
 
 def _is_guardian_user() -> bool:
+	# Clinical status is decided by is_clinical_user, not by the absence of a guardian
+	# role: staff on this site are routinely granted "Pet"/"Guardian" alongside their
+	# clinical roles, and the old role-exclusion therefore served doctors the
+	# owner-safe payload.
 	roles = get_user_roles()
-	return bool(roles & GUARDIAN_ROLES and not roles & (CLINICAL_ROLES | MANAGER_ROLES) and not user_has_full_access())
+	return bool(roles & GUARDIAN_ROLES and not roles & MANAGER_ROLES and not is_clinical_user())
 
 
 def _payload(data, kwargs) -> dict:

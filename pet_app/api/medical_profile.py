@@ -8,14 +8,11 @@ from frappe.utils import cint, cstr, getdate
 
 from pet_app.api import medical_file
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
-from pet_app.api.permissions import get_user_roles, require_doctype_permission, user_has_full_access
+from pet_app.api.permissions import is_clinical_user, require_doctype_permission
 from pet_app.api.response import fail, ok, standardize_response
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.utils.medical_profile import get_visit_case_context, set_visit_case_choice, update_profile_for_visit
 
-
-CLINICAL_ROLES = {"Doctor", "Physician", "Healthcare", "Healthcare Practitioner", "Healthcare Administrator"}
-GUARDIAN_ROLES = {"Guardian", "Guardians", "Pet"}
 
 SUCCESSFUL_CLOSE_OUTCOMES = {"recovered", "improved", "stable"}
 DECEASED_CLOSE_OUTCOMES = {"death", "euthanasia"}
@@ -211,7 +208,7 @@ def _doc_payload(doc) -> dict:
 def _assert_pet_access(pet: str, write=False):
 	if not frappe.db.exists("Pet", pet):
 		frappe.throw(_("Pet {0} was not found.").format(frappe.bold(pet)))
-	if user_has_full_access() or get_user_roles() & CLINICAL_ROLES:
+	if is_clinical_user("write" if write else "read"):
 		return
 	guardian = frappe.db.get_value("Guardian", {"user_id": frappe.session.user}, "name")
 	if guardian and frappe.db.exists("PetGuardian", {"guardian_id": guardian, "pet_id": pet}):
