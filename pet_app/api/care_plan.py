@@ -59,6 +59,12 @@ EPISODE_PLAN_STATUS_MAP = {
 	"Converted To Visit": "Converted to Visit",
 }
 CASE_TABLE_TERMINAL_ITEM_STATES = {"completed", "cancelled", "converted_to_visit"}
+# A case is "closed" when its episode reached one of these terminal statuses.
+# Reported as-is: `outcome` is NOT reconciled against `episode_status`, because the
+# two genuinely disagree in live data (Resolved episodes carrying outcome Death).
+CASE_TABLE_CLOSED_EPISODE_STATUSES = {"Resolved", "Closed", "Deceased", "Referred", "Cancelled"}
+# Bucket for closed cases whose `outcome` was never filled in. Its own bucket, not a guess.
+CASE_TABLE_NO_OUTCOME_BUCKET = "Not Set"
 CASE_TABLE_EPISODE_FIELDS = [
 	"name",
 	"pet",
@@ -436,21 +442,45 @@ def list_due_plan_items(filters=None, data=None, limit_start=0, limit_page_lengt
 
 
 @frappe.whitelist()
-def get_pet_active_plan(pet=None, pet_id=None):
+def get_pet_active_plan(pet=None, pet_id=None, include_missed=0):
 	try:
 		pet_name = cstr(pet or pet_id).strip()
 		if not pet_name:
 			return fail(_("Pet is required."), code="VALIDATION_ERROR")
 		_assert_pet_access(pet_name)
+		# ACTIVE_PLAN_STATUSES is shared with list_due_plan_items, so widen a local
+		# copy rather than the constant - otherwise that endpoint silently starts
+		# returning missed items too.
+		#
+		# _truthy, not raw truthiness: include_missed arrives over HTTP as a string,
+		# and "0" is truthy in Python. Defaults OFF, so existing callers are
+		# byte-identical.
+		statuses = set(ACTIVE_PLAN_STATUSES)
+		if _truthy(include_missed):
+			statuses.add("Missed")
 		rows = frappe.get_all(
 			"Pet Care Plan Item",
-			filters={"pet": pet_name, "status": ["in", list(ACTIVE_PLAN_STATUSES)]},
+			filters={"pet": pet_name, "status": ["in", sorted(statuses)]},
 			fields=["*"],
 			order_by="due_date asc, priority desc, modified desc",
 			ignore_permissions=True,
 		)
 		items = [dict(row) for row in rows]
-		enrich_link_aliases(items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+		# Same enrichment the follow-up board runs, so the two surfaces cannot
+		# disagree about an item's state. This adds follow_up_state / follow_up_label
+		# (via _case_table_item_state) plus the appointment and linked-visit context
+		# that rule depends on - without which an item the board calls
+		# "converted_to_visit" would show here as merely active.
+		#
+		# _enrich_case_table_items calls _enrich_episode_plan_item_display first,
+		# which applies enrich_link_aliases with the same arguments used here before,
+		# so the pet/guardian/doctor display names are still present. All lookups
+		# inside are batched per call, never per item.
+		#
+		# Note these rows come from fields=["*"], so `status` holds the raw DB value
+		# and `raw_status` is absent; _case_table_item_state falls back to `status`,
+		# which is why the rule reads the same value on both paths.
+		_enrich_case_table_items(items)
 		return ok({"items": items})
 	except Exception as exc:
 		return _error_response(exc)
@@ -466,48 +496,41 @@ def get_case_follow_up_table(filters=None, data=None, limit_start=0, limit_page_
 		limit_start = max(cint(limit_start or payload.get("limit_start")), 0)
 		limit_page_length = max(min(cint(limit_page_length or payload.get("limit") or payload.get("limit_page_length") or 50), 200), 1)
 
-		episodes, total_cases = _case_table_episode_rows(payload, limit_start, limit_page_length)
-		if not episodes:
+		cases, total_cases = _case_table_paged_cases(payload, limit_start, limit_page_length)
+		if not cases:
+			# No rows on THIS page (limit_start past the end), but the metrics still
+			# describe the whole dataset so the cards stay stable.
 			return ok(
-				{"cases": [], "rows": [], "metrics": _case_table_metrics([])},
-				meta={"total": total_cases, "limit_start": limit_start, "limit_page_length": limit_page_length},
-			)
-
-		for episode in episodes:
-			_assert_pet_access(episode.get("pet"))
-		enrich_link_aliases(episodes, pet_field="pet", guardian_field="guardian", doctor_field="primary_doctor", include_provider=False)
-
-		episode_names = [row["name"] for row in episodes]
-		items = _case_table_plan_items(episode_names, payload)
-		_enrich_case_table_items(items)
-		items = _filter_case_table_items_by_state(items, payload)
-		visits = _case_table_visits(episode_names)
-
-		items_by_episode = _group_by(items, "care_episode")
-		visits_by_episode = _group_by(visits, "care_episode")
-		require_matching_items = _case_table_has_item_filters(payload)
-
-		cases = []
-		for episode in episodes:
-			episode_items = items_by_episode.get(episode["name"], [])
-			if require_matching_items and not episode_items:
-				continue
-			episode_visits = visits_by_episode.get(episode["name"], [])
-			cases.append(
 				{
-					"case": episode,
-					"episode": episode,
-					"items": episode_items,
-					"visits": episode_visits,
-					"follow_up_summary": _case_table_summary(episode, episode_items, episode_visits),
-				}
+					"cases": [],
+					"rows": [],
+					"metrics": _case_table_metrics(_case_table_metrics_cases()),
+				},
+				meta={
+					"total": total_cases,
+					"returned": 0,
+					"limit_start": limit_start,
+					"limit_page_length": limit_page_length,
+					"default_active_only": True,
+					"default_include_closed_items": True,
+				},
 			)
+
+		# Access checks and display-only alias lookups run on the PAGE, after slicing -
+		# not on the pre-filter superset. An episode the item filter drops is never
+		# returned, so it must not be able to raise a permission error either.
+		page_episodes = [case["episode"] for case in cases]
+		for episode in page_episodes:
+			_assert_pet_access(episode.get("pet"))
+		enrich_link_aliases(page_episodes, pet_field="pet", guardian_field="guardian", doctor_field="primary_doctor", include_provider=False)
 
 		return ok(
 			{
 				"cases": cases,
 				"rows": _case_table_flat_rows(cases),
-				"metrics": _case_table_metrics(cases),
+				# Metrics are ABSOLUTE: the whole dataset, independent of the caller's
+				# filters and paging. `meta.total` below stays filter-aware for paging.
+				"metrics": _case_table_metrics(_case_table_metrics_cases()),
 			},
 			meta={
 				"total": total_cases,
@@ -723,7 +746,13 @@ def _select_options(doctype: str, fieldname: str) -> list[str]:
 	return [option for option in cstr(field.options).splitlines() if option]
 
 
-def _case_table_episode_rows(payload: dict, limit_start: int, limit_page_length: int) -> tuple[list[dict], int]:
+def _case_table_episode_filters(payload: dict) -> dict | None:
+	"""Episode-level filters only - the part that CAN be expressed in SQL.
+
+	Returns None (not an empty dict) when the payload names a doctor with no episodes:
+	that means "match nothing", which an empty filter dict would silently invert into
+	"match everything".
+	"""
 	filters = {}
 	for incoming, fieldname in (
 		("pet", "pet"),
@@ -739,7 +768,7 @@ def _case_table_episode_rows(payload: dict, limit_start: int, limit_page_length:
 	if doctor:
 		episode_names = _case_table_episode_names_for_doctor(doctor)
 		if not episode_names:
-			return [], 0
+			return None
 		filters["name"] = ["in", episode_names]
 
 	status_filter = payload.get("episode_status") or payload.get("case_status")
@@ -748,53 +777,129 @@ def _case_table_episode_rows(payload: dict, limit_start: int, limit_page_length:
 	elif _truthy(payload.get("active_only"), default=True):
 		filters["episode_status"] = ["in", list(ACTIVE_EPISODE_STATUSES)]
 
+	return filters
+
+
+def _case_table_episodes(episode_filters: dict, limit_start: int = 0, limit_page_length: int = 0) -> list[dict]:
+	"""Fetch episode rows in the board's canonical order. limit_page_length=0 means no limit."""
 	rows = frappe.get_all(
 		"Pet Care Episode",
-		filters=filters,
+		filters=episode_filters,
 		fields=CASE_TABLE_EPISODE_FIELDS,
 		order_by="modified desc",
 		limit_start=limit_start,
 		limit_page_length=limit_page_length,
 		ignore_permissions=True,
 	)
-	return [dict(row) for row in rows], _case_table_total(filters, payload)
+	return [dict(row) for row in rows]
 
 
-def _case_table_total(episode_filters: dict, payload: dict) -> int:
-	"""Full count of cases matching the filters, ignoring pagination.
+def _case_table_paged_cases(payload: dict, limit_start: int, limit_page_length: int) -> tuple[list[dict], int]:
+	"""One page of cases, plus the exact total of the SAME population.
 
-	When item-level filters are active, the main endpoint drops episodes with no matching
-	items *after* pagination, so a raw episode count would overcount. In that case we count
-	the distinct episodes that actually have a matching (and, for state filters, enriched)
-	item, so ``meta.total`` stays exact and pagination can page precisely.
+	Two paths, deliberately:
+
+	* **No item-level filter.** The episode filters are pure SQL, so LIMIT/OFFSET on
+	  `Pet Care Episode` already slices the final population - the page and the count
+	  describe the same set. Keep it: this is the common path and must not regress
+	  into an unpaged scan.
+
+	* **Item-level filter active.** `follow_up_state` is computed in Python from the
+	  linked appointment and linked visit (see `_case_table_build_cases`), and
+	  `_case_table_build_cases` additionally DROPS episodes left with no matching item.
+	  Neither can be applied before the SQL slice. Paginating first therefore indexed
+	  an unfiltered superset while the total counted the filtered set - two different
+	  populations behind one offset, so pages came back short and later cases were
+	  unreachable. Fix: fetch every matching episode unpaged, build/enrich/filter to
+	  the correct case list, and only then slice it in Python.
+
+	`total` is `len()` of the very list the page is sliced from, so rows and total are
+	one computation and cannot drift - which also removes the separate count query
+	that used to disagree with the rows by one.
+
+	Cost: the unpaged branch reads at most the full episode set allowed by the episode
+	filters (80 active / 160 total on this site) and their plan items and visits. The
+	endpoint already runs exactly this pass over all 160 episodes for the KPI cards on
+	every call, so this replaces the old duplicate count-pass rather than adding one.
 	"""
+	episode_filters = _case_table_episode_filters(payload)
+	if episode_filters is None:
+		return [], 0
+
 	if not _case_table_has_item_filters(payload):
-		return frappe.db.count("Pet Care Episode", episode_filters)
+		episodes = _case_table_episodes(episode_filters, limit_start, limit_page_length)
+		total = frappe.db.count("Pet Care Episode", episode_filters)
+		return _case_table_build_cases(episodes, payload), total
 
-	episode_names = frappe.get_all(
-		"Pet Care Episode",
-		filters=episode_filters,
-		pluck="name",
-		ignore_permissions=True,
-	)
-	if not episode_names:
-		return 0
+	cases = _case_table_build_cases(_case_table_episodes(episode_filters), payload)
+	total = len(cases)
+	if limit_page_length:
+		return cases[limit_start : limit_start + limit_page_length], total
+	return cases[limit_start:], total
 
-	# Only the enriched follow-up state filter can't be expressed at the DB level; when it is
-	# absent, a distinct DB count over the item filters is enough (and cheaper).
-	if not (payload.get("follow_up_state") or payload.get("item_state")):
-		matching = frappe.get_all(
-			"Pet Care Plan Item",
-			filters=_case_table_plan_item_filters(episode_names, payload),
-			pluck="care_episode",
-			ignore_permissions=True,
-		)
-		return len({name for name in matching if name})
 
+def _case_table_build_cases(episodes: list[dict], payload: dict) -> list[dict]:
+	"""Group plan items and visits under each episode.
+
+	Shared by the paged response and the unpaged metrics pass so both run the
+	identical enrichment path. `follow_up_state` is computed in Python from
+	raw_status, due_date, converted_to_visit/converted_visit, the linked
+	appointment's status and whether a linked visit exists - so a SQL aggregate
+	could not reproduce it, and the KPI cards would contradict the row badges
+	beneath them. Hence a second pass through this same code rather than a
+	GROUP BY.
+	"""
+	if not episodes:
+		return []
+	episode_names = [row["name"] for row in episodes]
 	items = _case_table_plan_items(episode_names, payload)
 	_enrich_case_table_items(items)
 	items = _filter_case_table_items_by_state(items, payload)
-	return len({item.get("care_episode") for item in items if item.get("care_episode")})
+	visits = _case_table_visits(episode_names)
+
+	items_by_episode = _group_by(items, "care_episode")
+	visits_by_episode = _group_by(visits, "care_episode")
+	require_matching_items = _case_table_has_item_filters(payload)
+
+	cases = []
+	for episode in episodes:
+		episode_items = items_by_episode.get(episode["name"], [])
+		if require_matching_items and not episode_items:
+			continue
+		episode_visits = visits_by_episode.get(episode["name"], [])
+		cases.append(
+			{
+				"case": episode,
+				"episode": episode,
+				"items": episode_items,
+				"visits": episode_visits,
+				"follow_up_summary": _case_table_summary(episode, episode_items, episode_visits),
+			}
+		)
+	return cases
+
+
+def _case_table_metrics_cases() -> list[dict]:
+	"""Every case in the dataset - the population the KPI cards describe.
+
+	Deliberately ignores BOTH the caller's filters and pagination: the cards are a
+	dashboard over the whole dataset, not a description of the current view. The
+	caller's payload is not consulted at all.
+
+	`active_only` must be passed explicitly as False. `_case_table_episode_filters`
+	defaults it to True via ``_truthy(payload.get("active_only"), default=True)``,
+	so a merely-empty payload would silently return active episodes only - 80 of
+	160 on this site - which would look like a working absolute metric while
+	quietly excluding every closed case.
+
+	Display-only work (link aliases) and the per-row `_assert_pet_access` check are
+	skipped: this feeds aggregate counts, not returned rows.
+	"""
+	neutral_payload = {"active_only": False}
+	# Deliberately uncapped: a cap would silently under-count, which is the failure
+	# mode this whole change fixes.
+	episodes = _case_table_episodes(_case_table_episode_filters(neutral_payload))
+	return _case_table_build_cases(episodes, neutral_payload)
 
 
 def _case_table_episode_names_for_doctor(doctor: str) -> list[str]:
@@ -837,6 +942,25 @@ def _case_table_plan_item_filters(episode_names: list[str], payload: dict) -> di
 			filters["due_date"] = ["between", [filters["due_date"][1], date_to]]
 		else:
 			filters["due_date"] = ["<=", date_to]
+	if _truthy(payload.get("done_today")):
+		# Items completed TODAY - the population behind metrics.done_today_items.
+		#
+		# `status == "Done"` is exactly equivalent to follow_up_state == "completed":
+		# that is the first, unconditional branch of _case_table_item_state, so no
+		# later rule can override it. This filter therefore selects precisely the
+		# items the metric counts, which is the point - a card and the view it opens
+		# must show the same number.
+		#
+		# The date is computed in PYTHON and passed as a literal. The MySQL session
+		# runs in UTC (NOW() == UTC_TIMESTAMP()) while completed_on is stored in
+		# system-local time (Asia/Baghdad), so CURDATE()/DATE(NOW()) would be three
+		# hours out and mis-bucket every completion between 00:00 and 03:00 local.
+		#
+		# Set last so it wins over item_status/include_closed_items: asking for
+		# "completed today" implies Done, whatever an earlier status filter said.
+		today = getdate(nowdate())
+		filters["status"] = "Done"
+		filters["completed_on"] = ["between", [f"{today} 00:00:00", f"{today} 23:59:59.999999"]]
 	return filters
 
 
@@ -1073,21 +1197,66 @@ def _case_table_empty_case_row(episode: dict, summary: dict) -> dict:
 	}
 
 
+def _completed_on_date(item: dict):
+	"""The local date an item was completed, or None. Never falls back to `modified`:
+	"touched today" is not "completed today"."""
+	value = item.get("completed_on")
+	if not value:
+		return None
+	try:
+		return getdate(value)
+	except Exception:
+		return None
+
+
 def _case_table_metrics(cases: list[dict]) -> dict:
+	"""Aggregate the case rows handed in.
+
+	Callers pass the ABSOLUTE set from `_case_table_metrics_cases` - the whole
+	dataset, not a page and not the caller's filtered view. `total_cases` is
+	therefore simply the length of that set, and `open_cases + closed_cases`
+	partitions it exactly.
+	"""
 	states = Counter()
+	outcomes = Counter()
 	total_items = 0
+	done_today_items = 0
+	open_cases = 0
+	closed_cases = 0
+	today = getdate(nowdate())  # Baghdad-local, same basis as due_today
+
 	for case in cases:
-		total_items += len(case.get("items") or [])
-		states.update(item.get("follow_up_state") or "open" for item in case.get("items") or [])
+		items = case.get("items") or []
+		total_items += len(items)
+		for item in items:
+			state = item.get("follow_up_state") or "open"
+			states[state] += 1
+			if state == "completed" and _completed_on_date(item) == today:
+				done_today_items += 1
+
+		episode = case.get("episode") or case.get("case") or {}
+		# Complementary by construction: every case lands in exactly one bucket, so
+		# open_cases + closed_cases == total_cases holds even for an unexpected or
+		# blank episode_status (which counts as open rather than vanishing).
+		if cstr(episode.get("episode_status")).strip() in CASE_TABLE_CLOSED_EPISODE_STATUSES:
+			closed_cases += 1
+			outcomes[cstr(episode.get("outcome")).strip() or CASE_TABLE_NO_OUTCOME_BUCKET] += 1
+		else:
+			open_cases += 1
+
 	return {
 		"total_cases": len(cases),
+		"open_cases": open_cases,
 		"total_items": total_items,
 		"open_items": total_items - sum(states.get(state, 0) for state in CASE_TABLE_TERMINAL_ITEM_STATES),
 		"overdue_items": states.get("overdue", 0),
 		"due_today_items": states.get("due_today", 0),
 		"completed_items": states.get("completed", 0),
+		"done_today_items": done_today_items,
 		"cancelled_items": states.get("cancelled", 0),
 		"converted_items": states.get("converted_to_visit", 0),
+		"closed_cases": closed_cases,
+		"closed_by_outcome": dict(outcomes),
 		"by_state": dict(states),
 	}
 
@@ -1111,6 +1280,11 @@ def _group_by(rows: list[dict], fieldname: str) -> dict[str, list[dict]]:
 
 
 def _case_table_has_item_filters(payload: dict) -> bool:
+	# `done_today` is a boolean flag, so it needs _truthy rather than raw truthiness:
+	# the string "0" is truthy in Python and would otherwise enable the post-filter
+	# episode drop while _case_table_plan_item_filters correctly ignored the flag.
+	if _truthy(payload.get("done_today")):
+		return True
 	return any(payload.get(key) for key in ("plan_type", "item_status", "plan_status", "follow_up_state", "item_state", "date_from", "date_to", "due_date"))
 
 
