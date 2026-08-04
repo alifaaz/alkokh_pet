@@ -59,6 +59,15 @@ EPISODE_PLAN_STATUS_MAP = {
 	"Converted To Visit": "Converted to Visit",
 }
 CASE_TABLE_TERMINAL_ITEM_STATES = {"completed", "cancelled", "converted_to_visit"}
+# Forward-looking item states: everything that is neither terminal nor already due or
+# late. `due_future_items` counts these intersected with due_date > today.
+#
+# Gated on the STATE, not the date alone, and that is what keeps due_future disjoint
+# from overdue_items: `_case_table_item_state` returns "overdue" for a raw status of
+# literally "Overdue" BEFORE it ever looks at due_date, so an item carrying that status
+# with a future date would be counted by both cards under a date-only rule. Same trap
+# for "missed". Neither state appears here, so the three cards cannot double-count.
+CASE_TABLE_FUTURE_ITEM_STATES = {"scheduled", "open", "in_progress"}
 # A case is "closed" when its episode reached one of these terminal statuses.
 # Reported as-is: `outcome` is NOT reconciled against `episode_status`, because the
 # two genuinely disagree in live data (Resolved episodes carrying outcome Death).
@@ -798,6 +807,20 @@ def _case_table_episode_filters(payload: dict) -> dict | None:
 		# `_truthy`, not raw truthiness: HTTP sends `closed_only=0` as the string "0",
 		# which is truthy in Python - the same trap already handled for done_today.
 		filters["episode_status"] = ["in", sorted(CASE_TABLE_CLOSED_EPISODE_STATUSES)]
+	elif _truthy(payload.get("due_future")):
+		# Deliberately applies NO episode_status filter, so the population spans active
+		# AND closed episodes.
+		#
+		# The "Due future" card is computed over every episode (`_case_table_metrics_cases`
+		# runs active_only=False), so the view it opens has to span the same set or the two
+		# disagree: 38 counted vs 33 shown on current data, the five missing items all
+		# sitting on Resolved episodes with a future due_date.
+		#
+		# Same standalone-flag precedent as closed_only above, and checked BEFORE
+		# active_only for the same reason: `due_future=1` has to work on its own, without
+		# the caller remembering to also send active_only=0. An explicit episode_status
+		# list still wins over it, and closed_only still narrows further.
+		pass
 	elif _truthy(payload.get("active_only"), default=True):
 		filters["episode_status"] = ["in", list(ACTIVE_EPISODE_STATUSES)]
 
@@ -1147,6 +1170,31 @@ def _case_table_item_label(item: dict, *, linked_visit=None) -> str:
 
 
 def _filter_case_table_items_by_state(items: list[dict], payload: dict) -> list[dict]:
+	if _truthy(payload.get("due_future")):
+		# The population behind metrics.due_future_items - the "Due future" card.
+		#
+		# Applied HERE, after _enrich_case_table_items, because follow_up_state is
+		# computed in Python from the linked appointment and visit; SQL cannot reproduce
+		# it. Reuses CASE_TABLE_FUTURE_ITEM_STATES - the very constant the metric counts
+		# with - so the card and the view it opens cannot drift apart.
+		#
+		# Gated on the STATE as well as the date for the same reason the metric is: a raw
+		# status of "Overdue"/"Missed" resolves to that state before due_date is ever
+		# read, so a date-only rule would pull items the card never counted.
+		#
+		# The date is computed in PYTHON. The MySQL session runs UTC while the clinic is
+		# Asia/Baghdad, so CURDATE() would be three hours out - same trap as done_today.
+		#
+		# `_truthy`, not raw truthiness: HTTP sends `due_future=0` as the string "0",
+		# which is truthy in Python.
+		today = getdate(nowdate())
+		items = [
+			item
+			for item in items
+			if item.get("follow_up_state") in CASE_TABLE_FUTURE_ITEM_STATES
+			and item.get("due_date")
+			and getdate(item.get("due_date")) > today
+		]
 	state_filter = payload.get("follow_up_state") or payload.get("item_state")
 	if not state_filter:
 		return items
@@ -1245,6 +1293,7 @@ def _case_table_metrics(cases: list[dict]) -> dict:
 	outcomes = Counter()
 	total_items = 0
 	done_today_items = 0
+	due_future_items = 0
 	open_cases = 0
 	closed_cases = 0
 	today = getdate(nowdate())  # Baghdad-local, same basis as due_today
@@ -1257,6 +1306,8 @@ def _case_table_metrics(cases: list[dict]) -> dict:
 			states[state] += 1
 			if state == "completed" and _completed_on_date(item) == today:
 				done_today_items += 1
+			if state in CASE_TABLE_FUTURE_ITEM_STATES and item.get("due_date") and getdate(item.get("due_date")) > today:
+				due_future_items += 1
 
 		episode = case.get("episode") or case.get("case") or {}
 		# Complementary by construction: every case lands in exactly one bucket, so
@@ -1270,11 +1321,16 @@ def _case_table_metrics(cases: list[dict]) -> dict:
 
 	return {
 		"total_cases": len(cases),
+		# Explicit name for the same population as `total_cases` - every episode in the
+		# dataset, active AND closed. Added rather than renamed: `total_cases` is kept so
+		# existing consumers do not break, exactly as `open_items` is kept below.
+		"all_cases": len(cases),
 		"open_cases": open_cases,
 		"total_items": total_items,
 		"open_items": total_items - sum(states.get(state, 0) for state in CASE_TABLE_TERMINAL_ITEM_STATES),
 		"overdue_items": states.get("overdue", 0),
 		"due_today_items": states.get("due_today", 0),
+		"due_future_items": due_future_items,
 		"completed_items": states.get("completed", 0),
 		"done_today_items": done_today_items,
 		"cancelled_items": states.get("cancelled", 0),
@@ -1304,10 +1360,15 @@ def _group_by(rows: list[dict], fieldname: str) -> dict[str, list[dict]]:
 
 
 def _case_table_has_item_filters(payload: dict) -> bool:
-	# `done_today` is a boolean flag, so it needs _truthy rather than raw truthiness:
-	# the string "0" is truthy in Python and would otherwise enable the post-filter
-	# episode drop while _case_table_plan_item_filters correctly ignored the flag.
-	if _truthy(payload.get("done_today")):
+	# `done_today` and `due_future` are boolean flags, so they need _truthy rather than
+	# raw truthiness: the string "0" is truthy in Python and would otherwise enable the
+	# post-filter episode drop while the filters themselves correctly ignored the flag.
+	#
+	# Both MUST be listed here. Without it the episode drop in _case_table_build_cases
+	# never fires, so episodes with no matching item survive as empty rows and the
+	# unpaged/count branch of _case_table_paged_cases is skipped - which is exactly the
+	# pagination mismatch done_today hit.
+	if _truthy(payload.get("done_today")) or _truthy(payload.get("due_future")):
 		return True
 	return any(payload.get(key) for key in ("plan_type", "item_status", "plan_status", "follow_up_state", "item_state", "date_from", "date_to", "due_date"))
 
