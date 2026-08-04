@@ -1449,10 +1449,17 @@ def _sync_episode_profile_for_plan(plan):
 		episode = frappe.get_doc("Pet Care Episode", plan.care_episode)
 		if plan.status not in PLAN_TERMINAL_STATUSES:
 			episode.episode_status = "Follow-up Scheduled" if plan.plan_type == "Follow-up Visit" else _episode_status_for_plan(plan)
-		if plan.due_date and plan.plan_type == "Follow-up Visit":
-			episode.next_follow_up_date = plan.due_date
-			episode.requires_follow_up = 1
-			episode.follow_up_status = "Scheduled" if plan.appointment else "Requested"
+		if plan.plan_type == "Follow-up Visit":
+			if plan.status in PLAN_TERMINAL_STATUSES:
+				# A terminal follow-up must never re-stamp its own (now past) due date -
+				# that left a finished follow-up reading as outstanding. Recompute from the
+				# follow-ups still open on this episode rather than clearing outright, so
+				# closing one of two does not drop the assertion for the other.
+				_apply_open_follow_up_flags(episode, exclude_plan=plan.name)
+			elif plan.due_date:
+				episode.next_follow_up_date = plan.due_date
+				episode.requires_follow_up = 1
+				episode.follow_up_status = "Scheduled" if plan.appointment else "Requested"
 		if plan.title and not episode.treatment_summary and plan.plan_type not in {"Follow-up Visit", "Lab Recheck", "Imaging Recheck"}:
 			episode.treatment_summary = plan.title
 		episode.save(ignore_permissions=True)
@@ -1471,6 +1478,41 @@ def _sync_episode_profile_for_plan(plan):
 			"last_synced_at": now_datetime(),
 		}
 		_set_existing_values("Pet Medical Profile", profile_name, updates)
+
+
+def _apply_open_follow_up_flags(episode, exclude_plan: str | None = None):
+	"""Point the episode's follow-up flags at the follow-ups still open on it.
+
+	Called when a Follow-up Visit plan item reaches a terminal status. Recomputed from
+	the remaining non-terminal items instead of blindly cleared, so completing one of
+	two follow-ups still leaves the other one asserted. Only the follow-up flags are
+	touched here - episode_status is decided by the caller.
+	"""
+	filters = {
+		"care_episode": episode.name,
+		"plan_type": "Follow-up Visit",
+		"status": ["not in", sorted(PLAN_TERMINAL_STATUSES)],
+		"due_date": ["is", "set"],
+	}
+	if exclude_plan:
+		filters["name"] = ["!=", exclude_plan]
+	remaining = frappe.get_all(
+		"Pet Care Plan Item",
+		filters=filters,
+		fields=["name", "due_date", "appointment"],
+		order_by="due_date asc, modified desc",
+		limit_page_length=1,
+		ignore_permissions=True,
+	)
+	if remaining:
+		# Same rule the open-item path uses, applied to the soonest remaining follow-up.
+		episode.next_follow_up_date = remaining[0].due_date
+		episode.requires_follow_up = 1
+		episode.follow_up_status = "Scheduled" if remaining[0].appointment else "Requested"
+	else:
+		episode.next_follow_up_date = None
+		episode.requires_follow_up = 0
+		episode.follow_up_status = "Not Needed"
 
 
 def _episode_status_for_plan(plan) -> str:
