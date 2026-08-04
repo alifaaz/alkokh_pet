@@ -220,7 +220,7 @@ def cancel_plan_item(plan_item=None, reason=None, data=None, **kwargs):
 		return _error_response(exc)
 
 @frappe.whitelist(methods=["POST"])
-def complete_plan_item(plan_item=None, note=None, data=None, **kwargs):
+def complete_plan_item(plan_item=None, note=None, data=None, linked_visit=None, completion_note=None, **kwargs):
 	try:
 		payload = _payload(data, kwargs)
 		name = cstr(plan_item or payload.get("plan_item") or payload.get("name")).strip()
@@ -230,13 +230,29 @@ def complete_plan_item(plan_item=None, note=None, data=None, **kwargs):
 		require_doctype_permission("Pet Care Plan Item", "write")
 		plan = frappe.get_doc("Pet Care Plan Item", name)
 		_assert_plan_access(plan, write=True)
-		complete_note = note or payload.get("note")
+		# `completion_note` is an explicit alias for the pre-existing `note` param, appended
+		# after it so the original precedence is untouched for callers that send `note`.
+		complete_note = note or payload.get("note") or completion_note or payload.get("completion_note")
+		# Optional attribution: which EXISTING visit closed this follow-up. There is no
+		# stored `linked_visit` column - the board derives that payload key from
+		# `converted_visit` in _enrich_case_table_items, so that is the field we set.
+		# Validated up front: a bad id fails before anything is written, never dropped.
+		attributed_visit = cstr(linked_visit or payload.get("linked_visit")).strip()
+		if attributed_visit and not frappe.db.exists("Vet Visit", attributed_visit):
+			return fail(_("Vet Visit {0} was not found.").format(attributed_visit), code="VALIDATION_ERROR")
+
 		appointment = close_linked_plan_appointment(plan, reason=complete_note or _("Care plan item was completed."))
 		if plan.status != "Done":
 			plan.status = "Done"
 			plan.completed_on = plan.completed_on or now_datetime()
 			plan.completed_by = plan.completed_by or frappe.session.user
 			plan.completion_note = complete_note or plan.completion_note
+		if attributed_visit:
+			# status stays "Done": _case_table_item_state returns "completed" on
+			# raw_status == "Done" before it ever looks at converted_visit, so the
+			# board state and metrics are unchanged. converted_to_visit is deliberately
+			# NOT set - that flag means "converted into a NEW visit" (the forward path).
+			plan.converted_visit = attributed_visit
 		refresh_plan_appointment_status_field(plan, appointment)
 		plan.save(ignore_permissions=True)
 		_sync_episode_profile_for_plan(plan)
