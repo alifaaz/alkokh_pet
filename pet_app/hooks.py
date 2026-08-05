@@ -346,15 +346,12 @@ doc_events = {
         "on_submit": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_cancel": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
+    # Product -> Item projection removed: the storefront model is a THIN OVERLAY.
+    # Item is the single source of truth for price/stock/warehouse/UOM/brand, and
+    # Product must never write back to it. Cache invalidation stays.
     "Product": {
-        "after_insert": [
-            "pet_app.api.product.sync_product_item",
-            "pet_app.api.mobile.home_builder.clear_home_cache",
-        ],
-        "on_update": [
-            "pet_app.api.product.sync_product_item",
-            "pet_app.api.mobile.home_builder.clear_home_cache",
-        ],
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
     "Product Category": {
@@ -362,18 +359,16 @@ doc_events = {
         "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
-    "Item": {
-        "on_update": "pet_app.api.product.sync_item_from_product_projection",
-    },
+    # "Item" doc_events entry removed entirely: its ONLY handler was the reverse
+    # Item -> Product projection. Item saves still fire the wildcard "*" on_update
+    # (notifications.actions.on_update) declared at the top of this dict, plus every
+    # ERPNext/Frappe core Item hook - none of which are touched here.
+    #
+    # Item Price -> Product projection removed for the same reason: the overlay reads
+    # prices from Item Price at request time instead of mirroring them onto Product.
     "Item Price": {
-        "after_insert": [
-            "pet_app.api.product.sync_item_price_from_product_projection",
-            "pet_app.api.mobile.home_builder.clear_home_cache",
-        ],
-        "on_update": [
-            "pet_app.api.product.sync_item_price_from_product_projection",
-            "pet_app.api.mobile.home_builder.clear_home_cache",
-        ],
+        "after_insert": "pet_app.api.mobile.home_builder.clear_home_cache",
+        "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
     "Brand": {
@@ -397,9 +392,13 @@ doc_events = {
         "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
+    # Item Group -> Product Category auto-mirror removed. It duplicated the Item Group
+    # nested set into a second tree (67 auto-rows) whose only added value - display
+    # order, image, description - was never populated, and it surfaced clinical groups
+    # (Antibiotics, Anesthetics) as storefront categories. The store taxonomy will be
+    # authored deliberately instead. `before_save` is UNRELATED and stays.
     "Item Group": {
         "before_save": "pet_app.api.product.before_save",
-        "after_insert": "pet_app.pet_app.doctype.product_category.product_category.sync_product_category_for_item_group",
     },
     "Supplier": {
         "before_save": [
@@ -432,13 +431,16 @@ scheduler_events = {
         "pet_app.notifications.scheduler.process_due_notifications",
         "pet_app.notifications.retry.retry_failed_notifications",
     ],
+    # The two product-projection repair jobs are gone (hourly repair_active_*, daily
+    # repair_all_*). They called sync_product_item in a loop and committed mid-loop, so
+    # they rewrote Items from Products unattended - the same Product -> Item direction
+    # the doc_events above no longer allow, only worse because no user action triggered
+    # it. With these removed there is no remaining path by which Product writes to Item.
     "hourly": [
-        "pet_app.api.product.repair_active_product_item_projections",
         "pet_app.tasks.reminders.enqueue_due_reminders",
         "pet_app.notifications.actions.expire_due_actions",
     ],
     "daily": [
-        "pet_app.api.product.repair_all_product_item_projections",
         "pet_app.tasks.reminders.send_due_reminders",
         "pet_app.notifications.scheduler.create_daily_reminders",
         "pet_app.notifications.scheduler.cleanup_old_webhook_events",
