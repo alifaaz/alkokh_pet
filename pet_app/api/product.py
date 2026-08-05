@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import flt, cint
+from frappe.utils import flt, cint, cstr
 from itertools import product as iterproduct
 
 from pet_app.api.permissions import (
@@ -753,128 +753,474 @@ def _assert_publishable_item(item_code):
     return row.name
 
 
+# ─────────────────────────────────────────
+# THIN OVERLAY: live resolution from the Item
+#
+# Item owns price, stock, warehouse, UOM and brand. Everything below READS them at
+# request time and never copies them onto Product, so the two cannot drift.
+# ─────────────────────────────────────────
+
+# Declared once, read through _store_price_list(), never inlined as a literal in the
+# read path - the same discipline as STORE_ROOT_CATEGORY. A dedicated "Store" price list
+# later means changing this constant, not hunting call sites.
+STORE_PRICE_LIST = "Standard Selling"
+
+# Storefront-owned fields an admin may write through this API.
+STOREFRONT_WRITABLE_FIELDS = (
+    "product_name",
+    "description",
+    "image",
+    "category",
+    "sku",
+    "barcode",
+    "tags",
+    "vendor",
+    "mobile_home_filter",
+)
+
+# The strike-through "was" price, stored on the vestigial Product.price column but
+# exposed under an unambiguous name. It is PRESENTATION ONLY and is never charged: the
+# selling price is always item.price.rate, read live from the Item.
+#
+# The old `price` / `discounted_price` pair is exactly what caused the confusion this
+# name removes - `price` looked like the selling price while `discounted_price` was the
+# one that actually matched Item Price.
+COMPARE_AT_PRICE_API_FIELD = "compare_at_price"
+COMPARE_AT_PRICE_DB_FIELD = "price"
+
+# Item-owned or variant-era fields. Writing them here would recreate the mirror this
+# refactor removed, so they are refused loudly rather than silently dropped - a caller
+# that sent a price has to learn the store does not set prices.
+#
+# `price` stays rejected on purpose even though it now backs compare_at_price: a caller
+# sending "price" almost certainly means the selling price, and silently treating that as
+# a strike-through would reintroduce the ambiguity. They must say compare_at_price.
+ITEM_OWNED_FIELDS = {
+    "price": "selling price",
+    "discounted_price": "selling price",
+    "rate": "selling price",
+    "in_stock": "stock",
+    "qty": "stock",
+    "stock": "stock",
+    "warehouse": "stock",
+    "item_group": "item group",
+    "uom": "unit of measure",
+    "stock_uom": "unit of measure",
+    "brand": "brand",
+    "item_price": "selling price",
+}
+
+
+def _truthy_flag(value, default=False) -> bool:
+    """Boolean coercion for HTTP flags.
+
+    `_truthy`-style, not raw truthiness: the string "0" arrives over HTTP and is truthy
+    in Python, so `include_attached=0` would otherwise switch the filter ON.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(cint(value))
+
+
+def _store_price_list() -> str:
+    """The selling price list the storefront quotes from."""
+    return STORE_PRICE_LIST
+
+
+def _item_price(item_code):
+    """Live selling price for an Item. `found` is explicit so callers can show
+    "no price set" instead of rendering a free product."""
+    price_list = _store_price_list()
+    row = frappe.db.get_value(
+        "Item Price",
+        {"item_code": item_code, "price_list": price_list, "selling": 1},
+        ["price_list_rate", "currency"],
+        as_dict=True,
+    )
+    if not row:
+        return {"rate": None, "currency": None, "price_list": price_list, "found": False}
+    return {
+        "rate": flt(row.price_list_rate),
+        "currency": row.currency or frappe.defaults.get_global_default("currency"),
+        "price_list": price_list,
+        "found": True,
+    }
+
+
+def _item_stock(item_code):
+    """Live stock summed across EVERY warehouse holding the Item, plus the breakdown.
+
+    Deliberately not scoped to Stock Settings.default_warehouse: that currently points at
+    another company's empty warehouse, so a scoped read reports 0 for everything. Summing
+    the Item's own bins is both correct and immune to that misconfiguration.
+    """
+    rows = frappe.get_all(
+        "Bin",
+        filters={"item_code": item_code},
+        fields=["warehouse", "actual_qty"],
+        ignore_permissions=True,
+    )
+    breakdown = [
+        {"warehouse": r.warehouse, "qty": flt(r.actual_qty)}
+        for r in rows
+        if flt(r.actual_qty)
+    ]
+    total = sum(b["qty"] for b in breakdown)
+    return {"qty": total, "in_stock": total > 0, "warehouses": breakdown}
+
+
+def _item_snapshot(item_code):
+    """The Item block of the read shape. Read-only to the store."""
+    if not item_code:
+        return None
+    row = frappe.db.get_value(
+        "Item",
+        item_code,
+        ["name", "item_name", "item_group", "stock_uom", "brand", "disabled", "image", "description"],
+        as_dict=True,
+    )
+    if not row:
+        # Dangling link: reported rather than hidden, so the admin can see and fix it.
+        return {"code": item_code, "exists": False}
+    return {
+        "code": row.name,
+        "exists": True,
+        "item_name": row.item_name,
+        "item_group": row.item_group,
+        "uom": row.stock_uom,
+        "brand": row.brand,
+        "disabled": bool(cint(row.disabled)),
+        "image": row.image,
+        "description": row.description,
+        "price": _item_price(row.name),
+        "stock": _item_stock(row.name),
+    }
+
+
+def _product_payload(row):
+    """The overlay + its live Item resolution.
+
+    Vestigial Product columns (price, discounted_price, in_stock, item_price,
+    has_variants, product_variant) are deliberately NOT read: they still exist in the
+    schema but no longer mean anything. `in_stock` is derived from the Item's bins.
+    """
+    item = _item_snapshot(row.get("item"))
+    return {
+        "name": row.get("name"),
+        "status": row.get("status"),
+        "published": row.get("status") == "Active",
+        "display_name": row.get("product_name"),
+        "description": row.get("description"),
+        "image": row.get("image"),
+        "gallery": _product_gallery(row.get("name")),
+        "category": row.get("category"),
+        "sku": row.get("sku"),
+        "barcode": row.get("barcode"),
+        "tags": row.get("tags"),
+        "vendor": row.get("vendor"),
+        "item": item,
+        # Presentation-only strike-through. NOT the selling price - item.price.rate is.
+        "compare_at_price": flt(row.get(COMPARE_AT_PRICE_DB_FIELD)) or None,
+        "discount": _discount_block(row.get(COMPARE_AT_PRICE_DB_FIELD), item),
+        # Convenience mirrors of the LIVE item values, so grids do not have to dig.
+        "in_stock": bool(item and item.get("stock", {}).get("in_stock")) if item else False,
+        "price": (item or {}).get("price", {}).get("rate") if item else None,
+        "currency": (item or {}).get("price", {}).get("currency") if item else None,
+        "modified": row.get("modified"),
+    }
+
+
+def _product_gallery(product_name):
+    if not product_name:
+        return []
+    return frappe.get_all(
+        "File",
+        filters={"attached_to_doctype": "Product", "attached_to_name": product_name, "is_private": 0},
+        fields=["name", "file_url", "file_name", "custom_is_default"],
+        order_by="custom_is_default desc, creation asc",
+        ignore_permissions=True,
+    )
+
+
+def _reject_item_owned_fields(payload):
+    """Refuse Item-owned writes explicitly instead of ignoring them."""
+    offenders = sorted({ITEM_OWNED_FIELDS[k] for k in payload if k in ITEM_OWNED_FIELDS})
+    if not offenders:
+        return
+    hint = ""
+    if "selling price" in offenders:
+        hint = _(" To set a strike-through 'was' price, send {0} instead.").format(COMPARE_AT_PRICE_API_FIELD)
+    frappe.throw(
+        _("{0} is managed on the Item, not on the product. Update it on the linked Item instead.").format(
+            ", ".join(offenders).capitalize()
+        )
+        + hint
+    )
+
+
+def _apply_compare_at_price(doc, payload):
+    """Write the presentation-only strike-through price, if supplied."""
+    if COMPARE_AT_PRICE_API_FIELD not in payload:
+        return
+    value = payload.get(COMPARE_AT_PRICE_API_FIELD)
+    if value in (None, ""):
+        doc.set(COMPARE_AT_PRICE_DB_FIELD, 0)
+        return
+    amount = flt(value)
+    if amount < 0:
+        frappe.throw(_("{0} cannot be negative.").format(COMPARE_AT_PRICE_API_FIELD))
+    doc.set(COMPARE_AT_PRICE_DB_FIELD, amount)
+
+
+def _discount_block(compare_at, item):
+    """Whether the strike-through is renderable, and why not when it is not.
+
+    A compare-at at or below the live selling price is not a discount - rendering it
+    would show a nonsense strike-through. The state is reported rather than hidden so the
+    admin UI can flag it instead of silently dropping the value.
+    """
+    compare_at = flt(compare_at) or None
+    price = (item or {}).get("price") or {}
+    rate = flt(price.get("rate")) if price.get("found") else None
+
+    if not compare_at:
+        reason = "no_compare_at_price"
+    elif rate is None:
+        reason = "no_item_price"
+    elif compare_at <= rate:
+        reason = "not_above_selling_price"
+    else:
+        reason = None
+
+    return {
+        "has_discount": reason is None,
+        "reason": reason,
+        "compare_at_price": compare_at,
+        "price": rate,
+        "amount": (compare_at - rate) if reason is None else None,
+        "percent": round((compare_at - rate) / compare_at * 100, 2) if reason is None and compare_at else None,
+    }
+
+
+@frappe.whitelist(allow_guest=False)
+@standardize_response
+def create_product(item=None, **kwargs):
+    """Create a storefront overlay on top of an EXISTING Item, as a Draft.
+
+    Creation is separate from publishing: publish_product used to do both, which meant a
+    half-valid product could be inserted and committed before validation failed.
+    """
+    _check_permission("create")
+    _reject_item_owned_fields(kwargs)
+
+    item_code = _assert_publishable_item(item or kwargs.get("item"))
+    if cint(kwargs.get("has_variants") or 0):
+        frappe.throw(_("Variants are not supported yet."))
+
+    existing = frappe.db.get_value("Product", {"item": item_code}, "name")
+    if existing:
+        frappe.throw(
+            _("Item {0} is already linked to product {1}.").format(item_code, existing)
+        )
+
+    sku = cstr(kwargs.get("sku")).strip()
+    if not sku:
+        last = frappe.db.sql(
+            "SELECT MAX(CAST(SUBSTRING(sku, 5) AS UNSIGNED)) FROM `tabProduct` WHERE sku LIKE 'SKU-%'"
+        )
+        sku = f"SKU-{str(int(last[0][0] or 0) + 1).zfill(5)}"
+    elif frappe.db.get_value("Product", {"sku": sku}, "name"):
+        frappe.throw(_("SKU {0} already exists.").format(sku))
+
+    doc = frappe.new_doc("Product")
+    doc.item = item_code
+    doc.sku = sku
+    for field in STOREFRONT_WRITABLE_FIELDS:
+        if field in kwargs and field != "sku":
+            doc.set(field, kwargs[field])
+    _apply_compare_at_price(doc, kwargs)
+    if not doc.product_name:
+        doc.product_name = frappe.db.get_value("Item", item_code, "item_name") or item_code
+    doc.status = "Draft"
+    doc.flags.ignore_permissions = True
+    doc.insert()
+
+    frappe.response["data"] = _product_payload(doc.as_dict())
+
+
+@frappe.whitelist(allow_guest=False)
+@standardize_response
+def update_product(product_id=None, **kwargs):
+    """Update storefront fields only. Item-owned fields are refused."""
+    _check_permission("write")
+    if not product_id:
+        frappe.throw(_("Product is required."))
+    if not frappe.db.exists("Product", product_id):
+        frappe.throw(_("Product {0} was not found.").format(product_id))
+
+    _reject_item_owned_fields(kwargs)
+    if "has_variants" in kwargs and cint(kwargs.get("has_variants")):
+        frappe.throw(_("Variants are not supported yet."))
+
+    doc = frappe.get_doc("Product", product_id)
+
+    # Re-attaching to a different Item is allowed, but only to a real active one.
+    if kwargs.get("item") and kwargs["item"] != doc.item:
+        new_item = _assert_publishable_item(kwargs["item"])
+        clash = frappe.db.get_value("Product", {"item": new_item, "name": ["!=", doc.name]}, "name")
+        if clash:
+            frappe.throw(_("Item {0} is already linked to product {1}.").format(new_item, clash))
+        doc.item = new_item
+
+    for field in STOREFRONT_WRITABLE_FIELDS:
+        if field in kwargs:
+            doc.set(field, kwargs[field])
+    _apply_compare_at_price(doc, kwargs)
+
+    doc.flags.ignore_permissions = True
+    doc.save()
+    frappe.response["data"] = _product_payload(doc.as_dict())
+
+
 @frappe.whitelist(allow_guest=False)
 @standardize_response
 def publish_product(product_id=None, **kwargs):
-    _check_permission("write" if product_id else "create")
+    """Mark an existing overlay published. Writes to Product and nothing else.
 
-    try:
-        # ── capture qty before anything ──
-        _initial_qty = flt(kwargs.pop("qty", 0))
+    The create path moved to create_product. The old "price is required" rule checked the
+    PRODUCT's price; under the overlay the Item owns pricing, so the requirement is now
+    that the linked Item has a price on the store price list.
+    """
+    _check_permission("write")
+    if not product_id:
+        frappe.throw(_("Product is required. Create it first, then publish."))
 
-        # ── Storefront-overlay preconditions, checked BEFORE anything is written ──
-        # Items - and their price, stock, warehouse and UOM - are maintained by clinic
-        # staff in the Item form. Product is only the storefront face on top of one, so
-        # publishing ATTACHES to an existing Item and never mints one. Nothing in this
-        # endpoint writes to Item, Item Price, Stock Entry or Bin.
-        #
-        # Checked up front deliberately: the create branch below inserts AND commits, so
-        # a throw after that point could not be rolled back and would strand a half-made
-        # Product. Failing here writes nothing at all.
-        if product_id:
-            _existing = frappe.db.get_value("Product", product_id, ["item", "has_variants"], as_dict=True)
-            if not _existing:
-                frappe.throw(_("Product {0} was not found.").format(product_id))
-            _target_item = kwargs.get("item") or _existing.item
-            _has_variants = cint(kwargs["has_variants"] if "has_variants" in kwargs else _existing.has_variants)
-        else:
-            _target_item = kwargs.get("item")
-            _has_variants = cint(kwargs.get("has_variants") or 0)
+    row = frappe.db.get_value("Product", product_id, ["name", "item", "has_variants"], as_dict=True)
+    if not row:
+        frappe.throw(_("Product {0} was not found.").format(product_id))
+    if cint(row.has_variants):
+        frappe.throw(_("Variants are not supported yet. Publish this product without variants."))
+    if flt(kwargs.get("qty") or 0) > 0:
+        frappe.throw(_("Stock is managed on the Item - update it there. Publishing no longer seeds stock."))
 
-        if _has_variants:
-            frappe.throw(_("Variants are not supported yet. Publish this product without variants."))
+    item_code = _assert_publishable_item(row.item)
 
-        _assert_publishable_item(_target_item)
+    price = _item_price(item_code)
+    if not price["found"] or flt(price["rate"]) <= 0:
+        frappe.throw(
+            _("Item {0} has no price on the {1} price list. Set the price on the Item before publishing.").format(
+                item_code, price["price_list"]
+            )
+        )
 
-        if _initial_qty > 0:
-            # Refused rather than silently ignored: dropping it would report a successful
-            # publish while no stock had actually moved.
-            frappe.throw(_("Stock is managed on the Item - update it there. Publishing no longer seeds stock."))
-
-        # ── خلق جديد إذا ما في product_id ──
-        if not product_id:
-            doc = frappe.new_doc("Product")
-            sku = kwargs.get("sku")
-            if not sku:
-                last = frappe.db.sql("SELECT MAX(CAST(SUBSTRING(sku, 5) AS UNSIGNED)) FROM `tabProduct` WHERE sku LIKE 'SKU-%'")
-                last_num = int(last[0][0] or 0)
-                sku = f"SKU-{str(last_num + 1).zfill(5)}"
-                kwargs["sku"] = sku
-            elif frappe.db.get_value("Product", {"sku": sku}, "name"):
-                frappe.throw(_(f"SKU '{sku}' already exists"))
-            for f in PRODUCT_FIELDS:
-                if f in kwargs:
-                    doc.set(f, kwargs[f])
-
-            # ── Brand ──
-            if kwargs.get("brand"):
-                if not frappe.db.exists("Brand", kwargs["brand"]):
-                    frappe.throw(_(f"Brand '{kwargs['brand']}' does not exist"))
-                doc.set("brand", kwargs["brand"])
-
-            if not doc.status:
-                doc.status = "Draft"
-
-            _validate_publish(doc)
-            doc.flags.ignore_permissions = True
-            doc.insert()
-            frappe.db.commit()
-            product_id = doc.name
-
-        doc = frappe.get_doc("Product", product_id)
+    # Product row only. in_stock is NOT written - it is derived from the Item's bins on
+    # read, so a stored flag can never contradict the warehouse.
+    frappe.db.set_value("Product", product_id, {"status": "Active"})
+    frappe.response["data"] = _product_payload(
+        frappe.db.get_value("Product", product_id, "*", as_dict=True)
+    )
 
 
-        # The Item-minting branches that used to sit here are gone. Publishing no longer
-        # calls _ensure_item / _ensure_item_price and no longer posts a Stock Entry; the
-        # Item was validated above and is left exactly as clinic staff maintain it.
-        # From here on this endpoint writes to the Product row and nothing else.
+@frappe.whitelist(allow_guest=False)
+@standardize_response
+def unpublish_product(product_id=None):
+    """Take a product off the storefront. Writes to Product only."""
+    _check_permission("write")
+    if not product_id or not frappe.db.exists("Product", product_id):
+        frappe.throw(_("Product {0} was not found.").format(product_id))
+    frappe.db.set_value("Product", product_id, {"status": "Draft"})
+    frappe.response["data"] = _product_payload(
+        frappe.db.get_value("Product", product_id, "*", as_dict=True)
+    )
 
-        # حدّث حالة الـ Product
-        frappe.db.set_value("Product", doc.name, {
-            "status":   "Active",
-            "in_stock": 1
-        }, update_modified=False)
 
-        frappe.db.commit()
-        doc.reload()
+@frappe.whitelist(allow_guest=False)
+@standardize_response
+def delete_product(product_id=None):
+    """Delete the overlay. The linked Item is never touched."""
+    _check_permission("delete")
+    if not product_id or not frappe.db.exists("Product", product_id):
+        frappe.throw(_("Product {0} was not found.").format(product_id))
+    item_code = frappe.db.get_value("Product", product_id, "item")
+    frappe.delete_doc("Product", product_id, ignore_permissions=True)
+    frappe.response["data"] = {"deleted": product_id, "item_untouched": item_code}
 
-        # ── Brand details ──
-        if doc.brand:
-            brand_doc = frappe.db.get_value("Brand", doc.brand, ["name", "brand", "image"], as_dict=True)
-            brand_data = {
-                "brand_id":    brand_doc.get("name"),
-                "brand_name":  brand_doc.get("brand"),
-                "brand_image": brand_doc.get("image"),
-            }
-        else:
-            brand_data = {
-                "brand_id":    None,
-                "brand_name":  None,
-                "brand_image": None,
-            }
 
-        wh = _resolve_allowed_warehouse()
-        frappe.response["data"] = {
-            "product":      doc.name,
-            "item":         doc.item or doc.sku,
-            "has_variants": cint(doc.has_variants),
-            # Read-only lookup of the Item's real stock for display; writes nothing.
-            "qty":          _get_bin_qty(doc.item or doc.sku, wh),
-            # Always empty while variants are unsupported. The old expression referenced
-            # `generated`, which was only ever bound inside the deleted variant branch.
-            "variants":     [],
-            "options":      [],
-            **brand_data
-        }
+@frappe.whitelist()
+@standardize_response
+def list_attachable_items(search=None, limit_start=0, limit_page_length=20,
+                          include_attached=0, include_services=0):
+    """Item picker: Items an admin can attach a storefront overlay to.
 
-    except frappe.ValidationError:
-        frappe.db.rollback()
-        raise
-    except Exception as e:
-        frappe.db.rollback()
-        _err(str(e), exc=True)
+    Defaults exclude Services (60 clinical rows, not shippable), disabled Items, variant
+    templates, and Items already carrying a product - attaching two products to one Item
+    creates the PRODUCT_ITEM_LINK_CONFLICT the resolver refuses to act on.
 
-        
+    Items without a price or stock ARE returned: surfacing "no price set" is useful, and
+    hiding them would conceal exactly the ones needing attention.
+    """
+    _check_permission("read")
+
+    filters = {"disabled": 0, "has_variants": 0}
+    if not _truthy_flag(include_services):
+        filters["item_group"] = ["!=", "Services"]
+    if not _truthy_flag(include_attached):
+        attached = frappe.get_all("Product", filters={"item": ["!=", ""]}, pluck="item", ignore_permissions=True)
+        attached = [a for a in attached if a]
+        if attached:
+            filters["name"] = ["not in", attached]
+
+    or_filters = None
+    term = cstr(search).strip()
+    if term:
+        or_filters = [
+            ["name", "like", f"%{term}%"],
+            ["item_name", "like", f"%{term}%"],
+            ["item_group", "like", f"%{term}%"],
+            ["brand", "like", f"%{term}%"],
+        ]
+
+    rows = frappe.get_all(
+        "Item",
+        filters=filters,
+        or_filters=or_filters,
+        fields=["name", "item_name", "item_group", "stock_uom", "brand", "image"],
+        order_by="item_name asc",
+        limit_start=cint(limit_start),
+        limit_page_length=cint(limit_page_length),
+        ignore_permissions=True,
+    )
+    items = []
+    for row in rows:
+        items.append({
+            "code": row.name,
+            "item_name": row.item_name,
+            "item_group": row.item_group,
+            "uom": row.stock_uom,
+            "brand": row.brand,
+            "image": row.image,
+            "price": _item_price(row.name),
+            "stock": _item_stock(row.name),
+        })
+    frappe.response["data"] = {
+        "items": items,
+        "total": frappe.db.count("Item", filters),
+    }
+
+
+@frappe.whitelist()
+@standardize_response
+def get_product(product_id=None):
+    """One overlay with its live Item resolution."""
+    _check_permission("read")
+    row = frappe.db.get_value("Product", product_id, "*", as_dict=True) if product_id else None
+    if not row:
+        frappe.throw(_("Product {0} was not found.").format(product_id))
+    frappe.response["data"] = _product_payload(row)
+
+
 @frappe.whitelist()
 @standardize_response
 def restock_product(product_id, qty, warehouse=None, item_variant=None):
@@ -959,149 +1305,85 @@ def restock_product(product_id, qty, warehouse=None, item_variant=None):
 @frappe.whitelist()
 @standardize_response
 def get_stock_info(product_id, warehouse=None):
-    """
-    جلب معلومات المخزون
+    """Live stock for a product's linked Item.
 
-    GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001
-    GET /api/method/pet_app.api.product.get_stock_info?product_id=PRODUCT-00001&warehouse=Stores - K
+    Summed across every warehouse holding the Item, with the per-warehouse breakdown.
+    The previous version scoped to Stock Settings.default_warehouse, which points at
+    another company's empty warehouse and therefore reported 0 for everything.
+
+    `warehouse` narrows the response to one warehouse when supplied.
     """
     _check_permission("read")
 
-    doc = frappe.get_doc("Product", product_id)
-    wh  = _resolve_allowed_warehouse(warehouse)
-
-    # المنتج ما منشور بعد
-    if not doc.item:
-        frappe.response["data"] = {
-            "in_stock":        bool(doc.in_stock),
-            "qty":             0,
-            "last_restocked":  None,
-            "total_lifetime":  0,
-            "variants":        []
-        }
+    item_code = frappe.db.get_value("Product", product_id, "item")
+    if not item_code:
+        frappe.response["data"] = {"in_stock": False, "qty": 0, "warehouses": [], "item": None}
         return
 
-    if not cint(doc.has_variants):
-        # ── Simple ──
-        qty = _get_bin_qty(doc.item, wh)
+    stock = _item_stock(item_code)
+    if warehouse:
+        require_restriction_value("warehouse", warehouse)
+        rows = [w for w in stock["warehouses"] if w["warehouse"] == warehouse]
+        qty = sum(w["qty"] for w in rows)
+        stock = {"qty": qty, "in_stock": qty > 0, "warehouses": rows}
 
-        last_restock = frappe.db.sql("""
-            SELECT MAX(se.posting_date)
-            FROM `tabStock Entry` se
-            JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-            WHERE sed.item_code = %s
-              AND se.stock_entry_type = 'Material Receipt'
-              AND se.docstatus = 1
-        """, (doc.item,))
+    frappe.response["data"] = {
+        "item": item_code,
+        "qty": stock["qty"],
+        "in_stock": stock["in_stock"],
+        "warehouses": stock["warehouses"],
+    }
 
-        total_lifetime = frappe.db.sql("""
-            SELECT COALESCE(SUM(sed.qty), 0)
-            FROM `tabStock Entry` se
-            JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-            WHERE sed.item_code = %s
-              AND se.stock_entry_type = 'Material Receipt'
-              AND se.docstatus = 1
-        """, (doc.item,))[0][0]
-
-        frappe.response["data"] = {
-            "in_stock":        qty > 0,
-            "qty":             qty,
-            "last_restocked":  str(last_restock[0][0]) if last_restock and last_restock[0][0] else None,
-            "total_lifetime":  flt(total_lifetime),
-            "variants":        []
-        }
-
-    else:
-        # ── Variants ──
-        variant_data = []
-        total_qty    = 0
-
-        # variant product uses one item — get total qty from that item
-        total_qty = _get_bin_qty(doc.item, wh)
-
-        last_restock = frappe.db.sql("""
-            SELECT MAX(se.posting_date)
-            FROM `tabStock Entry` se
-            JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-            WHERE sed.item_code = %s
-              AND se.stock_entry_type = 'Material Receipt'
-              AND se.docstatus = 1
-        """, (doc.item,))
-
-        total_lifetime = frappe.db.sql("""
-            SELECT COALESCE(SUM(sed.qty), 0)
-            FROM `tabStock Entry` se
-            JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-            WHERE sed.item_code = %s
-              AND se.stock_entry_type = 'Material Receipt'
-              AND se.docstatus = 1
-        """, (doc.item,))[0][0]
-
-        for row in doc.product_variant:
-            variant_data.append({
-                "options": row.options,
-                "value":   row.value,
-                "price":   flt(row.price) or _effective_rate(doc)
-            })
-
-        frappe.response["data"] = {
-            "in_stock":       total_qty > 0,
-            "qty":            total_qty,
-            "last_restocked": str(last_restock[0][0]) if last_restock and last_restock[0][0] else None,
-            "total_lifetime": flt(total_lifetime),
-            "variants":       variant_data
-        }
 
 @frappe.whitelist()
 @standardize_response
-def get_products(filters=None, fields=None, order_by="creation desc",
-                 limit_start=0, limit_page_length=20,
+def get_products(search=None, category=None, status=None, item=None,
+                 order_by="product_name asc", limit_start=0, limit_page_length=20,
                  search_term=None):
-    import json
+    """Admin grid: overlays with their price and stock resolved LIVE from the Item.
+
+    The old signature accepted raw `filters`/`fields` and returned the Product columns
+    verbatim - including the vestigial price/in_stock, which is how a stale price could
+    reach the storefront. The shape is fixed now and always resolves through the Item.
+    """
     _check_permission("read")
 
-    _filters = json.loads(filters) if isinstance(filters, str) else (filters or [])
-    _fields  = json.loads(fields)  if isinstance(fields,  str) else (fields or [
-        "name", "product_name", "sku", "image", "description",
-        "price", "discounted_price", "status",
-        "in_stock", "category", "vendor", "has_variants", "item", "brand"
-    ])
+    filters = {}
+    if category:
+        filters["category"] = category
+    if status:
+        filters["status"] = status
+    if item:
+        filters["item"] = item
 
-    if search_term:
-        _filters.append(["product_name", "like", f"%{search_term}%"])
+    or_filters = None
+    term = cstr(search or search_term).strip()
+    if term:
+        or_filters = [
+            ["product_name", "like", f"%{term}%"],
+            ["sku", "like", f"%{term}%"],
+            ["barcode", "like", f"%{term}%"],
+            ["item", "like", f"%{term}%"],
+        ]
 
-    products = frappe.get_all(
+    rows = frappe.get_all(
         "Product",
-        filters=_filters,
-        fields=_fields,
+        filters=filters,
+        or_filters=or_filters,
+        fields=["name", "product_name", "sku", "barcode", "description", "image",
+                "category", "status", "vendor", "tags", "item", "modified",
+                # backs compare_at_price; the only vestigial column still read, and only
+                # for the strike-through, never as the selling price
+                COMPARE_AT_PRICE_DB_FIELD],
         order_by=_sanitize_order_by(order_by),
         limit_start=cint(limit_start),
-        limit_page_length=cint(limit_page_length)
+        limit_page_length=cint(limit_page_length),
     )
 
-    wh = _resolve_allowed_warehouse()
-    for p in products:
-        p["qty"] = _get_bin_qty(p["item"], wh) if p.get("item") else 0
-
-        p["images"] = frappe.db.get_all("File", 
-            filters={"attached_to_doctype": "Product", "attached_to_name": p["name"], "is_private": 0},
-            fields=["name", "file_url", "file_name", "custom_is_default"],
-            order_by="custom_is_default desc, creation asc"
-        )
-
-        _enrich_product_category(p)
-
-        if p.get("brand"):
-            brand_doc = frappe.db.get_value("Brand", p.get("brand"), ["name", "brand", "image"], as_dict=True)
-            p["brand_id"]    = brand_doc.get("name")
-            p["brand_name"]  = brand_doc.get("brand")
-            p["brand_image"] = brand_doc.get("image")
-        else:
-            p["brand_id"]    = None
-            p["brand_name"]  = None
-            p["brand_image"] = None
-
-    frappe.response["data"] = products
+    frappe.response["data"] = {
+        "products": [_product_payload(r) for r in rows],
+        "total": frappe.db.count("Product", filters),
+    }
 
 
 RENAME_FIELD_MAP = {
