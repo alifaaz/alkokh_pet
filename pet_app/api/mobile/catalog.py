@@ -8,6 +8,7 @@ from frappe import _
 from frappe.utils import cint, cstr, flt, get_datetime, get_url, now_datetime
 
 from pet_app.api.mobile.response import error, ok
+from pet_app.pet_app.doctype.product_category.product_category import get_store_root_category
 
 
 CATALOG_NOT_FOUND = "catalog.not_found"
@@ -651,7 +652,8 @@ def _category_emoji(title: str) -> str:
 
 def _home_category_grid() -> dict | None:
 	categories = []
-	parent = "Mobile Shop" if frappe.db.exists("Product Category", "Mobile Shop") else None
+	# Resolved, not hardcoded: the storefront root name lives in one constant.
+	parent = get_store_root_category()
 	for idx, row in enumerate(_categories_payload(parent=parent).get("items", [])[:12]):
 		title = row.get("name") or row.get("id") or ""
 		categories.append(
@@ -674,10 +676,11 @@ def _home_category_grid() -> dict | None:
 
 def _home_brand_strip() -> dict | None:
 	mobile_categories = []
-	if frappe.db.exists("Product Category", "Mobile Shop"):
+	_store_root = get_store_root_category()
+	if _store_root:
 		mobile_categories = frappe.get_all(
 			"Product Category",
-			filters={"parent_product_category": "Mobile Shop", "enabled": 1},
+			filters={"parent_product_category": _store_root, "enabled": 1},
 			pluck="name",
 			order_by="display_order asc, category_name asc",
 			ignore_permissions=True,
