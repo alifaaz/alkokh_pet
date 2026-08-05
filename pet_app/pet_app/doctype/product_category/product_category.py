@@ -10,6 +10,26 @@ PRODUCT_CATEGORY_DOCTYPE = "Product Category"
 ROOT_ITEM_GROUP = "Pet Supplies"
 ALL_ITEM_GROUPS = "All Item Groups"
 
+# Root of the customer-facing storefront taxonomy. Declared once here and read through
+# get_store_root_category() so the name is never scattered as a literal across the mobile
+# modules - the same failure mode as the hardcoded "Stores - K" warehouse and the
+# hardcoded "Standard Selling" price list. Moving this to a setting later means changing
+# one constant, not hunting call sites.
+STORE_ROOT_CATEGORY = "Store"
+
+
+def get_store_root_category() -> str | None:
+	"""The storefront root category name, or None when it is not present.
+
+	Read-only. Callers that page the store tree should treat None as "no store root
+	configured" and fall back to an unparented listing rather than inventing one.
+	"""
+	if not frappe.db.exists("DocType", PRODUCT_CATEGORY_DOCTYPE):
+		return None
+	if frappe.db.exists(PRODUCT_CATEGORY_DOCTYPE, STORE_ROOT_CATEGORY):
+		return STORE_ROOT_CATEGORY
+	return None
+
 
 class ProductCategory(NestedSet):
 	nsm_parent_field = "parent_product_category"
@@ -20,52 +40,38 @@ class ProductCategory(NestedSet):
 			frappe.throw(_("Category Name is required."))
 		self.name = self.category_name
 
+	# ── Item Group coupling severed ─────────────────────────────────────────────
+	# Product Category is the STOREFRONT taxonomy. Item Groups are the clinical
+	# catalogue's own tree and belong to clinic staff: this doctype no longer creates,
+	# updates, renames or deletes them under any circumstance. `item_group` is left as
+	# a vestigial read-only field for a later cleanup pass.
+	#
+	# The delete path was the dangerous one - on_trash used to delete the linked Item
+	# Group, and the store categories (Cat Food, Toys, Grooming ...) are linked to the
+	# very Item Groups that hold the retail Items.
+	# ────────────────────────────────────────────────────────────────────────────
+
 	def validate(self):
 		self._normalize()
 		self._validate_parent()
 		self.validate_ledger()
 		self._validate_group_assignment()
-		self._ensure_item_group()
 
 	def on_update(self):
 		super().on_update()
-		self._sync_item_group()
 
 	def on_trash(self):
-		linked_item_group = self.item_group
-		self._validate_can_delete(linked_item_group)
+		self._validate_can_delete(self.item_group)
 		super().on_trash()
-		self._delete_linked_item_group(linked_item_group)
 
 	def before_rename(self, olddn, newdn, merge=False):
+		# The Item Group name checks that used to live here guarded a rename that no
+		# longer happens, so they only blocked legitimate storefront renames.
 		super().before_rename(olddn, newdn, merge)
-		linked_item_group = frappe.db.get_value(self.doctype, olddn, "item_group")
-		if not linked_item_group or linked_item_group == newdn:
-			return
-		if linked_item_group == ROOT_ITEM_GROUP:
-			frappe.throw(_("The default Pet Supplies category cannot be renamed."))
-		if frappe.db.exists("Item Group", newdn):
-			frappe.throw(_("Item Group {0} already exists.").format(frappe.bold(newdn)))
 
 	def after_rename(self, olddn, newdn, merge=False):
 		super().after_rename(olddn, newdn, merge)
 		frappe.db.set_value(self.doctype, newdn, "category_name", newdn, update_modified=False)
-
-		if merge:
-			return
-
-		linked_item_group = self.item_group or frappe.db.get_value(self.doctype, newdn, "item_group")
-		if not linked_item_group or linked_item_group == newdn or not frappe.db.exists("Item Group", linked_item_group):
-			return
-
-		ignore_permissions = _should_ignore_permissions(self)
-		frappe.rename_doc(
-			"Item Group",
-			linked_item_group,
-			newdn,
-			ignore_permissions=ignore_permissions,
-		)
-		frappe.db.set_value(self.doctype, newdn, "item_group", newdn, update_modified=False)
 
 	def _normalize(self):
 		self.category_name = _clean_name(self.category_name or self.name)
@@ -177,28 +183,14 @@ class ProductCategory(NestedSet):
 
 
 def ensure_product_root_item_group(ignore_permissions=False) -> str:
-	if not frappe.db.exists("DocType", "Item Group"):
-		return ROOT_ITEM_GROUP
+	"""Read-only since the coupling was severed: reports the root, never creates it.
 
-	if frappe.db.exists("Item Group", ROOT_ITEM_GROUP):
-		item_group = frappe.get_doc("Item Group", ROOT_ITEM_GROUP)
-		changed = False
-		if item_group.parent_item_group != ALL_ITEM_GROUPS and frappe.db.exists("Item Group", ALL_ITEM_GROUPS):
-			item_group.parent_item_group = ALL_ITEM_GROUPS
-			changed = True
-		if not cint(item_group.is_group):
-			item_group.is_group = 1
-			changed = True
-		if changed:
-			item_group.save(ignore_permissions=ignore_permissions or _in_system_context())
-		return item_group.name
-
-	item_group = frappe.new_doc("Item Group")
-	item_group.item_group_name = ROOT_ITEM_GROUP
-	item_group.parent_item_group = ALL_ITEM_GROUPS if frappe.db.exists("Item Group", ALL_ITEM_GROUPS) else None
-	item_group.is_group = 1
-	item_group.insert(ignore_permissions=ignore_permissions or _in_system_context())
-	return item_group.name
+	This used to create the "Pet Supplies" Item Group and re-parent it under "All Item
+	Groups" - a storefront code path reshaping the clinical tree. It is reachable from a
+	plain Product save (Product.validate -> apply_product_category_to_product), so it had
+	to become inert rather than merely uncalled. Name kept so callers still resolve.
+	"""
+	return ROOT_ITEM_GROUP
 
 
 def ensure_product_category_for_item_group(item_group, ignore_permissions=False) -> str | None:
@@ -288,9 +280,9 @@ def get_product_category_item_group(
 	if require_leaf and cint(category_doc.is_group):
 		frappe.throw(_("Select a leaf Product Category for Products."))
 
-	if not category_doc.item_group or not frappe.db.exists("Item Group", category_doc.item_group):
-		category_doc.flags.ignore_item_group_permissions = True
-		category_doc.save(ignore_permissions=ignore_permissions or _in_system_context())
+	# Reports the stored link and nothing more. It used to SAVE the category here to
+	# force an Item Group into existence when the link was missing or dangling - a read
+	# accessor with a hidden write. A missing link now simply reads as None.
 	return category_doc.item_group
 
 
@@ -335,30 +327,18 @@ def get_product_category_summary(category) -> dict:
 
 
 def _target_parent_item_group(category_doc) -> str | None:
-	if category_doc.parent_product_category:
-		parent_item_group = frappe.db.get_value(
-			PRODUCT_CATEGORY_DOCTYPE,
-			category_doc.parent_product_category,
-			"item_group",
-		)
-		if not parent_item_group:
-			frappe.throw(_("Parent Product Category must have a linked Item Group."))
-		return parent_item_group
+	"""Vestigial. Only the now-uncalled _ensure_item_group / _sync_item_group used this.
 
-	if category_doc.item_group == ROOT_ITEM_GROUP or category_doc.name == ROOT_ITEM_GROUP:
-		return ALL_ITEM_GROUPS if frappe.db.exists("Item Group", ALL_ITEM_GROUPS) else None
-
-	return ensure_product_root_item_group(ignore_permissions=_should_ignore_permissions(category_doc))
+	The "Parent Product Category must have a linked Item Group" throw is gone with it -
+	it forced every storefront category to own an Item Group, which is the coupling being
+	removed. Returns None so nothing downstream can act on a target parent.
+	"""
+	return None
 
 
 def _ensure_parent_item_group_can_hold_children(parent_item_group, category_doc=None):
-	if not parent_item_group or not frappe.db.exists("Item Group", parent_item_group):
-		return
-	item_group = frappe.get_doc("Item Group", parent_item_group)
-	if cint(item_group.is_group):
-		return
-	item_group.is_group = 1
-	item_group.save(ignore_permissions=_should_ignore_permissions(category_doc))
+	"""Vestigial and inert: it used to flip a clinical Item Group to is_group=1."""
+	return
 
 
 def _apply_optional_item_group_fields(item_group, category_doc) -> bool:
