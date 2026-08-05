@@ -725,8 +725,32 @@ PRODUCT_FIELDS = [
     "product_name", "sku", "barcode", "description", "image",
     "price", "discounted_price", "charge_tax", "in_stock",
     "vendor", "category", "status", "tags", "has_variants",
-    "product_variant"
+    "product_variant",
+    # The overlay attaches to an Item that already exists, so the caller has to be able
+    # to supply the link. Previously publish minted the Item itself and back-filled this
+    # field, which is exactly the Product -> Item write being removed.
+    "item",
 ]
+
+
+def _assert_publishable_item(item_code):
+    """The linked Item must already exist and be active. Publish never creates one.
+
+    Read-only: resolves and validates the link, writes nothing.
+    """
+    item_code = (item_code or "").strip()
+    if not item_code:
+        frappe.throw(_("Link this product to an item before publishing."))
+    row = frappe.db.get_value("Item", item_code, ["name", "disabled"], as_dict=True)
+    if not row:
+        frappe.throw(
+            _("Item {0} was not found. Link this product to an existing item before publishing.").format(item_code)
+        )
+    if cint(row.disabled):
+        frappe.throw(
+            _("Item {0} is disabled. Link this product to an active item before publishing.").format(item_code)
+        )
+    return row.name
 
 
 @frappe.whitelist(allow_guest=False)
@@ -737,6 +761,35 @@ def publish_product(product_id=None, **kwargs):
     try:
         # ── capture qty before anything ──
         _initial_qty = flt(kwargs.pop("qty", 0))
+
+        # ── Storefront-overlay preconditions, checked BEFORE anything is written ──
+        # Items - and their price, stock, warehouse and UOM - are maintained by clinic
+        # staff in the Item form. Product is only the storefront face on top of one, so
+        # publishing ATTACHES to an existing Item and never mints one. Nothing in this
+        # endpoint writes to Item, Item Price, Stock Entry or Bin.
+        #
+        # Checked up front deliberately: the create branch below inserts AND commits, so
+        # a throw after that point could not be rolled back and would strand a half-made
+        # Product. Failing here writes nothing at all.
+        if product_id:
+            _existing = frappe.db.get_value("Product", product_id, ["item", "has_variants"], as_dict=True)
+            if not _existing:
+                frappe.throw(_("Product {0} was not found.").format(product_id))
+            _target_item = kwargs.get("item") or _existing.item
+            _has_variants = cint(kwargs["has_variants"] if "has_variants" in kwargs else _existing.has_variants)
+        else:
+            _target_item = kwargs.get("item")
+            _has_variants = cint(kwargs.get("has_variants") or 0)
+
+        if _has_variants:
+            frappe.throw(_("Variants are not supported yet. Publish this product without variants."))
+
+        _assert_publishable_item(_target_item)
+
+        if _initial_qty > 0:
+            # Refused rather than silently ignored: dropping it would report a successful
+            # publish while no stock had actually moved.
+            frappe.throw(_("Stock is managed on the Item - update it there. Publishing no longer seeds stock."))
 
         # ── خلق جديد إذا ما في product_id ──
         if not product_id:
@@ -771,62 +824,10 @@ def publish_product(product_id=None, **kwargs):
         doc = frappe.get_doc("Product", product_id)
 
 
-        if not cint(doc.has_variants):
-            # ── Simple Product ──
-            item = _ensure_item(doc)
-            if not item:
-                frappe.throw(_("Cannot safely resolve Item for this Product. Check Product projection logs."))
-            _ensure_item_price(doc, item.name)
-
-            # ── Initial Stock ──
-            if _initial_qty > 0:
-                require_doctype_permission("Stock Entry", "create")
-                require_doctype_permission("Stock Entry", "submit")
-                wh = _resolve_allowed_warehouse()
-                if not wh:
-                    frappe.throw(_("Default Warehouse not set in Stock Settings"))
-                se = frappe.new_doc("Stock Entry")
-                se.stock_entry_type = "Material Receipt"
-                se.remarks = f"Initial stock for {doc.name}"
-                se.append("items", {
-                    "item_code":   item.name,
-                    "t_warehouse": wh,
-                    "qty":         _initial_qty,
-                    "basic_rate":  _effective_rate(doc) or 1
-                })
-                se.flags.ignore_permissions = True
-                se.insert()
-                se.submit()
-
-        else:
-            # ── Variant Product ──
-            item = _ensure_item(doc)
-            if not item:
-                frappe.throw(_("Cannot safely resolve Item for this Product. Check Product projection logs."))
-
-            _ensure_item_price(doc, item.name)
-
-            # ── Initial Stock for variant ──
-            if _initial_qty > 0:
-                require_doctype_permission("Stock Entry", "create")
-                require_doctype_permission("Stock Entry", "submit")
-                wh = _resolve_allowed_warehouse()
-                if not wh:
-                    frappe.throw(_("Default Warehouse not set in Stock Settings"))
-                se = frappe.new_doc("Stock Entry")
-                se.stock_entry_type = "Material Receipt"
-                se.remarks = f"Initial stock for {doc.name}"
-                se.append("items", {
-                    "item_code":   item.name,
-                    "t_warehouse": wh,
-                    "qty":         _initial_qty,
-                    "basic_rate":  _effective_rate(doc) or 1
-                })
-                se.flags.ignore_permissions = True
-                se.insert()
-                se.submit()
-
-            generated = []
+        # The Item-minting branches that used to sit here are gone. Publishing no longer
+        # calls _ensure_item / _ensure_item_price and no longer posts a Stock Entry; the
+        # Item was validated above and is left exactly as clinic staff maintain it.
+        # From here on this endpoint writes to the Product row and nothing else.
 
         # حدّث حالة الـ Product
         frappe.db.set_value("Product", doc.name, {
@@ -857,9 +858,12 @@ def publish_product(product_id=None, **kwargs):
             "product":      doc.name,
             "item":         doc.item or doc.sku,
             "has_variants": cint(doc.has_variants),
+            # Read-only lookup of the Item's real stock for display; writes nothing.
             "qty":          _get_bin_qty(doc.item or doc.sku, wh),
-            "variants":     generated if cint(doc.has_variants) else [],
-            "options":      [{"options": r.options, "value": r.value, "price": flt(r.price) if flt(r.price) > 0 else _effective_rate(doc)} for r in doc.product_variant] if cint(doc.has_variants) else [],
+            # Always empty while variants are unsupported. The old expression referenced
+            # `generated`, which was only ever bound inside the deleted variant branch.
+            "variants":     [],
+            "options":      [],
             **brand_data
         }
 
@@ -886,6 +890,16 @@ def restock_product(product_id, qty, warehouse=None, item_variant=None):
       "item_variant": "RC-001-1kg"   ← مطلوب فقط إذا has_variants
     }
     """
+    # Neutered under the thin-overlay model. This endpoint posted a Material Receipt
+    # Stock Entry against the linked Item, priced off the PRODUCT's rate - a storefront
+    # record moving clinic stock. Stock belongs to the Item and is maintained by clinic
+    # staff, so the write is refused here rather than performed.
+    #
+    # Refused, not silently no-op'd: a caller told it to add 20 units has to learn that
+    # nothing moved. The body below is left in place for the later dead-code pass and is
+    # now unreachable.
+    frappe.throw(_("Stock is managed on the Item — update it there."))
+
     _check_permission("write")
     require_doctype_permission("Stock Entry", "create")
     require_doctype_permission("Stock Entry", "submit")
