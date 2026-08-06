@@ -44,7 +44,12 @@ def _check_permission(ptype="read"):
 
 
 def _sanitize_order_by(order_by: str) -> str:
-    allowed_fields = {"creation", "modified", "product_name", "sku", "price", "discounted_price", "status"}
+    # `price` and `discounted_price` are deliberately NOT sortable. Those columns now
+    # back compare_at_price (a presentation-only strike-through), so sorting by them
+    # would order the grid by the "was" price while the column on screen shows the live
+    # selling price from Item Price - a sort that lies. Real price lives in Item Price
+    # and cannot be sorted in this query, so the option is removed rather than faked.
+    allowed_fields = {"creation", "modified", "product_name", "sku", "status"}
     value = (order_by or "creation desc").strip()
     parts = value.split()
     fieldname = parts[0] if parts else "creation"
@@ -1366,23 +1371,37 @@ def get_products(search=None, category=None, status=None, item=None,
             ["item", "like", f"%{term}%"],
         ]
 
+    # Hard ceiling, same shape as list_due_plan_items. `limit_page_length=0` means
+    # "no limit" to frappe.get_all, so an accidental 0 would scan the whole table -
+    # it falls back to the default page size instead. Floor of 1, ceiling of 200.
+    limit_start = max(cint(limit_start), 0)
+    limit_page_length = max(min(cint(limit_page_length) or 20, 200), 1)
+
+    query = {"filters": filters, "or_filters": or_filters}
+
     rows = frappe.get_all(
         "Product",
-        filters=filters,
-        or_filters=or_filters,
         fields=["name", "product_name", "sku", "barcode", "description", "image",
                 "category", "status", "vendor", "tags", "item", "modified",
                 # backs compare_at_price; the only vestigial column still read, and only
                 # for the strike-through, never as the selling price
                 COMPARE_AT_PRICE_DB_FIELD],
         order_by=_sanitize_order_by(order_by),
-        limit_start=cint(limit_start),
-        limit_page_length=cint(limit_page_length),
+        limit_start=limit_start,
+        limit_page_length=limit_page_length,
+        **query,
     )
+
+    # Counted from the SAME filtered population the rows come from - `or_filters` and
+    # all. The previous `frappe.db.count("Product", filters)` ignored or_filters, so any
+    # search reported the unfiltered total: searching "zzz" returned 0 rows while the
+    # pager still advertised 35 results across 2 pages. Rows and count are one
+    # computation now and cannot drift.
+    total = len(frappe.get_all("Product", pluck="name", limit_page_length=0, **query))
 
     frappe.response["data"] = {
         "products": [_product_payload(r) for r in rows],
-        "total": frappe.db.count("Product", filters),
+        "total": total,
     }
 
 
