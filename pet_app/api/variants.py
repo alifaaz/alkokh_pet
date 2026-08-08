@@ -4,7 +4,7 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, flt
 
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import standardize_response
@@ -516,6 +516,118 @@ def set_variant_published(variant=None, published=None, **kwargs):
     # what the next GET will report rather than an optimistic echo of the input.
     match = [v for v in _variant_rows(row.variant_of) if v["code"] == row.name]
     frappe.response["data"] = {"variant": match[0] if match else None}
+
+
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def set_variant_price(variant=None, rate=None, **kwargs):
+    """Set or clear ONE variant's selling price on the store price list.
+
+    Owned server-side so the storefront never writes Item Price directly. A raw REST
+    upsert would force the client to hardcode the price list, the `selling` flag and the
+    UOM, and would bypass ItemPrice.validate - the same doctype-bypass the overlay
+    rebuild removed. Here the store price list is the STORE_PRICE_LIST constant and
+    everything else is derived.
+
+    `rate = null` DELETES the row rather than storing 0. A 0-rate row would read back as
+    `found: true` with an unbuyable price, which is the ambiguous state the "from" price
+    logic already has to defend against; deleting makes "no price set" unambiguous, and
+    the variant then reports `found: false` and cannot be published.
+    """
+    from pet_app.api.product import STORE_PRICE_LIST, _item_price, _variant_rows
+
+    # The doctype actually mutated is Item Price, so that is what is gated - the same
+    # "real doctype permission, never a store role" principle as set_variant_published,
+    # applied to the record being written. Item read is required too, to resolve the
+    # variant at all.
+    require_doctype_permission("Item", "read")
+
+    variant = cstr(variant).strip()
+    if not variant:
+        frappe.throw(_("Variant item is required."))
+    row = frappe.db.get_value("Item", variant, ["name", "variant_of", "stock_uom"], as_dict=True)
+    if not row:
+        frappe.throw(_("Item {0} was not found.").format(variant))
+    if not cstr(row.variant_of).strip():
+        frappe.throw(
+            _("Item {0} is not a variant. Prices for a simple item are set on the Item "
+              "itself, not through the variant API.").format(variant)
+        )
+
+    if rate is None:
+        rate = kwargs.get("price_list_rate")
+    clearing = rate is None or cstr(rate).strip() == ""
+
+    # Found with the SAME filter the read path uses, so an upsert can never create a
+    # second row that _item_price would then ignore.
+    existing = frappe.db.get_value(
+        "Item Price",
+        {"item_code": row.name, "price_list": STORE_PRICE_LIST, "selling": 1},
+        "name",
+    )
+
+    if clearing:
+        require_doctype_permission("Item Price", "delete")
+        if existing:
+            frappe.delete_doc("Item Price", existing, ignore_permissions=True)
+        cleared = bool(existing)
+    else:
+        value = flt(rate)
+        if value <= 0:
+            frappe.throw(
+                _("Rate must be greater than 0. To remove the price, send rate as null.")
+            )
+        if existing:
+            require_doctype_permission("Item Price", "write")
+            doc = frappe.get_doc("Item Price", existing)
+            doc.price_list_rate = value
+        else:
+            require_doctype_permission("Item Price", "create")
+            doc = frappe.new_doc("Item Price")
+            doc.item_code = row.name
+            doc.price_list = STORE_PRICE_LIST
+            doc.price_list_rate = value
+            # Matches the 355 existing rows on this price list, which all carry the UOM.
+            # Guarded because ItemPrice.validate_item rejects a UOM missing from the
+            # Item's conversion table.
+            if frappe.db.exists(
+                "UOM Conversion Detail",
+                {"parenttype": "Item", "parent": row.name, "uom": row.stock_uom},
+            ):
+                doc.uom = row.stock_uom
+        # `selling`, `buying` and `currency` are read-only and derived from the Price List
+        # by ItemPrice.update_price_list_details - setting them here would be a guess.
+        doc.flags.ignore_permissions = True
+        doc.save()
+        cleared = False
+
+    # Read back through the storefront's own path, so the caller sees what the next GET
+    # will report rather than an echo of the input.
+    match = [v for v in _variant_rows(row.variant_of) if v["code"] == row.name]
+    frappe.response["data"] = {
+        "variant": match[0] if match else None,
+        "price": _item_price(row.name),
+        "cleared": cleared,
+    }
+
+
+@frappe.whitelist()
+@standardize_response
+def list_store_item_groups():
+    """The retail Item Groups a store template may be created in.
+
+    Derived from the nested set under STORE_ITEM_GROUP_ROOT - the SAME helper the
+    create-template guard uses - so the picker a client renders and the rule the server
+    enforces can never list different groups.
+    """
+    require_doctype_permission("Item Group", "read")
+
+    groups = _store_item_groups()
+    frappe.response["data"] = {
+        "item_groups": groups,
+        "root": STORE_ITEM_GROUP_ROOT,
+        "total": len(groups),
+    }
 
 
 @frappe.whitelist()
