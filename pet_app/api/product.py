@@ -876,20 +876,164 @@ def _item_stock(item_code):
     return {"qty": total, "in_stock": total > 0, "warehouses": breakdown}
 
 
+# Per-variant storefront visibility, added by
+# pet_app.patches.add_item_store_published_field. Named once here so the read path, the
+# write endpoint and the publish rule cannot drift onto different spellings.
+VARIANT_PUBLISHED_FIELD = "custom_store_published"
+
+
+def _variant_rows(template_code):
+    """Variants of a template, each with its own price and stock.
+
+    Batched deliberately: three queries for the whole set (attributes, prices, bins)
+    rather than the two-per-variant that calling _item_price/_item_stock in a loop would
+    cost. A six-variant product would otherwise be 12 round trips inside a grid that
+    already renders 20 products.
+
+    Returns [] for a non-template or a template with no children.
+    """
+    children = frappe.get_all(
+        "Item",
+        filters={"variant_of": template_code},
+        fields=["name", "item_name", "stock_uom", "image", "disabled",
+                VARIANT_PUBLISHED_FIELD],
+        order_by="name asc",
+        ignore_permissions=True,
+    )
+    if not children:
+        return []
+
+    codes = [c.name for c in children]
+
+    # 1) attributes: {item_code: {attribute: value}}
+    attr_map = {}
+    for row in frappe.get_all(
+        "Item Variant Attribute",
+        filters={"parent": ["in", codes], "parenttype": "Item"},
+        fields=["parent", "attribute", "attribute_value", "idx"],
+        order_by="parent asc, idx asc",
+        ignore_permissions=True,
+    ):
+        attr_map.setdefault(row.parent, {})[row.attribute] = row.attribute_value
+
+    # 2) prices on the store price list only
+    price_map = {}
+    for row in frappe.get_all(
+        "Item Price",
+        filters={"item_code": ["in", codes], "price_list": _store_price_list(), "selling": 1},
+        fields=["item_code", "price_list_rate", "currency"],
+        ignore_permissions=True,
+    ):
+        price_map.setdefault(row.item_code, row)
+
+    # 3) bins across every warehouse holding each variant
+    stock_map = {}
+    for row in frappe.get_all(
+        "Bin",
+        filters={"item_code": ["in", codes]},
+        fields=["item_code", "warehouse", "actual_qty"],
+        ignore_permissions=True,
+    ):
+        if flt(row.actual_qty):
+            stock_map.setdefault(row.item_code, []).append(
+                {"warehouse": row.warehouse, "qty": flt(row.actual_qty)}
+            )
+
+    variants = []
+    for child in children:
+        priced = price_map.get(child.name)
+        warehouses = stock_map.get(child.name, [])
+        qty = sum(w["qty"] for w in warehouses)
+        variants.append(
+            {
+                "code": child.name,
+                "item_name": child.item_name,
+                "uom": child.stock_uom,
+                "image": child.image,
+                "disabled": bool(cint(child.disabled)),
+                "attributes": attr_map.get(child.name, {}),
+                "price": {
+                    "rate": flt(priced.price_list_rate) if priced else None,
+                    "currency": (priced.currency if priced else None)
+                    or frappe.defaults.get_global_default("currency"),
+                    "price_list": _store_price_list(),
+                    "found": bool(priced),
+                },
+                "stock": {"qty": qty, "in_stock": qty > 0, "warehouses": warehouses},
+                "published": bool(cint(child.get(VARIANT_PUBLISHED_FIELD))),
+            }
+        )
+    return variants
+
+
+def _is_purchasable_variant(variant):
+    """Published AND really priced - the single definition of "a customer can buy this".
+
+    Both the "from" price and publish_product's template rule read this, so the price a
+    shopper is quoted and the rule that let the product go live can never disagree.
+    Rates of 0 are excluded: MIN(price_list_rate) on Standard Selling is currently 0.0
+    because some items carry zero-rated prices, and a naive MIN would advertise
+    "from 0 IQD".
+    """
+    return (
+        variant["published"]
+        and variant["price"]["found"]
+        and flt(variant["price"]["rate"]) > 0
+    )
+
+
+def _variant_price_summary(variants):
+    """The "from X" price across purchasable variants.
+
+    An UNPUBLISHED variant is excluded even when priced: a product that only sells the
+    6kg must not advertise the hidden 2kg's cheaper price. When nothing is purchasable,
+    `found` is False so the frontend can render "price on request" instead of a free
+    product.
+    """
+    rates = [flt(v["price"]["rate"]) for v in variants if _is_purchasable_variant(v)]
+    if not rates:
+        return {
+            "from_rate": None,
+            "to_rate": None,
+            "currency": None,
+            "price_list": _store_price_list(),
+            "found": False,
+            "priced_variants": 0,
+        }
+    currency = next(
+        (v["price"]["currency"] for v in variants if _is_purchasable_variant(v)), None
+    )
+    return {
+        "from_rate": min(rates),
+        "to_rate": max(rates),
+        "currency": currency,
+        "price_list": _store_price_list(),
+        "found": True,
+        "priced_variants": len(rates),
+    }
+
+
 def _item_snapshot(item_code):
-    """The Item block of the read shape. Read-only to the store."""
+    """The Item block of the read shape. Read-only to the store.
+
+    For a TEMPLATE item (has_variants=1) this additionally carries `is_template`,
+    `variants` and `variant_price`. A simple item's payload is unchanged - the extra keys
+    are only added inside the template branch, so existing consumers see byte-identical
+    output for every non-template product.
+    """
     if not item_code:
         return None
     row = frappe.db.get_value(
         "Item",
         item_code,
-        ["name", "item_name", "item_group", "stock_uom", "brand", "disabled", "image", "description"],
+        ["name", "item_name", "item_group", "stock_uom", "brand", "disabled", "image", "description",
+         "has_variants"],
         as_dict=True,
     )
     if not row:
         # Dangling link: reported rather than hidden, so the admin can see and fix it.
         return {"code": item_code, "exists": False}
-    return {
+    snapshot = {
         "code": row.name,
         "exists": True,
         "item_name": row.item_name,
@@ -902,6 +1046,16 @@ def _item_snapshot(item_code):
         "price": _item_price(row.name),
         "stock": _item_stock(row.name),
     }
+    if cint(row.has_variants):
+        # A template holds no stock and carries no sellable price of its own; both live on
+        # the children. `price`/`stock` above stay for shape stability and will read
+        # not-found / zero, which is accurate for a template.
+        variants = _variant_rows(row.name)
+        snapshot["is_template"] = True
+        snapshot["variants"] = variants
+        snapshot["variant_count"] = len(variants)
+        snapshot["variant_price"] = _variant_price_summary(variants)
+    return snapshot
 
 
 def _product_payload(row):
@@ -1024,10 +1178,16 @@ def create_product(item=None, **kwargs):
     if cint(kwargs.get("has_variants") or 0):
         frappe.throw(_("Variants are not supported yet."))
 
+    # One Product per Item, and for a variant product that Item is the TEMPLATE - so a
+    # template already carrying an overlay cannot be attached again. Keying on the linked
+    # Item covers both shapes with one rule, because the overlay never points at a child.
     existing = frappe.db.get_value("Product", {"item": item_code}, "name")
     if existing:
+        is_template = cint(frappe.db.get_value("Item", item_code, "has_variants"))
         frappe.throw(
-            _("Item {0} is already linked to product {1}.").format(item_code, existing)
+            _("Template {0} is already linked to product {1}.").format(item_code, existing)
+            if is_template
+            else _("Item {0} is already linked to product {1}.").format(item_code, existing)
         )
 
     sku = cstr(kwargs.get("sku")).strip()
@@ -1106,19 +1266,34 @@ def publish_product(product_id=None, **kwargs):
     if not row:
         frappe.throw(_("Product {0} was not found.").format(product_id))
     if cint(row.has_variants):
+        # Product.has_variants is a vestigial column from the deleted variant model. The
+        # overlay never sets it - variance now lives entirely on the linked Item - so a
+        # product carrying it is stale data, not a supported shape.
         frappe.throw(_("Variants are not supported yet. Publish this product without variants."))
     if flt(kwargs.get("qty") or 0) > 0:
         frappe.throw(_("Stock is managed on the Item - update it there. Publishing no longer seeds stock."))
 
     item_code = _assert_publishable_item(row.item)
 
-    price = _item_price(item_code)
-    if not price["found"] or flt(price["rate"]) <= 0:
-        frappe.throw(
-            _("Item {0} has no price on the {1} price list. Set the price on the Item before publishing.").format(
-                item_code, price["price_list"]
+    if cint(frappe.db.get_value("Item", item_code, "has_variants")):
+        # Template: the template itself carries no sellable price, so the rule is that at
+        # least one CHILD is purchasable - published AND priced. Reusing
+        # _variant_price_summary means the rule is literally "a from-price exists".
+        summary = _variant_price_summary(_variant_rows(item_code))
+        if not summary["found"]:
+            frappe.throw(
+                _("This product has no purchasable variants - add at least one variant "
+                  "that is both published and priced.")
             )
-        )
+    else:
+        # Simple item: unchanged rule.
+        price = _item_price(item_code)
+        if not price["found"] or flt(price["rate"]) <= 0:
+            frappe.throw(
+                _("Item {0} has no price on the {1} price list. Set the price on the Item before publishing.").format(
+                    item_code, price["price_list"]
+                )
+            )
 
     # Product row only. in_stock is NOT written - it is derived from the Item's bins on
     # read, so a stored flag can never contradict the warehouse.
@@ -1156,19 +1331,24 @@ def delete_product(product_id=None):
 @frappe.whitelist()
 @standardize_response
 def list_attachable_items(search=None, limit_start=0, limit_page_length=20,
-                          include_attached=0, include_services=0):
+                          include_attached=0, include_services=0, variant_mode=0):
     """Item picker: Items an admin can attach a storefront overlay to.
 
     Defaults exclude Services (60 clinical rows, not shippable), disabled Items, variant
     templates, and Items already carrying a product - attaching two products to one Item
     creates the PRODUCT_ITEM_LINK_CONFLICT the resolver refuses to act on.
 
+    `variant_mode=1` inverts the template filter and returns ONLY templates, for the
+    variant-product flow where the overlay attaches to a template rather than a simple
+    item. Everything else about the query is identical, so the two modes cannot drift.
+
     Items without a price or stock ARE returned: surfacing "no price set" is useful, and
     hiding them would conceal exactly the ones needing attention.
     """
     _check_permission("read")
 
-    filters = {"disabled": 0, "has_variants": 0}
+    # 1 in variant mode, 0 otherwise - the ONLY difference between the two modes.
+    filters = {"disabled": 0, "has_variants": 1 if _truthy_flag(variant_mode) else 0}
     if not _truthy_flag(include_services):
         filters["item_group"] = ["!=", "Services"]
     if not _truthy_flag(include_attached):
@@ -1187,15 +1367,16 @@ def list_attachable_items(search=None, limit_start=0, limit_page_length=20,
             ["brand", "like", f"%{term}%"],
         ]
 
+    query = {"filters": filters, "or_filters": or_filters}
+
     rows = frappe.get_all(
         "Item",
-        filters=filters,
-        or_filters=or_filters,
         fields=["name", "item_name", "item_group", "stock_uom", "brand", "image"],
         order_by="item_name asc",
         limit_start=cint(limit_start),
         limit_page_length=cint(limit_page_length),
         ignore_permissions=True,
+        **query,
     )
     items = []
     for row in rows:
@@ -1209,9 +1390,15 @@ def list_attachable_items(search=None, limit_start=0, limit_page_length=20,
             "price": _item_price(row.name),
             "stock": _item_stock(row.name),
         })
+
+    # Counted from the SAME filtered population the rows come from, exactly as in
+    # get_products. The previous `frappe.db.count("Item", filters)` dropped or_filters,
+    # so searching "ACANA" returned 0 rows while the pager still advertised 258 results.
+    # Sharing one `query` dict is what makes the two structurally unable to disagree.
     frappe.response["data"] = {
         "items": items,
-        "total": frappe.db.count("Item", filters),
+        "total": len(frappe.get_all("Item", pluck="name", limit_page_length=0,
+                                    ignore_permissions=True, **query)),
     }
 
 
