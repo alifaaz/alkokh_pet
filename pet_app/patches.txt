@@ -46,3 +46,5 @@ pet_app.patches.p1_10_push_frontend_base_url
 pet_app.patches.p1_11_push_subscription_app_id
 pet_app.patches.mobile_home_product_linked_filters
 pet_app.patches.disease_composite_unique_index
+pet_app.patches.seed_store_item_attributes
+pet_app.patches.add_item_store_published_field
