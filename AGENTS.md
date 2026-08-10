@@ -341,3 +341,76 @@ an HTTP request through the actual workers is.
   exists in `disease.py::_validate_duplicate` but is masked by the DB index.
 - **The rename itself**: `autoname` -> `DISEASE-.#####`, plus
   `show_title_field_in_link: 1` so link fields keep displaying the name.
+
+## ERPNext Trap: Template Attributes Cannot Be Added After The First Variant
+
+**Do not build "add an attribute to an existing template". It is unsafe and ERPNext
+will not stop you.** This was investigated in full on 2026-08-10; the conclusion is
+that attributes are effectively fixed once a template has variants.
+
+### Why it looks safe and isn't
+
+`Item.validate_attributes_in_variants`
+(`apps/erpnext/erpnext/stock/doctype/item/item.py:822-834`) begins with:
+
+```python
+if old_doc_attributes.issubset(set(own_attributes)):
+    return
+```
+
+Adding an attribute is *always* a superset, so the guard returns before checking
+anything. The save succeeds silently and every existing variant is left with no row
+for the new attribute. Nothing throws afterwards either -
+`Item.validate_variant_attributes` (`item.py:964`) only runs `if self.is_new()`, and
+`validate_item_variant_attributes` skips empty values - so the inconsistency has no
+failure mode that surfaces it.
+
+The damage appears at generate time, in `find_variant`
+(`apps/erpnext/erpnext/controllers/item_variant.py:184`):
+
+```python
+if len(args.keys()) == len(variant.get("attributes")):
+```
+
+Pre-existing variants carry fewer attribute rows than the new request has keys, so
+they can never match and the duplicate check goes blind. Generating `Weight x Flavour`
+on a template that previously declared only `Weight` mints a fresh `...-2KG-CHK` while
+the old `...-2KG` survives as an orphan - still priced, still publishable, still
+sellable, competing with its own replacement inside one product.
+
+### Removal is guarded; addition is not
+
+The non-subset branch of the same function collects every variant carrying a removed
+attribute and throws an HTML table naming them. So removal fails loudly, addition
+succeeds quietly. Do not reason from "ERPNext validates this" - it validates one
+direction only.
+
+### `validate_stock_exists_for_template_item` does NOT protect this path
+
+`item.py:891-910` does cover attribute changes, but the whole block is gated on
+`self.stock_ledger_created()` - **the template's own** Stock Ledger Entries. A template
+is never stocked (stock lives on the variants), so the guard is inert here. Verified on
+this site: the only template had 0 SLEs and so did all of its variants. That guard is
+what blocks converting a stock-bearing simple Item into a template; it is not a
+template-attribute guard.
+
+### What we built instead
+
+`pet_app.api.variants.set_template_attributes` makes the safe window explicit: it
+rewrites a template's attributes **only while the variant count is 0**, and refuses
+otherwise with a message that says attributes are fixed and points at creating a new
+template. `create_variant_template` states the same rule in its docstring and returns
+`attributes_editable` + `attributes_notice`, so a client can surface it at creation -
+the one moment the fact is actionable. Both responses share
+`ATTRIBUTES_LOCKED_NOTICE` so the wording cannot drift.
+
+### Related: saving a template cascades to its variants
+
+`Item.on_update` calls `update_variants()`, and `Item Variant Settings.do_not_update_variants`
+is `0` on this site, so **any** template save re-saves every variant (inline up to 30,
+queued beyond) and runs `copy_attributes_to_variant`. Checked and safe: `attributes` is
+`reqd = 0` and absent from the `Variant Field` list, so the template's blank attribute
+rows are not pushed down, and `custom_store_published` is likewise absent so per-variant
+publishing survives. But `disabled`, `stock_uom`, `item_group`, `brand` and
+`is_stock_item` **are** in that list and will overwrite the variants on every template
+save. Any future template-editing endpoint inherits this whether it intends to or not.
