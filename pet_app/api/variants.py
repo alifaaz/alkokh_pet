@@ -97,6 +97,26 @@ ITEM_ATTRIBUTE_DOCTYPE = "Item Attribute"
 
 STORE_ITEM_GROUP_ROOT = "Mobile Shop"
 
+# Store-side ceiling on one generate request. ERPNext only refuses at 600 and silently
+# BACKGROUNDS anything from 10 up - so 590 Items from a single click is a supported
+# outcome upstream, with no confirmation and no visible failure.
+#
+# 100 rather than something tighter: the widest pair the seeded ladders can produce is
+# Weight x Flavour = 36, so every realistic two-attribute product clears this with room
+# to spare, as do sensible three-attribute ones (Breed Size x Pack Size x Weight = 96).
+# Past ~100 the constraint stops being technical and becomes curation - every variant is
+# a real Item that needs its own price and stock before it can be sold, so a click that
+# creates more than an admin can price in one sitting should be a deliberate decision
+# taken in batches, not an accident.
+MAX_VARIANT_COMBINATIONS = 100
+
+# Stated verbatim in create_variant_template's and set_template_attributes' responses so
+# the client shows one wording, not two paraphrases of the same rule.
+ATTRIBUTES_LOCKED_NOTICE = (
+    "Attributes are fixed once the first variant exists. Add every attribute you need "
+    "before generating variants."
+)
+
 def _store_attribute_names():
     """Attributes the store may build templates from: every ENABLED Item Attribute.
 
@@ -286,6 +306,13 @@ def create_variant_template(item_name=None, item_group=None, stock_uom=None,
     item_group must be a leaf under STORE_ITEM_GROUP_ROOT and the attributes must be
     storefront attributes. Both are checked before anything is written.
 
+    ATTRIBUTES ARE FIXED ONCE THE FIRST VARIANT EXISTS. Declare every attribute the
+    product will ever need here. Until the first generate they can still be changed
+    through set_template_attributes; after that neither this app nor ERPNext can change
+    them safely, so the only remedy is a new template. The response says so explicitly
+    rather than leaving a client to infer later editability - this is the one moment the
+    fact is actionable.
+
     Gated on the real `Item` create permission, not a store role - same principle as
     create_item_attribute. Item is a shared clinical master; the amendment has to be
     granted by an administrator, not implied by this endpoint.
@@ -328,7 +355,14 @@ def create_variant_template(item_name=None, item_group=None, stock_uom=None,
         doc.append("attributes", {"attribute": name})
     doc.insert()
 
-    frappe.response["data"] = {"template": _item_snapshot(doc.name)}
+    frappe.response["data"] = {
+        "template": _item_snapshot(doc.name),
+        # True by construction - a template created this instant has no variants. Stated
+        # anyway so a client renders the window and its expiry at the moment it can act
+        # on them, instead of discovering the lock when the edit is refused.
+        "attributes_editable": True,
+        "attributes_notice": _(ATTRIBUTES_LOCKED_NOTICE),
+    }
 
 
 @frappe.whitelist(methods=["POST"])
@@ -403,6 +437,17 @@ def generate_variants(template=None, attribute_values=None, use_template_image=0
                 picked.append(value)
         cleaned[attribute] = picked
 
+    count = _combination_count(cleaned)
+    if count > MAX_VARIANT_COMBINATIONS:
+        frappe.throw(
+            _("This would create {0} variants ({1}), more than the limit of {2}. "
+              "Select fewer values, or generate in smaller batches.").format(
+                count,
+                " x ".join("{0} {1}".format(a, len(v)) for a, v in cleaned.items()),
+                MAX_VARIANT_COMBINATIONS,
+            )
+        )
+
     before = {v["code"] for v in _variant_rows(template)}
 
     # MUST be a JSON string. enqueue_multiple_variant_creation only assigns its local
@@ -466,6 +511,73 @@ def list_template_variants(template=None):
         "variants": variants,
         "variant_price": _variant_price_summary(variants),
         "total": len(variants),
+    }
+
+
+@frappe.whitelist(methods=["POST"])
+@standardize_response
+def set_template_attributes(template=None, attributes=None):
+    """Replace a template's declared attributes - ONLY while it has no variants.
+
+    This exists to make a window visible that already existed and was undiscoverable:
+    the attribute set is freely editable right up to the first generate, which is
+    precisely when someone realises they forgot Flavour.
+
+    It REFUSES once any variant exists, and that refusal is the point. ERPNext itself
+    does not: Item.validate_attributes_in_variants returns early whenever the old
+    attributes are a subset of the new ones, which adding always is - so an add against a
+    populated template passes silently and leaves every existing variant without a row
+    for the new attribute. Nothing throws afterwards either, because
+    Item.validate_variant_attributes only runs for new docs. The corruption surfaces at
+    generate time, in item_variant.find_variant, which matches candidates on
+    `len(args) == len(variant.attributes)`: the old short-attribute variants can never
+    match, so the duplicate check goes blind and the old ones survive as orphans that are
+    still priced, still publishable and still sellable. See AGENTS.md.
+
+    Removal is guarded by ERPNext (the same function's non-subset branch names the
+    offending variants), but the variant-count check here makes both directions refuse
+    for the same stated reason instead of one failing with a stock ERPNext table.
+    """
+    from pet_app.api.product import _item_snapshot
+
+    require_doctype_permission("Item", "write")
+
+    template = cstr(template).strip()
+    if not template:
+        frappe.throw(_("Template item is required."))
+    row = frappe.db.get_value("Item", template, ["name", "has_variants", "item_group"], as_dict=True)
+    if not row:
+        frappe.throw(_("Item {0} was not found.").format(template))
+    if not cint(row.has_variants):
+        frappe.throw(_("Item {0} is not a variant template.").format(template))
+    # Re-checked here as well as at creation: a template could have been moved into a
+    # clinical group afterwards, and this endpoint decides what Items get minted from it.
+    _assert_store_item_group(row.item_group)
+
+    variant_count = frappe.db.count("Item", {"variant_of": row.name})
+    if variant_count:
+        frappe.throw(
+            _("Attributes are fixed once the first variant exists. {0} already has {1} "
+              "variant(s), so its attributes can no longer be changed - create a new "
+              "template declaring the attributes you need.").format(row.name, variant_count)
+        )
+
+    names = _assert_store_attributes(attributes)
+
+    doc = frappe.get_doc("Item", row.name)
+    doc.set("attributes", [])
+    for name in names:
+        doc.append("attributes", {"attribute": name})
+    # Saving a template normally cascades through Item.on_update -> update_variants, which
+    # re-saves every child. Harmless here by construction: we only get this far when the
+    # variant count is 0.
+    doc.flags.ignore_permissions = True
+    doc.save()
+
+    frappe.response["data"] = {
+        "template": _item_snapshot(doc.name),
+        "attributes_editable": True,
+        "attributes_notice": _(ATTRIBUTES_LOCKED_NOTICE),
     }
 
 

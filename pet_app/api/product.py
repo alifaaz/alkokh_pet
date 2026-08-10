@@ -746,7 +746,7 @@ def _assert_publishable_item(item_code):
     item_code = (item_code or "").strip()
     if not item_code:
         frappe.throw(_("Link this product to an item before publishing."))
-    row = frappe.db.get_value("Item", item_code, ["name", "disabled"], as_dict=True)
+    row = frappe.db.get_value("Item", item_code, ["name", "disabled", "variant_of"], as_dict=True)
     if not row:
         frappe.throw(
             _("Item {0} was not found. Link this product to an existing item before publishing.").format(item_code)
@@ -754,6 +754,16 @@ def _assert_publishable_item(item_code):
     if cint(row.disabled):
         frappe.throw(
             _("Item {0} is disabled. Link this product to an active item before publishing.").format(item_code)
+        )
+    if cstr(row.variant_of).strip():
+        # A variant is reachable through its TEMPLATE's product; giving it one of its own
+        # makes the same Item sellable through two products, and nothing in the read path
+        # looks upward from a variant to notice. Enforced here rather than only in the
+        # picker because a hidden option is not a rule - create_product, update_product's
+        # re-attach and publish_product all resolve through this one function.
+        frappe.throw(
+            _("Item {0} is a variant of {1}. Variants are sold through their template's "
+              "product - attach the product to {1} instead.").format(item_code, row.variant_of)
         )
     return row.name
 
@@ -966,6 +976,50 @@ def _variant_rows(template_code):
     return variants
 
 
+def _template_attributes(template_code):
+    """The attributes a TEMPLATE declares, each with the values it may take.
+
+    Read INDEPENDENTLY of _variant_rows, which returns early for a childless template.
+    A template with zero variants is exactly when a client needs this - it is what the
+    "generate variants" form is built from - so hanging it off the variant query would
+    make it arrive only once it is no longer needed.
+
+    Note the deliberate asymmetry with `variants[].attributes`: that is a DICT of one
+    variant's resolved values ({"Weight": "2kg"}), an assignment. This is a LIST of what
+    the template declares plus every value each attribute allows. Different shapes because
+    they answer different questions, hence the different key name.
+    """
+    rows = frappe.get_all(
+        "Item Variant Attribute",
+        filters={"parent": template_code, "parenttype": "Item"},
+        fields=["attribute", "idx"],
+        order_by="idx asc",
+        ignore_permissions=True,
+    )
+    names = []
+    for row in rows:
+        if row.attribute and row.attribute not in names:
+            names.append(row.attribute)
+    if not names:
+        return []
+
+    # One batched query for every attribute's values, not one per attribute.
+    value_map = {}
+    for row in frappe.get_all(
+        "Item Attribute Value",
+        filters={"parent": ["in", names], "parenttype": "Item Attribute"},
+        fields=["parent", "attribute_value", "abbr", "idx"],
+        order_by="parent asc, idx asc",
+        ignore_permissions=True,
+    ):
+        value_map.setdefault(row.parent, []).append(
+            # abbr is included because it is what ERPNext builds the variant item code
+            # from - a client showing "2kg" can show the SKU suffix it will produce.
+            {"value": row.attribute_value, "abbr": row.abbr}
+        )
+    return [{"attribute": name, "values": value_map.get(name, [])} for name in names]
+
+
 def _is_purchasable_variant(variant):
     """Published AND really priced - the single definition of "a customer can buy this".
 
@@ -1055,6 +1109,9 @@ def _item_snapshot(item_code):
         snapshot["variants"] = variants
         snapshot["variant_count"] = len(variants)
         snapshot["variant_price"] = _variant_price_summary(variants)
+        # Populated even when `variants` is empty - a client builds its generate form from
+        # this, and a template with no children is when that form matters most.
+        snapshot["template_attributes"] = _template_attributes(row.name)
     return snapshot
 
 
@@ -1101,6 +1158,28 @@ def _product_gallery(product_name):
         order_by="custom_is_default desc, creation asc",
         ignore_permissions=True,
     )
+
+
+def _reject_blank_product_name(payload):
+    """Sending product_name empty is not the same as omitting it.
+
+    These endpoints are PATCH-shaped: a key that is absent means "leave it alone". A key
+    that is PRESENT but blank is a client asserting a value, and for the one field whose
+    entire job is presentation that assertion is always a mistake - an edit dialog that
+    posts every field unconditionally would erase the display name of any product whose
+    input the user never touched.
+
+    Frappe does stop the write (product_name is reqd = 1, so the save raises
+    MandatoryError), but it reports "[Product, PRODUCT-00051]: product_name", which names
+    no cause and suggests no action. This refuses earlier and says why.
+    """
+    if "product_name" not in payload:
+        return
+    if not cstr(payload.get("product_name")).strip():
+        frappe.throw(
+            _("Product name cannot be empty. Omit the field to leave the current name "
+              "unchanged, or send a name to replace it.")
+        )
 
 
 def _reject_item_owned_fields(payload):
@@ -1173,6 +1252,7 @@ def create_product(item=None, **kwargs):
     """
     _check_permission("create")
     _reject_item_owned_fields(kwargs)
+    _reject_blank_product_name(kwargs)
 
     item_code = _assert_publishable_item(item or kwargs.get("item"))
     if cint(kwargs.get("has_variants") or 0):
@@ -1206,6 +1286,9 @@ def create_product(item=None, **kwargs):
         if field in kwargs and field != "sku":
             doc.set(field, kwargs[field])
     _apply_compare_at_price(doc, kwargs)
+    # Reached only when product_name was OMITTED - an explicitly blank one was refused by
+    # _reject_blank_product_name above. Defaulting a name nobody supplied is helpful;
+    # defaulting one a client actively sent as empty would hide the client's bug.
     if not doc.product_name:
         doc.product_name = frappe.db.get_value("Item", item_code, "item_name") or item_code
     doc.status = "Draft"
@@ -1226,6 +1309,7 @@ def update_product(product_id=None, **kwargs):
         frappe.throw(_("Product {0} was not found.").format(product_id))
 
     _reject_item_owned_fields(kwargs)
+    _reject_blank_product_name(kwargs)
     if "has_variants" in kwargs and cint(kwargs.get("has_variants")):
         frappe.throw(_("Variants are not supported yet."))
 
@@ -1342,6 +1426,10 @@ def list_attachable_items(search=None, limit_start=0, limit_page_length=20,
     variant-product flow where the overlay attaches to a template rather than a simple
     item. Everything else about the query is identical, so the two modes cannot drift.
 
+    VARIANTS are excluded from BOTH modes. Templates in variant mode, simple non-variant
+    items in the default mode, and nothing else - a variant is sold through its template's
+    product, never through one of its own.
+
     Items without a price or stock ARE returned: surfacing "no price set" is useful, and
     hiding them would conceal exactly the ones needing attention.
     """
@@ -1349,6 +1437,12 @@ def list_attachable_items(search=None, limit_start=0, limit_page_length=20,
 
     # 1 in variant mode, 0 otherwise - the ONLY difference between the two modes.
     filters = {"disabled": 0, "has_variants": 1 if _truthy_flag(variant_mode) else 0}
+    # Never a variant, in EITHER mode. `has_variants = 0` alone does not say this: a
+    # variant is an ordinary Item with has_variants = 0, so it sailed through the default
+    # filter and every variant of every template was offered as a standalone product.
+    # Stated once, unconditionally, rather than per-mode - "a variant is not attachable"
+    # is a property of variants, not of a mode.
+    filters["variant_of"] = ["in", ["", None]]
     if not _truthy_flag(include_services):
         filters["item_group"] = ["!=", "Services"]
     if not _truthy_flag(include_attached):
