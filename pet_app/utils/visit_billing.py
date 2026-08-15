@@ -2,13 +2,60 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import cstr, flt
+from frappe.utils import cint, cstr, flt
 
 from pet_app.utils.care_service import get_care_service_doc as resolve_care_service_doc
+from pet_app.utils.invoice_source import has_marker, strip_markers
 
+# Records that carry a sales_invoice back-link. Under invoice reuse many of these point
+# at one invoice, so anything that clears or cancels an invoice has to sweep all of them
+# rather than the single row a get_value() happens to return.
+INVOICE_LINKED_DOCTYPES = ("Vet Visit", "Pet Boarding")
+
+
+# Billable rows that must never become an invoice line on the parent's own invoice.
+# "Cancelled" is the original member. "Billed" joined it when per-order billing arrived:
+# a row billed on its own, at its own branch, is already paid for and must not be emitted
+# a second time when the visit closes.
+SKIP_INVOICE_ROW_STATUSES = frozenset({"Cancelled", "Billed"})
 
 STRICT_MODE = True
 BILLED_VISIT_LOCK_MESSAGE = "This visit is already billed and cannot be modified."
+# Says what is actually locked. Since orders bill at their own completion, a single charge
+# can be invoiced while the visit around it is still open and fully editable - and the
+# operator reading "this visit is already billed" about an open visit has no way to act on
+# it. Names the charge instead.
+BILLED_ROW_LOCK_MESSAGE = "This charge has already been invoiced and cannot be changed: {0}."
+
+# Compared as numbers, not as text. A client that serialises a whole float as a JSON
+# integer sends 1 where the database holds 1.0; comparing those with cstr() reports a
+# change that never happened. See _billed_row_field_changed.
+NUMERIC_BILLABLE_FIELDS = frozenset({"qty", "rate", "amount"})
+
+
+def billable_row_label(row) -> str:
+	return cstr(row.get("item_name") or row.get("item_code") or row.get("linked_service_id") or "").strip() or _("this item")
+
+
+def billed_row_field_changed(before, after, fieldname: str) -> bool:
+	"""Whether the client actually changed a locked field on an invoiced charge.
+
+	Absent means unchanged. A full-document save may simply omit a field, and for these
+	fields clearing is never a legitimate edit - so `None` is read as "not supplied" rather
+	than as "set it to blank". A payload that drops one field while genuinely changing
+	another is still caught on the other.
+	"""
+	after_value = after.get(fieldname)
+	if after_value is None:
+		return False
+	before_value = before.get(fieldname)
+	if fieldname in NUMERIC_BILLABLE_FIELDS:
+		return flt(before_value) != flt(after_value)
+	return cstr(before_value) != cstr(after_value)
+ALL_CHARGES_ALREADY_BILLED_MESSAGE = (
+	"Every charge on Vet Visit {0} was already billed when its orders completed. "
+	"There is nothing left to invoice - do not add items to raise one."
+)
 ISSUED_INVOICE_CANCEL_MESSAGE = (
 	"This order is already on submitted Sales Invoice {0}. The invoice has been issued, "
 	"so cancellation is an accounting matter. Please contact the cashier."
@@ -215,6 +262,150 @@ def sync_clinical_record_billable_item(doc, item_type: str, *, visit=None, save:
 	if save:
 		visit.save(ignore_permissions=True)
 	return visit
+
+
+def summarise_visit_billing(visit) -> frappe._dict:
+	"""What this visit is worth, what has been billed, and what is actually still owed.
+
+	Needed because a visit's charges no longer arrive together. Each order bills at its own
+	completion onto its own branch's invoice, and per-order billing never writes back to
+	`Vet Visit.sales_invoice` - so a visit can be fully billed and fully paid while that
+	field is still empty. Reading "no visit invoice" as "nothing has been paid" is what
+	this replaces.
+
+	Settlement is decided ROW BY ROW, not by summing the invoices. An invoice may carry
+	several visits' charges (invoice reuse merges by customer and branch), so its
+	`grand_total` and `outstanding_amount` say nothing about this visit's share. What can
+	be said honestly is whether the invoice a given row landed on has been submitted and
+	settled, and that is what is used.
+
+	Returns totals in the visit's own currency terms plus the invoices its charges reached,
+	so a caller can show them without inventing an apportionment.
+	"""
+	from pet_app.utils.order_billing import ORDER_ITEM_TYPES
+
+	visit_invoice = cstr(visit.get("sales_invoice")).strip() or None
+
+	# Which invoice each per-order-billed row went to. Rows that are not linked to one of
+	# the order doctypes (medication, manual, legacy) belong to the visit's own invoice.
+	order_invoices: dict[str, str] = {}
+	for doctype in ORDER_ITEM_TYPES:
+		if not frappe.get_meta(doctype).has_field("sales_invoice"):
+			continue
+		for row in frappe.get_all(
+			doctype,
+			filters={"visit": visit.name, "sales_invoice": ["is", "set"]},
+			fields=["name", "sales_invoice"],
+			ignore_permissions=True,
+		):
+			order_invoices[f"{doctype}::{row.name}"] = row.sales_invoice
+
+	invoice_cache: dict[str, dict] = {}
+
+	def _invoice(name):
+		if not name:
+			return None
+		if name not in invoice_cache:
+			invoice_cache[name] = frappe.db.get_value(
+				"Sales Invoice",
+				name,
+				["name", "branch", "status", "docstatus", "grand_total", "outstanding_amount",
+				 "paid_amount", "currency"],
+				as_dict=True,
+			)
+		return invoice_cache[name]
+
+	total = billed = unbilled = settled = 0.0
+	for row in visit.get("billable_items") or []:
+		if row.status == "Cancelled":
+			continue
+		amount = flt(row.amount) or flt(row.qty or 1) * flt(row.rate or 0)
+		total += amount
+		if row.status != "Billed":
+			unbilled += amount
+			continue
+		billed += amount
+		invoice = _invoice(order_invoices.get(cstr(row.linked_service_id)) or visit_invoice)
+		# Settled means submitted with nothing outstanding. A draft invoice is a charge
+		# raised, not money received, and must not read as paid.
+		if invoice and cint(invoice.get("docstatus")) == 1 and flt(invoice.get("outstanding_amount")) <= 0:
+			settled += amount
+
+	invoices = [inv for inv in (_invoice(name) for name in {*order_invoices.values(), visit_invoice}) if inv]
+	invoices.sort(key=lambda inv: cstr(inv.get("name")))
+
+	return frappe._dict(
+		total=total,
+		billed=billed,
+		unbilled=unbilled,
+		settled=settled,
+		outstanding=max(total - settled, 0.0),
+		invoices=invoices,
+		visit_invoice=visit_invoice,
+		currency=next((inv.get("currency") for inv in invoices if inv.get("currency")), None),
+	)
+
+
+def visit_billing_status(visit, summary=None) -> str:
+	"""One word for the front desk, honest about per-order billing.
+
+	The old version answered from `Vet Visit.sales_invoice` alone, so a visit whose every
+	charge had been billed and paid on other invoices read "Unbilled".
+	"""
+	summary = summary if summary is not None else summarise_visit_billing(visit)
+
+	if summary.total <= 0:
+		return "Unbilled"
+	if summary.unbilled > 0:
+		# Something on this visit has not been raised yet.
+		return "Partially Billed" if summary.billed > 0 else "Unbilled"
+	if summary.settled >= summary.total:
+		return "Paid"
+	if summary.settled > 0:
+		return "Partially Paid"
+	return "Draft Invoice"
+
+
+def set_visit_billable_item_status(
+	visit_name: str,
+	*,
+	status: str,
+	linked_service_id: str,
+	linked_doctype: str | None = None,
+	linked_name: str | None = None,
+	order_id: str | None = None,
+	item_code: str | None = None,
+	item_type: str | None = None,
+	visit=None,
+	save: bool = True,
+):
+	"""Move one billable row to `status` without touching the rest of the visit.
+
+	Used by per-order billing to mark a row Billed at the moment its order was invoiced to
+	its own branch, so `get_billable_invoice_items` skips it when the visit later closes.
+
+	`ignore_billing_lock` is set because the visit is legitimately mid-life here: it has
+	not been invoiced, and per-order billing never sets `sales_invoice` on it, so the lock
+	that exists to freeze an invoiced visit has nothing to protect against on this path.
+	"""
+	visit = visit or frappe.get_doc("Vet Visit", visit_name)
+	row = _find_billable_row(
+		visit,
+		linked_service_id,
+		linked_doctype=linked_doctype,
+		linked_name=linked_name,
+		order_id=order_id,
+		item_code=item_code,
+		item_type=item_type,
+	)
+	if not row:
+		return None
+	row.status = status
+	visit.total_billable_amount = apply_billable_item_amounts(visit)
+	if save:
+		visit.flags.ignore_billing_lock = True
+		visit.save(ignore_permissions=True)
+	return row
 
 
 def assert_visit_billable_item_can_cancel(
@@ -434,7 +625,12 @@ def _assert_parent_billable_row_can_cancel(parent, row, *, sales_invoice: str | 
 		return
 	if invoice:
 		frappe.throw(_(ISSUED_INVOICE_CANCEL_MESSAGE).format(frappe.bold(invoice.name)))
-	if billed or row.status == "Billed":
+	if row.status == "Billed":
+		# The row is invoiced even though the parent may not be - per-order billing raises
+		# a charge while its visit stays open. Saying "this visit is already billed" about
+		# an open visit gives the operator nothing to act on; name the charge instead.
+		frappe.throw(_(BILLED_ROW_LOCK_MESSAGE).format(frappe.bold(billable_row_label(row))))
+	if billed:
 		frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
 
 
@@ -465,13 +661,13 @@ def _remove_draft_invoice_item_for_billable(parent, invoice, billable_row):
 		)
 
 	if len(invoice.items or []) == 1:
+		# Every record pointing at this invoice loses its link, not just `parent`.
+		# Clearing only the caller left the others linked to a deleted document, and a
+		# Vet Visit with sales_invoice set is permanently locked by
+		# _validate_sales_invoice_lock - unreachable and uneditable.
+		_clear_invoice_backlinks(invoice.name, skip=parent)
 		frappe.delete_doc("Sales Invoice", invoice.name, force=True, ignore_permissions=True)
-		if parent.meta.has_field("sales_invoice"):
-			parent.sales_invoice = None
-		if parent.meta.has_field("billed"):
-			parent.billed = 0
-		if parent.meta.has_field("billing_status"):
-			parent.billing_status = "Unbilled"
+		_reset_parent_billing_state(parent)
 		return
 
 	invoice.remove(invoice_item)
@@ -479,16 +675,71 @@ def _remove_draft_invoice_item_for_billable(parent, invoice, billable_row):
 	invoice.save(ignore_permissions=True)
 
 
+def _invoice_lines_for_parent(parent, invoice):
+	"""The lines on this invoice that came from THIS record.
+
+	An invoice may now hold several visits' and boardings' charges, so matching has to be
+	scoped before anything else is tried. Lines written before source markers existed
+	carry none; for those the whole invoice is the scope, which is only safe because such
+	an invoice necessarily predates merging.
+	"""
+	all_rows = list(invoice.items or [])
+	marked = [
+		row for row in all_rows
+		if has_marker(row.get("description"), parent.doctype, parent.name)
+	]
+	return marked or all_rows
+
+
+def _reset_parent_billing_state(parent):
+	if parent.meta.has_field("sales_invoice"):
+		parent.sales_invoice = None
+	if parent.meta.has_field("billed"):
+		parent.billed = 0
+	if parent.meta.has_field("billing_status"):
+		parent.billing_status = "Unbilled"
+
+
+def _records_linked_to_invoice(invoice_name: str) -> list[tuple[str, str]]:
+	linked = []
+	for doctype in INVOICE_LINKED_DOCTYPES:
+		for name in frappe.get_all(
+			doctype, filters={"sales_invoice": invoice_name}, pluck="name", ignore_permissions=True
+		):
+			linked.append((doctype, name))
+	return linked
+
+
+def _clear_invoice_backlinks(invoice_name: str, *, skip=None):
+	"""Drop the sales_invoice link on every record except `skip`.
+
+	`skip` is the document the caller already holds in memory and will save itself;
+	saving it here too would fight that write.
+	"""
+	skipped = (skip.doctype, skip.name) if skip is not None else None
+	for doctype, name in _records_linked_to_invoice(invoice_name):
+		if skipped and (doctype, name) == skipped:
+			continue
+		doc = frappe.get_doc(doctype, name)
+		_reset_parent_billing_state(doc)
+		doc.flags.ignore_billing_lock = True
+		doc.save(ignore_permissions=True)
+
+
 def _find_draft_invoice_item_for_billable(parent, invoice, billable_row):
+	# Scope first. Everything below then reasons about one record's own lines, which is
+	# what the ordinal and uniqueness assumptions were always relying on.
+	scope = _invoice_lines_for_parent(parent, invoice)
+
 	active_rows = [row for row in parent.billable_items or [] if row.status != "Cancelled"]
 	for index, row in enumerate(active_rows):
-		if row.name == billable_row.name and index < len(invoice.items or []):
-			candidate = invoice.items[index]
+		if row.name == billable_row.name and index < len(scope):
+			candidate = scope[index]
 			if _invoice_item_matches_billable(candidate, billable_row):
 				return candidate
 			break
 
-	matches = [row for row in invoice.items or [] if _invoice_item_matches_billable(row, billable_row)]
+	matches = [row for row in scope if _invoice_item_matches_billable(row, billable_row)]
 	if len(matches) == 1:
 		return matches[0]
 	return None
@@ -504,26 +755,44 @@ def _invoice_item_matches_billable(invoice_item, billable_row) -> bool:
 	if flt(invoice_item.amount) != flt(billable_row.amount):
 		return False
 	billable_description = cstr(billable_row.get("item_name") or billable_row.get("item_code")).strip()
-	invoice_description = cstr(invoice_item.get("description")).strip()
+	# The provenance marker is machine text appended to the description; comparing it
+	# against a billable row's item name would never match.
+	invoice_description = strip_markers(invoice_item.get("description"))
 	return not invoice_description or invoice_description == billable_description
 
 
 def on_sales_invoice_cancel(doc, method=None):
-	visit_name = frappe.db.get_value("Vet Visit", {"sales_invoice": doc.name}, "name")
-	if not visit_name:
-		return
+	"""Release EVERY record billed onto this invoice.
 
-	visit = frappe.get_doc("Vet Visit", visit_name)
-	for row in visit.billable_items or []:
-		if row.status == "Billed":
-			row.status = "Billable"
+	This used to read a single Vet Visit via get_value(). Under invoice reuse an invoice
+	carries several records' charges, so all but one were left with billed = 1 pointing
+	at a cancelled document - and _validate_sales_invoice_lock then refuses every edit,
+	so the record could never be re-billed or corrected. Pet Boarding had no handler at
+	all and was always left stranded.
+	"""
+	# Orders billed on their own completion point at this invoice too, and they are not in
+	# INVOICE_LINKED_DOCTYPES because they cannot go through the save() below: re-saving a
+	# Lab or Imaging re-runs set_values_from_visit, which throws the billed-visit lock
+	# whenever the visit has an invoice of its own - the normal state once per-order
+	# billing is in use. Handled first, with db.set_value, so the loop below is unchanged.
+	from pet_app.utils.order_billing import release_orders_billed_to_invoice
 
-	visit.billed = 0
-	visit.sales_invoice = None
-	visit.total_billable_amount = apply_billable_item_amounts(visit)
-	visit.flags.ignore_billing_lock = True
-	visit.save(ignore_permissions=True)
-	log_visit_billing_event("INVOICE_CANCELLED", visit=visit.name, sales_invoice=doc.name)
+	release_orders_billed_to_invoice(doc.name)
+
+	for doctype, name in _records_linked_to_invoice(doc.name):
+		parent = frappe.get_doc(doctype, name)
+		for row in parent.billable_items or []:
+			if row.status == "Billed":
+				row.status = "Billable"
+
+		_reset_parent_billing_state(parent)
+		if parent.meta.has_field("total_billable_amount"):
+			parent.total_billable_amount = apply_billable_item_amounts(parent)
+		parent.flags.ignore_billing_lock = True
+		parent.save(ignore_permissions=True)
+		log_visit_billing_event(
+			"INVOICE_CANCELLED", visit=parent.name, doctype=doctype, sales_invoice=doc.name
+		)
 
 
 def _find_billable_row(

@@ -19,6 +19,7 @@ from frappe import _
 from frappe.utils import cstr, flt, get_datetime, getdate
 
 from pet_app.pet_app.doctype.pet_boarding.pet_boarding import CLOSED_BOARDING_STATUSES
+from pet_app.utils.invoice_reuse import get_or_create_open_invoice
 
 
 # Lab / Imaging order statuses that still represent open / pending work.
@@ -214,24 +215,26 @@ def _settle_boarding_billing(boarding, death_doc) -> str | None:
 		boarding.billing_status = "Unbilled"
 		return None
 
-	invoice = frappe.get_doc(
-		{
-			"doctype": "Sales Invoice",
-			"customer": boarding.customer,
-			"posting_date": getdate(boarding.check_out),
-			"due_date": getdate(boarding.check_out),
-			"items": invoice_items,
-			"remarks": _("Pet Boarding {0} settled on pet death (Death Record {1}).").format(
-				boarding.name, death_doc.name
-			),
-		}
+	result = get_or_create_open_invoice(
+		customer=boarding.customer,
+		items=invoice_items,
+		source_doctype="Pet Boarding",
+		source_name=boarding.name,
+		# Reverted alongside the checkout path; see the note there.
+		branch=boarding.get("branch"),
+		posting_date=getdate(boarding.check_out),
+		due_date=getdate(boarding.check_out),
+		remarks=_("Pet Boarding {0} settled on pet death (Death Record {1}).").format(
+			boarding.name, death_doc.name
+		),
+		guardian=boarding.guardian,
+		ignore_permissions=True,
 	)
-	_set_optional_guardian_reference(invoice, boarding.guardian)
-	invoice.flags.from_custom_flow = True
-	invoice.insert(ignore_permissions=True)
+	invoice = result.invoice
 	invoice.add_comment(
 		"Comment",
-		_("Boarding death settlement invoice created from Pet Boarding {0} by {1}.").format(
+		_("Boarding death settlement invoice {0} from Pet Boarding {1} by {2}.").format(
+			_("created") if result.created else _("extended"),
 			boarding.name, frappe.session.user
 		),
 	)
