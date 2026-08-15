@@ -6,6 +6,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cstr, flt
 
+from pet_app.utils.branch import snapshot_performing_branch
 from pet_app.utils.visit_billing import cancel_visit_billable_item_by_link, sync_clinical_record_billable_item
 from pet_app.workflows import clinical_state
 
@@ -36,6 +37,9 @@ class PetCareService(Document):
 		self._validate_category()
 		self._validate_pet_guardian_link()
 		self._validate_billing_selection()
+		# After _set_category_from_links, so care_service_id is settled before it is read.
+		# Set once: see snapshot_performing_branch.
+		snapshot_performing_branch(self, care_service=self.care_service_id)
 		clinical_state.validate_document_transition(self)
 
 	def after_insert(self):

@@ -8,6 +8,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
+from pet_app.utils.branch import snapshot_performing_branch
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
@@ -181,6 +182,12 @@ class PetProcedure(Document):
 				)
 			self.item_code = item_code
 			self.rate = rate
+
+		# Set once, unlike item_code and rate above. care_service wins where there is one,
+		# and the Procedure Template answers for procedures billed straight off a template.
+		snapshot_performing_branch(
+			self, care_service=self.care_service, procedure_template=self.procedure_template
+		)
 
 		if not self.status:
 			self.status = "Pending"

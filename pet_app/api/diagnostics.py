@@ -8,6 +8,7 @@ from frappe.utils import cint, cstr, now_datetime
 
 from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.response import fail, ok
+from pet_app.utils import order_billing
 from pet_app.workflows import clinical_state
 
 
@@ -64,10 +65,19 @@ def release_lab_result(lab=None, name=None, result_visibility=None, data=None, *
 		doc.result_visibility = result_visibility or payload.get("result_visibility") or doc.result_visibility or "Guardian Visible"
 		doc.released_by = frappe.session.user
 		doc.released_at = now_datetime()
+		# Resolved and validated BEFORE the release is written: this endpoint converts its
+		# own exceptions into a fail() response, so a billing problem raised after the save
+		# would leave the lab Released and uncharged. None for a lab with no performing
+		# branch, which is every lab today - that charge rides the visit as before.
+		plan = order_billing.plan_order_billing(doc, item_type="Lab")
 		clinical_state.transition_status(doc, "Released", action="release_lab_result")
 		doc.save(ignore_permissions=True)
 		_sync_order_status(doc, "Completed")
-		return ok({"lab": _diagnostic_payload(doc)})
+		billing = order_billing.commit_order_billing(doc, plan)
+		payload_out = _diagnostic_payload(doc)
+		if billing:
+			payload_out["billing"] = billing
+		return ok({"lab": payload_out})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -110,10 +120,18 @@ def release_imaging_report(imaging=None, name=None, result_visibility=None, data
 		doc.result_visibility = result_visibility or payload.get("result_visibility") or doc.result_visibility or "Guardian Visible"
 		doc.released_by = frappe.session.user
 		doc.released_at = now_datetime()
+		# Pre-flight before the release is written - see release_lab_result. For radiology
+		# this is the case the whole change exists for: performing_branch is "hotel", so
+		# the charge leaves the visit here and lands on the facility's invoice.
+		plan = order_billing.plan_order_billing(doc, item_type="Imaging")
 		clinical_state.transition_status(doc, "Released", action="release_imaging_report")
 		doc.save(ignore_permissions=True)
 		_sync_order_status(doc, "Completed")
-		return ok({"imaging": _diagnostic_payload(doc)})
+		billing = order_billing.commit_order_billing(doc, plan)
+		payload_out = _diagnostic_payload(doc)
+		if billing:
+			payload_out["billing"] = billing
+		return ok({"imaging": payload_out})
 	except Exception as exc:
 		return _error_response(exc)
 

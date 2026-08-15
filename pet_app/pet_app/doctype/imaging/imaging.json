@@ -20,6 +20,9 @@
   "column_break_main",
   "item_code",
   "rate",
+  "performing_branch",
+  "billed",
+  "sales_invoice",
   "status",
   "sample_collected_at",
   "sample_collected_by",
@@ -79,6 +82,7 @@
   {
    "fieldname": "doctor",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Healthcare Practitioner",
@@ -110,6 +114,32 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Rate",
+   "read_only": 1
+  },
+  {
+   "description": "Where this order was performed. Snapshotted from the catalogue at insert and never rewritten by a later catalogue edit.",
+   "fieldname": "performing_branch",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Performing Branch",
+   "options": "Branch",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set when this order was billed on its own, at completion, to its performing branch. The visit does not carry this charge.",
+   "fieldname": "billed",
+   "fieldtype": "Check",
+   "label": "Billed",
+   "read_only": 1
+  },
+  {
+   "description": "The invoice this order was billed onto. Independent of Vet Visit.sales_invoice, which keeps only the visit's own branch's invoice.",
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Sales Invoice",
+   "options": "Sales Invoice",
    "read_only": 1
   },
   {
@@ -219,7 +249,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-21 06:22:21.587965",
+ "modified": "2026-08-12 20:59:05.368018",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Imaging",

@@ -121,7 +121,7 @@ def top_diagnoses(date_from=None, date_to=None, limit=20):
 			f"""
 			select t.diagnosis_label as diagnosis, count(*) as total
 			from (
-				select coalesce(dis.disease_name, d.disease, v.illness, 'Unspecified') as diagnosis_label
+				select coalesce(dis.disease_name, d.disease, 'Unspecified') as diagnosis_label
 				from `tabVet Visit` v
 				left join `tabVisit Diagnosis` d on d.parent = v.name and d.parenttype = 'Vet Visit'
 				left join `tabDisease` dis on dis.name = d.disease

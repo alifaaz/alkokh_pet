@@ -19,6 +19,7 @@
   "anesthesia_required",
   "active",
   "item_code",
+  "performing_branch",
   "steps_section",
   "steps"
  ],
@@ -34,10 +35,10 @@
   {
    "fieldname": "arabic_name",
    "fieldtype": "Data",
+   "hidden": 0,
    "label": "Arabic Name",
-   "translatable": 0,
    "permlevel": 0,
-   "hidden": 0
+   "translatable": 0
   },
   {
    "fieldname": "code",
@@ -114,6 +115,14 @@
    "fieldtype": "Link",
    "label": "Item Code",
    "options": "Item"
+  },
+  {
+   "description": "The branch where this service is physically performed, regardless of who orders it. Snapshotted onto each order at insert. Leave blank when the service is performed wherever it is ordered.",
+   "fieldname": "performing_branch",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Performing Branch",
+   "options": "Branch"
   }
  ],
  "grid_page_length": 50,

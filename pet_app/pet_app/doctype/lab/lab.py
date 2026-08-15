@@ -6,6 +6,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cstr, flt, now_datetime
 
+from pet_app.utils.branch import snapshot_performing_branch
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
@@ -161,6 +162,8 @@ class Lab(Document):
 			frappe.throw(_("Care Service {0} must have a Default Price.").format(frappe.bold(self.care_service)))
 		self.item_code = care_service.get("item_code")
 		self.rate = flt(care_service.get("default_price"))
+		# Set once, unlike item_code and rate just above: see snapshot_performing_branch.
+		snapshot_performing_branch(self, care_service=self.care_service)
 
 		if not self.status:
 			self.status = "Ordered"

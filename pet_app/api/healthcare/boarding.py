@@ -28,6 +28,7 @@ from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPI
 from pet_app.utils.case_assignment import DIRECT_ASSIGN_ROLES, visit_practitioner
 from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
+from pet_app.utils.invoice_reuse import get_or_create_open_invoice
 from pet_app.utils.price_list import get_veterinary_selling_price_list
 
 
@@ -780,24 +781,51 @@ def check_out_boarding(boarding_id):
 		guardian_field = None
 
 		if invoice_items and invoice_total > 0:
-			invoice = frappe.get_doc(
-				{
-					"doctype": "Sales Invoice",
-					"customer": boarding.customer,
-					"posting_date": getdate(boarding.check_out),
-					"due_date": getdate(boarding.check_out),
-					"selling_price_list": get_veterinary_selling_price_list(),
-					"ignore_pricing_rule": 1,
-					"items": invoice_items,
-					"remarks": _("Pet Boarding {0} checkout.").format(boarding.name),
-				}
+			# Appends to the customer's open Draft for this branch when one exists - an
+			# eight-day stay and a same-week clinic visit land on one invoice.
+			result = get_or_create_open_invoice(
+				customer=boarding.customer,
+				items=invoice_items,
+				source_doctype="Pet Boarding",
+				source_name=boarding.name,
+				# The stay's own stamped branch, written at insert by
+				# utils.branch.stamp_boarding_branch from Pet Boarding Settings. Read from
+				# the record and never re-derived here, so a later change to the setting
+				# cannot re-attribute a stay that already happened. Stays created before
+				# that stamp was wired carry no branch and still fall through to the
+				# acting user's branch in invoice_reuse.resolve_branch - they are not
+				# retroactively re-attributed.
+				branch=boarding.get("branch"),
+				# Authorise-then-elevate. What is established before this line:
+				# _require_boarding_invoice_access proved the caller holds boarding write
+				# access AND Sales Invoice create; boarding.check_permission("write")
+				# proved they may write this specific stay; and the four record_status /
+				# docstatus guards above proved it is an open, checked-in stay that is not
+				# already invoiced.
+				#
+				# The elevation cannot be steered. `branch` is not a parameter of this
+				# endpoint and cannot be influenced by the request - it is either the
+				# value stamped on the record from a single site setting, or blank, in
+				# which case resolve_branch returns the caller's own branch and the
+				# elevation is a no-op. There is exactly one cross-branch value it can
+				# produce, and it is the same for every user.
+				#
+				# Without it the boarding facility's revenue posts to whichever clinic
+				# processed the checkout, which reaches the ledger and not just a report.
+				branch_authorised=True,
+				posting_date=getdate(boarding.check_out),
+				due_date=getdate(boarding.check_out),
+				selling_price_list=get_veterinary_selling_price_list(),
+				ignore_pricing_rule=1,
+				remarks=_("Pet Boarding {0} checkout.").format(boarding.name),
+				guardian=boarding.guardian,
 			)
-			guardian_field = _set_optional_guardian_reference(invoice, boarding.guardian)
-			invoice.flags.from_custom_flow = True
-			invoice.insert()
+			invoice = result.invoice
+			guardian_field = result.guardian_reference_field
 			invoice.add_comment(
 				"Comment",
-				_("Boarding checkout invoice created from Pet Boarding {0} by {1}.").format(
+				_("Boarding checkout invoice {0} from Pet Boarding {1} by {2}.").format(
+					_("created") if result.created else _("extended"),
 					boarding.name, frappe.session.user
 				),
 			)

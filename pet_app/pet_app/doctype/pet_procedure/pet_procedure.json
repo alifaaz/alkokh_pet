@@ -17,6 +17,9 @@
   "care_service",
   "item_code",
   "rate",
+  "performing_branch",
+  "billed",
+  "sales_invoice",
   "status",
   "schedule_section",
   "scheduled_at",
@@ -121,6 +124,32 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Rate",
+   "read_only": 1
+  },
+  {
+   "description": "Where this order was performed. Snapshotted from the catalogue at insert and never rewritten by a later catalogue edit.",
+   "fieldname": "performing_branch",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Performing Branch",
+   "options": "Branch",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set when this order was billed on its own, at completion, to its performing branch. The visit does not carry this charge.",
+   "fieldname": "billed",
+   "fieldtype": "Check",
+   "label": "Billed",
+   "read_only": 1
+  },
+  {
+   "description": "The invoice this order was billed onto. Independent of Vet Visit.sales_invoice, which keeps only the visit's own branch's invoice.",
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Sales Invoice",
+   "options": "Sales Invoice",
    "read_only": 1
   },
   {
