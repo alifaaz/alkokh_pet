@@ -8,4 +8,4 @@ from pet_app.pet_app.doctype.product_category.product_category import apply_prod
 
 class Product(Document):
 	def validate(self):
-		apply_product_category_to_product(self, ignore_permissions=True)
+		apply_product_category_to_product(self)

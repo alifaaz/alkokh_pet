@@ -10,7 +10,6 @@ pet_app.patches.sync_alkohk_workspace
 pet_app.patches.cashier_backend_setup
 pet_app.patches.cashier_settlement_setup
 pet_app.patches.role_profile_access_setup
-pet_app.patches.product_category_item_group_sync
 pet_app.patches.backfill_visit_follow_up_fields
 pet_app.patches.p2_product_growth_schema
 pet_app.patches.p1_5_notification_engine_schema
@@ -48,3 +47,26 @@ pet_app.patches.mobile_home_product_linked_filters
 pet_app.patches.disease_composite_unique_index
 pet_app.patches.seed_store_item_attributes
 pet_app.patches.add_item_store_published_field
+pet_app.patches.order_status_allow_on_submit
+pet_app.patches.stock_entry_sales_order_link
+pet_app.patches.backfill_stock_entry_sales_order
+pet_app.patches.clinic_branch_foundation
+pet_app.patches.vet_visit_branch_scope
+pet_app.patches.worklist_branch_scope
+pet_app.patches.branch_field_selectable
+pet_app.patches.backfill_branch_orphans
+pet_app.patches.sales_invoice_branch_scope
+pet_app.patches.service_procedure_branch_scope
+pet_app.patches.boarding_practitioner_not_branch
+pet_app.patches.coupon_max_uses_per_customer
+pet_app.patches.remove_legacy_coupon_cute_guest
+pet_app.patches.store_category_unification
+pet_app.patches.driver_role_and_fields
+pet_app.patches.driver_assignment_allow_on_submit
+pet_app.patches.boarding_branch_attribution
+pet_app.patches.repair_stale_invoice_due_dates
+# After operational_healthcare_roles / remove_legacy_permission_doctypes /
+# cleanup_legacy_roles (lines 22, 23, 30): all three delete Custom DocPerm rows.
+pet_app.patches.service_provider_billing_permissions
+pet_app.patches.service_performing_branch
+pet_app.patches.per_order_billing_state

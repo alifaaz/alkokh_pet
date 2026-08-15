@@ -8,7 +8,10 @@ from frappe import _
 from frappe.utils import cint, cstr, flt, get_datetime, get_url, now_datetime
 
 from pet_app.api.mobile.response import error, ok
-from pet_app.pet_app.doctype.product_category.product_category import get_store_root_category
+from pet_app.pet_app.doctype.product_category.product_category import (
+	STORE_ROOT_CATEGORY,
+	get_store_root_category,
+)
 
 
 CATALOG_NOT_FOUND = "catalog.not_found"
@@ -411,13 +414,40 @@ def _post_filtered_products_page(filters, *, limit=20, cursor=0, order_by="modif
 	}
 
 
+def _store_tree_bounds() -> dict | None:
+	"""lft/rgt of the storefront root, or None when no store root is configured."""
+	root = get_store_root_category()
+	if not root:
+		return None
+	return frappe.db.get_value("Product Category", root, ["lft", "rgt"], as_dict=True)
+
+
 def _categories_payload(parent=None, search=None, enabled_only=1) -> dict:
+	# Hard-scoped to the store subtree, unconditionally.
+	#
+	# The parent filter used to apply only when `parent is not None`, so every unscoped
+	# call - the plain /categories listing, and any search - returned EVERY enabled
+	# Product Category regardless of where it sat. That is how a stray enabled root
+	# reached the customer-facing catalogue. `enabled` was doing the scoping work by
+	# accident, which held only for as long as nothing outside the store tree was
+	# enabled. Position in the tree is the rule now; `enabled` only hides rows within it.
 	filters = {}
 	if cint(enabled_only):
 		filters["enabled"] = 1
+
+	bounds = _store_tree_bounds()
+	if not bounds:
+		# No store root configured: serve nothing rather than falling back to the whole
+		# table. An empty storefront is a visible, fixable failure; a leaked clinical
+		# catalogue is not.
+		return {"items": []}
+	filters["lft"] = [">", bounds["lft"]]
+	filters["rgt"] = ["<", bounds["rgt"]]
+
 	if parent is not None:
 		parent = cstr(parent).strip()
-		filters["parent_product_category"] = parent or ["in", ["", None]]
+		# An out-of-scope parent yields nothing, because the lft/rgt bounds still apply.
+		filters["parent_product_category"] = parent or STORE_ROOT_CATEGORY
 
 	or_filters = None
 	if search:

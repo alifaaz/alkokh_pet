@@ -65,7 +65,6 @@ def get_visit_workbench(visit=None, visit_id=None, name=None):
 				"active_episode": _active_episode_payload(visit_doc),
 				"case_context": get_visit_case_context(visit_doc),
 				"clinical_note": visit_clinical_payload(visit_doc),
-				"illness_options": _select_options("Vet Visit", "illness"),
 				"clinical_options": clinical_options_payload(),
 				"assessment_finding_options": clinical_catalogue_choices(ASSESSMENT_FINDING),
 				"client_observation_options": clinical_catalogue_choices(CLIENT_OBSERVATION),
