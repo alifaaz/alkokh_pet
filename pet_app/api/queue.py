@@ -7,6 +7,7 @@ from frappe.utils import cint, cstr, getdate, now_datetime
 from pet_app.api.appointment import _ticket_payload
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.api.response import fail, ok
+from pet_app.utils.branch import apply_branch_filter
 
 
 @frappe.whitelist()
@@ -24,6 +25,11 @@ def list_queue(queue_date=None, status=None, doctor=None, practitioner=None, bra
 		if branch:
 			require_restriction_value("branch", branch)
 			filters["branch"] = branch
+		else:
+			# Fail closed. Without this the caller could simply omit `branch` and get
+			# every clinic's queue back, since the check above only fires when a value
+			# is supplied.
+			apply_branch_filter(filters, "Pet Queue Ticket")
 
 		limit_start = max(cint(limit_start), 0)
 		limit_page_length = max(min(cint(limit_page_length or 50), 200), 1)
