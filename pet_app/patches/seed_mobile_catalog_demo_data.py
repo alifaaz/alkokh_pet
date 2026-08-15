@@ -5,10 +5,16 @@ from urllib.parse import quote
 import frappe
 from frappe.utils import flt, now_datetime
 
+from pet_app.pet_app.doctype.product_category.product_category import STORE_ROOT_CATEGORY
+
 
 WAREHOUSE = "Stores - K"
 PRICE_LIST = "Standard Selling"
-ROOT_CATEGORY = "Mobile Shop"
+# The storefront root, spelled the same on both trees. This was "Mobile Shop", which
+# stopped being the root's name when the two trees were unified - re-running the seed
+# with the stale literal would have created a SECOND Product Category root and split the
+# store tree in two.
+ROOT_CATEGORY = STORE_ROOT_CATEGORY
 
 
 def _img(label: str, size: str = "900x900", bg: str = "F7F1E8", fg: str = "1F2937") -> str:
@@ -255,7 +261,7 @@ def _ensure_root_category(summary):
 	doc.enabled = 1
 	doc.is_group = 1
 	doc.display_order = 1
-	doc.image = _img("Mobile Shop", "700x420", "ECFCCB", "365314")
+	doc.image = _img(ROOT_CATEGORY, "700x420", "ECFCCB", "365314")
 	doc.description = "Mobile storefront demo category root."
 	_save(doc)
 	summary["categories"].append(doc.name)

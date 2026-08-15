@@ -151,10 +151,12 @@ def _cart_quote(items, coupon_code=None) -> dict:
 			)
 			continue
 
+		# Same resolver place_order uses. Anything else and the quote would advertise stock
+		# from one warehouse while the order checked another.
 		stock_qty = flt(
 			frappe.db.get_value(
 				"Bin",
-				{"item_code": item_code, "warehouse": "Stores - K"},
+				{"item_code": item_code, "warehouse": order_api._resolve_item_warehouse(item_code)},
 				"actual_qty",
 			)
 		)
@@ -224,34 +226,28 @@ def _cart_quote(items, coupon_code=None) -> dict:
 			}
 		)
 
+	# ERPNext's engine is authoritative (Phase 3). The cart is priced by building the same
+	# Sales Order place_order will build and reading the numbers off it, so the quote and
+	# the eventual order cannot disagree. The manual engine that used to live here is
+	# retired; its remains are removed in Phase 4.
 	discount_amount = 0.0
 	discount_breakdown = []
-	normalized_coupon_code = None
-	if coupon_code:
-		from pet_app.api.coupons import CouponValidator
+	grand_total = subtotal
+	normalized_coupon_code = cstr(coupon_code).strip().upper() if coupon_code else None
 
-		normalized_coupon_code = cstr(coupon_code).strip().upper()
-		res = CouponValidator.validate(
-			normalized_coupon_code,
-			{"total": subtotal, "items": quote_items, "shipping": 0},
-			customer=_guardian_customer(_current_guardian()),
-		)
-		if not res.get("valid"):
-			issues.append(
-				{
-					"code": "promo.invalid",
-					"message": res.get("message") or _("Invalid promo code."),
-					"coupon_code": normalized_coupon_code,
-				}
-			)
-		else:
-			discount_amount, discount_breakdown = order_api._calculate_discount_breakdown(
-				quote_items,
-				res.get("pricing_rule") or {},
-				precision=2,
-			)
+	priced, pricing_issues = order_api.preview_order_pricing(
+		[{"item_code": i["item_code"], "qty": i["qty"]} for i in quote_items],
+		_guardian_customer(_current_guardian()),
+		coupon_code=normalized_coupon_code,
+	)
+	issues.extend(pricing_issues or [])
 
-	grand_total = max(subtotal - flt(discount_amount), 0)
+	if priced:
+		subtotal = flt(priced.get("subtotal"))
+		discount_amount = flt(priced.get("discount_amount"))
+		discount_breakdown = priced.get("discount_breakdown") or []
+		grand_total = flt(priced.get("grand_total"))
+
 	return {
 		"payment_method": CASH_PAYMENT_METHOD,
 		"currency": "IQD",
@@ -540,9 +536,18 @@ def cancel_order(order=None, order_id=None, name=None, reason=None, **kwargs):
 			_("Order cannot be cancelled from status {0}.").format(status),
 		)
 
+	# Rolled back as a unit, the same shape transition_order uses. save() writes
+	# custom_order_status and only then runs on_update_after_submit, so a side effect that
+	# throws would otherwise leave the status committed with its stock reversal missing -
+	# @_mobile_order_endpoint turns the exception into an error response, and the request
+	# commits regardless.
 	doc.custom_order_status = "Cancelled"
 	doc.flags.ignore_permissions = True
-	doc.save(ignore_permissions=True)
+	try:
+		doc.save(ignore_permissions=True)
+	except Exception:
+		frappe.db.rollback()
+		raise
 	if reason:
 		doc.add_comment("Comment", _("Mobile cancellation reason: {0}").format(cstr(reason)))
 	return _order_detail(doc)

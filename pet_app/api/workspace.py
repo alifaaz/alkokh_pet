@@ -11,6 +11,8 @@ from frappe.utils import cint, cstr, flt, getdate, now_datetime, nowdate
 from pet_app.api.healthcare.boarding import checked_in_boarding_for_visit
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import get_user_roles, require_restriction_value, user_has_full_access
+from pet_app.utils import order_billing
+from pet_app.utils.branch import apply_branch_filter
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 from pet_app.utils.clinical_options import (
 	apply_structured_clinical_payload,
@@ -37,10 +39,13 @@ from pet_app.utils.practitioner import (
 from pet_app.utils.visit_billing import (
 	BILLED_VISIT_LOCK_MESSAGE,
 	STRICT_MODE,
+	apply_billable_item_amounts,
 	assert_boarding_billable_item_can_cancel,
 	assert_visit_billable_item_can_cancel,
 	cancel_boarding_billable_item_by_link,
 	cancel_visit_billable_item_by_link,
+	summarise_visit_billing,
+	visit_billing_status,
 )
 from pet_app.pet_app.doctype.vet_visit.vet_visit import (
 	_create_sales_invoice_for_visit,
@@ -630,6 +635,11 @@ def _visit_items(user: str, roles: set[str], search=None) -> list[dict]:
 	elif not user_has_full_access(user) and roles & DOCTOR_ROLES and doctor:
 		filters["doctor"] = doctor
 
+	# Clinic separation applies to the worklist only. Pet history keeps returning visits
+	# from every clinic -- see _latest_visits in api/medical_profile.py and the visit
+	# workbench, neither of which is branch filtered.
+	apply_branch_filter(filters, "Vet Visit", user)
+
 	visit_fields = _fields(
 		"Vet Visit",
 		[
@@ -641,16 +651,15 @@ def _visit_items(user: str, roles: set[str], search=None) -> list[dict]:
 			"animal_patient",
 			"guardian",
 			"doctor",
-				"illness",
-				"visit_type",
-				"follow_up_preferred_date",
-				"follow_up_date",
-				"follow_up_status",
-				"follow_up_visit_id",
-				"sales_invoice",
-				"billing_status",
-				"total_billable_amount",
-				"modified",
+			"visit_type",
+			"follow_up_preferred_date",
+			"follow_up_date",
+			"follow_up_status",
+			"follow_up_visit_id",
+			"sales_invoice",
+			"billing_status",
+			"total_billable_amount",
+			"modified",
 			"creation",
 		],
 	)
@@ -683,9 +692,11 @@ def _visit_items(user: str, roles: set[str], search=None) -> list[dict]:
 
 
 def _case_sheet_items(user: str, roles: set[str], search=None) -> list[dict]:
+	case_sheet_filters = {"status": ["in", list(OPEN_CASE_STATUSES)], "docstatus": ["<", 2]}
+	apply_branch_filter(case_sheet_filters, "Vet Case Sheet", user)
 	rows = frappe.get_all(
 		"Vet Case Sheet",
-		filters={"status": ["in", list(OPEN_CASE_STATUSES)], "docstatus": ["<", 2]},
+		filters=case_sheet_filters,
 		fields=_fields(
 			"Vet Case Sheet",
 			[
@@ -748,6 +759,7 @@ def _service_items(user: str, roles: set[str], search=None) -> list[dict]:
 	filters = {"docstatus": ["<", 2]}
 	if not user_has_full_access(user) and not roles & (COORDINATOR_ROLES | MANAGEMENT_ROLES | SERVICE_PROVIDER_ROLES):
 		filters["user"] = user
+	apply_branch_filter(filters, "PetCareService", user)
 
 	rows = frappe.get_list(
 		"PetCareService",
@@ -819,6 +831,7 @@ def _procedure_items(user: str, roles: set[str], search=None, scope: str | None 
 		return []
 
 	filters = {"docstatus": ["<", 2], "status": ["in", list(OPEN_PROCEDURE_STATUSES)]}
+	apply_branch_filter(filters, "Pet Procedure", user)
 	doctor = _doctor_for_user(user)
 	if scope == "doctor" and not user_has_full_access(user) and not roles & (COORDINATOR_ROLES | MANAGEMENT_ROLES):
 		if doctor:
@@ -915,7 +928,7 @@ def _visit_item(row) -> dict:
 	return _workspace_item(
 		"Vet Visit",
 		row.name,
-		title=_join_title(pet.get("name_label"), row.get("illness"), row.name),
+		title=_join_title(pet.get("name_label"), row.name),
 		subtitle=guardian.get("name_label"),
 		status=row.get("status"),
 		priority=priority,
@@ -1157,7 +1170,7 @@ def _visit_aggregate(visit_name: str) -> dict:
 			"name": visit.name,
 			"source_type": "Visit",
 			"source_doctype": "Vet Visit",
-			"title": _join_title(pet.get("name_label"), visit.get("illness"), visit.name),
+			"title": _join_title(pet.get("name_label"), visit.name),
 			"status": visit.status,
 			"priority": visit.get("priority") or _value(case_sheet, "priority") or "Normal",
 			"case_sheet_id": visit.case_sheet,
@@ -1277,12 +1290,12 @@ def _visit_diagnoses(visit) -> list[dict]:
 			)
 		if rows:
 			return rows
-	if visit.diagnosis or visit.illness:
+	if visit.diagnosis:
 		return [
 			{
 				"name": None,
 				"disease": None,
-				"disease_name": visit.illness,
+				"disease_name": None,
 				"diagnosis_text": visit.diagnosis,
 				"is_primary": 1,
 				"severity": None,
@@ -1603,28 +1616,47 @@ def _synthesized_orders_from_records(visit_name: str, known_order_ids: set[str],
 
 
 def _billing_snapshot(visit) -> dict:
-	invoice = None
-	if visit.sales_invoice and frappe.db.exists("Sales Invoice", visit.sales_invoice):
-		invoice = frappe.db.get_value(
-			"Sales Invoice",
-			visit.sales_invoice,
-			["name", "status", "docstatus", "grand_total", "outstanding_amount", "paid_amount", "currency"],
-			as_dict=True,
-		)
+	"""What the front desk sees. Must not report billed work as outstanding.
 
-	total = flt(invoice.get("grand_total")) if invoice else flt(visit.total_billable_amount)
-	balance = flt(invoice.get("outstanding_amount")) if invoice else total
-	paid = flt(invoice.get("paid_amount")) if invoice else max(total - balance, 0)
+	This used to read `Vet Visit.sales_invoice` alone: no visit invoice meant total =
+	total_billable_amount and balance = total, i.e. everything owed. Orders now bill at
+	their own completion onto their own branch's invoice and never write back to that
+	field, so on a fully per-order-billed visit the old reading showed paid work as
+	entirely unpaid - to the person taking the money.
+
+	Settlement is resolved row by row against the invoice each row actually reached, never
+	by summing invoice totals: invoice reuse means one invoice can carry several visits'
+	charges, so its grand_total is not this visit's.
+	"""
+	summary = summarise_visit_billing(visit)
+
 	active_billables = [row for row in visit.billable_items or [] if not _is_cancelled_billable(row)]
 	cancelled_billables = [row for row in visit.billable_items or [] if _is_cancelled_billable(row)]
 	return {
-		"billing_status": _billing_status(invoice, visit),
+		"billing_status": visit_billing_status(visit, summary=summary),
+		# The visit's own invoice, still a single Link and still only ever the visit's own
+		# branch's invoice. `invoices` below is the full picture.
 		"sales_invoice": visit.sales_invoice,
-		"total": total,
-		"paid": paid,
-		"balance": balance,
-		"currency": invoice.get("currency") if invoice else None,
+		"total": summary.total,
+		"paid": summary.settled,
+		"balance": summary.outstanding,
+		"billed_amount": summary.billed,
+		"unbilled_amount": summary.unbilled,
+		"currency": summary.currency,
 		"billed": cint(visit.billed),
+		# Every invoice this visit's charges reached, the visit's own included. Amounts are
+		# the invoice's own, not this visit's share - a merged invoice has no such share.
+		"invoices": [
+			{
+				"sales_invoice": inv.get("name"),
+				"branch": inv.get("branch"),
+				"docstatus": cint(inv.get("docstatus")),
+				"status": inv.get("status"),
+				"grand_total": flt(inv.get("grand_total")),
+				"outstanding_amount": flt(inv.get("outstanding_amount")),
+			}
+			for inv in summary.invoices
+		],
 		"billable_items": [_billable_item(row) for row in active_billables],
 		"cancelled_billable_items": [_billable_item(row) for row in cancelled_billables],
 	}
@@ -1649,7 +1681,10 @@ def _set_case_choice(visit_name: str, payload: dict):
 	choice = payload.get("doctor_case_choice") or payload.get("case_choice") or payload.get("choice")
 	episode = payload.get("care_episode") or payload.get("episode") or payload.get("episode_name")
 	note = payload.get("case_choice_note") if "case_choice_note" in payload else payload.get("note")
-	set_visit_case_choice(visit, choice, episode=episode, note=note)
+	# Doctor-authored name for a case being opened. Only consumed on the new_case
+	# paths that actually create/reopen an episode - see set_visit_case_choice.
+	case_title = payload.get("case_title") or payload.get("episode_title")
+	set_visit_case_choice(visit, choice, episode=episode, note=note, case_title=case_title)
 
 
 def _save_clinical_note(visit_name: str, payload: dict):
@@ -1667,7 +1702,6 @@ def _save_clinical_note(visit_name: str, payload: dict):
 		"assessment_note": "assessment_note",
 		"doctor_note": "doctor_note",
 		"owner_instruction_note": "owner_instruction_note",
-		"illness": "illness",
 		"follow_up_required": "follow_up_required",
 		"follow_up_reason": "follow_up_reason",
 		"follow_up_preferred_date": "follow_up_preferred_date",
@@ -1858,9 +1892,15 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 		clinical_state.transition_status(completed_visit, "Completed", action="complete_case")
 		completed_visit.sales_invoice = None
 		completed_visit.billed = 0
-		completed_visit.total_billable_amount = flt(total_billable_amount)
+		# Nothing was left to invoice, which now usually means every order billed at its
+		# own completion rather than that the visit was worth nothing. flt(total_billable_
+		# amount) is 0 here by construction; the field must still read the visit's clinical
+		# value or a fully per-order-billed visit reports as free work.
+		completed_visit.total_billable_amount = apply_billable_item_amounts(completed_visit)
 		if completed_visit.meta.has_field("billing_status"):
-			completed_visit.billing_status = "Unbilled"
+			# "Unbilled" is only true when nothing was raised at all. A visit whose orders
+			# each billed on completion is billed, and possibly already paid.
+			completed_visit.billing_status = visit_billing_status(completed_visit)
 		completed_visit.save(ignore_permissions=True)
 	sync_completed_visit(completed_visit, outcome=payload.get("outcome") if payload else None)
 	_sync_queue_ticket_for_visit(completed_visit, status="Completed", timestamp_field="completed_at")
@@ -1884,8 +1924,6 @@ def _assert_no_active_visit_boarding(visit):
 
 
 def _validate_visit_completion_requirements(visit):
-	if not visit.illness:
-		frappe.throw(_("Illness is required before completing the visit."))
 	if not visit.diagnosis:
 		frappe.throw(_("Diagnosis is required before completing the visit."))
 	if not has_internal_clinical_note(visit):
@@ -2297,12 +2335,49 @@ def _sync_pet_weight_from_started_service(service, weight: float | None):
 	frappe.logger().info(f"Updated Pet {service.pet_id} weight to {weight}")
 
 
+def _stamp_billed_item_on_service(service, billing_plan) -> None:
+	"""Record on the service what it was actually billed for.
+
+	`service_option` is what normally stamps `item_code`/`price`, and a service created
+	from a Vet Visit order never has one - so those fields stayed empty on the document
+	while billing resolved the real values through the CareService template. Anything
+	reading the service's own fields therefore saw a service with no price: the workspace
+	reported "no billing item" for a charge that had already been raised. Teaching one
+	screen a second lookup path would leave every other screen fooled the same way, so the
+	document is made to tell the truth instead.
+
+	Written from the billing plan rather than re-derived, so the stamped values are the
+	same ones that reach the invoice line by construction - the two cannot drift.
+
+	Only when empty. A `service_option` sets these deliberately (its own item and rate) and
+	must never be overwritten; where it did, `plan_order_billing` already preferred the
+	document's values, so the stamp would be a no-op anyway.
+
+	Only when it bills. `billing_plan` is None for a service that raises no charge - no
+	visit, already billed, no resolvable branch, or the state columns absent - and such a
+	service is left exactly as it was.
+	"""
+	if not billing_plan:
+		return
+	if not cstr(service.get("item_code")).strip():
+		service.item_code = billing_plan.item_code
+	if not flt(service.get("price")):
+		service.price = billing_plan.rate
+
+
 def _update_service_status(service_name: str, action: str, payload: dict):
 	service = frappe.get_doc("PetCareService", service_name)
 	if action == "cancel_service":
 		_assert_service_cancellable(service)
 		_assert_linked_order_billing_cancellable(service, "Service")
 	clinical_state.assert_action_allowed(service, action)
+	# Pre-flight before anything is written. finish_service/close_service are aliases and
+	# assert_action_allowed above has already refused either on a completed service.
+	billing_plan = (
+		order_billing.plan_order_billing(service, item_type="Service")
+		if action in {"finish_service", "close_service"}
+		else None
+	)
 	started_weight = None
 	if action == "start_service":
 		started_weight = _positive_payload_weight(payload)
@@ -2315,11 +2390,14 @@ def _update_service_status(service_name: str, action: str, payload: dict):
 	elif action in {"finish_service", "close_service"}:
 		service.end_date = service.end_date or now_datetime()
 		clinical_state.transition_status(service, "completed", action=action)
+		_stamp_billed_item_on_service(service, billing_plan)
 	elif action == "cancel_service":
 		clinical_state.transition_status(service, "cancelled", action=action)
 	if payload.get("description"):
 		service.description = payload.get("description")
 	service.save(ignore_permissions=True)
+	if billing_plan:
+		order_billing.commit_order_billing(service, billing_plan)
 	if action == "start_service":
 		_sync_pet_weight_from_started_service(service, started_weight)
 	if action == "cancel_service":
@@ -2491,6 +2569,7 @@ def _update_procedure_status(procedure_name: str, action: str, payload: dict):
 		_assert_linked_order_billing_cancellable(doc, "Procedure")
 		doc.flags.allow_billed_visit_cancellation = True
 	clinical_state.assert_action_allowed(doc, action)
+	billing_plan = None
 	if action == "start_procedure":
 		clinical_state.transition_status(doc, "In Progress", action=action)
 		doc.started_at = doc.started_at or now_datetime()
@@ -2502,6 +2581,9 @@ def _update_procedure_status(procedure_name: str, action: str, payload: dict):
 		doc.completed_at = doc.completed_at or now_datetime()
 	elif action == "close_procedure":
 		_save_procedure_note(doc.name, payload, save=False, doc=doc, action=action)
+		# Pre-flight before anything is written. close_procedure is the billing moment for
+		# a procedure, and assert_action_allowed above has already refused a second close.
+		billing_plan = order_billing.plan_order_billing(doc, item_type="Procedure")
 		if doc.status not in {"Completed", "Closed"}:
 			clinical_state.transition_status(doc, "Completed", action=action)
 			doc.completed_at = doc.completed_at or now_datetime()
@@ -2512,6 +2594,8 @@ def _update_procedure_status(procedure_name: str, action: str, payload: dict):
 	else:
 		frappe.throw(_("Unsupported procedure action: {0}").format(action))
 	doc.save(ignore_permissions=True)
+	if billing_plan:
+		order_billing.commit_order_billing(doc, billing_plan)
 
 
 def _save_procedure_note(procedure_name: str, payload: dict, save: bool = True, doc=None, action: str = "save_procedure_note"):
@@ -3601,16 +3685,6 @@ def _normalize_order_status(status: str | None) -> str:
 	if status in {"pending", "ordered"}:
 		return "Ordered"
 	return "In Progress" if status else "Draft"
-
-
-def _billing_status(invoice, visit) -> str:
-	if not invoice:
-		return visit.get("billing_status") or ("Unbilled" if not visit.billed else "Draft Invoice")
-	if invoice.get("docstatus") == 0:
-		return "Draft Invoice"
-	if flt(invoice.get("outstanding_amount")) <= 0:
-		return "Paid"
-	return "Partially Paid"
 
 
 def _billable_item(row) -> dict:

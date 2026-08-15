@@ -444,6 +444,80 @@ def get_or_create_customer_from_guardian(guardian) -> str:
         return customer_id
 
 
+def get_guardian_for_pet(pet: str) -> str | None:
+    """The Guardian who owns a pet, primary owner first.
+
+    Same lookup PetCareService._set_guardian_from_pet already performs, lifted out so
+    Lab and Imaging - which carry neither a guardian nor a customer, only a pet - can
+    reach a payer without each growing its own copy.
+
+    Returns None rather than throwing: "this pet has no owner on file" is a fact the
+    caller has to decide what to do about, and only the billing caller knows whether that
+    is fatal.
+    """
+    pet = cstr(pet).strip()
+    if not pet:
+        return None
+    return (
+        frappe.db.get_value("PetGuardian", {"pet_id": pet, "role": "primary_owner"}, "guardian_id")
+        or frappe.db.get_value("PetGuardian", {"pet_id": pet}, "guardian_id")
+    )
+
+
+def resolve_customer_for_clinical_record(doc) -> str:
+    """The Customer a clinical order should be billed to. Throws rather than guessing.
+
+    Order of preference:
+
+    1. The linked visit's `customer`, when there is one. It is the answer the visit itself
+       would use at close, and using anything else would let one visit's charges land on
+       two different customers depending on which path billed them.
+    2. A guardian carried by the order (`guardian` on Pet Procedure, `guardian_id` on
+       PetCareService).
+    3. The pet's owner, via PetGuardian.
+
+    Every route ends at `get_or_create_customer_from_guardian`, the single resolver the
+    boarding path already uses - so a guardian that has never been billed before gets the
+    same Customer here as it would there, including the phone-conflict refusals.
+
+    Refuses loudly at each dead end. A blank or wrong customer on a Sales Invoice is worse
+    than a blocked release: the release can be retried once the record is fixed, but an
+    invoice raised against the wrong payer has already misstated a receivable.
+    """
+    visit = cstr(doc.get("visit")).strip()
+    if visit:
+        customer = frappe.db.get_value("Vet Visit", visit, "customer")
+        if customer:
+            return customer
+
+    guardian = cstr(doc.get("guardian") or doc.get("guardian_id")).strip()
+    if not guardian:
+        pet = cstr(doc.get("pet") or doc.get("pet_id")).strip()
+        if not pet:
+            frappe.throw(
+                _("{0} {1} has no pet, so no customer can be resolved to bill it.").format(
+                    _(doc.doctype), frappe.bold(doc.name)
+                )
+            )
+        guardian = get_guardian_for_pet(pet)
+        if not guardian:
+            frappe.throw(
+                _(
+                    "Pet {0} has no guardian on file, so {1} {2} cannot be billed. "
+                    "Link a guardian to the pet and try again."
+                ).format(frappe.bold(pet), _(doc.doctype), frappe.bold(doc.name))
+            )
+
+    customer = get_or_create_customer_from_guardian(guardian)
+    if not customer:
+        frappe.throw(
+            _("Guardian {0} could not be resolved to a Customer, so {1} {2} cannot be billed.").format(
+                frappe.bold(guardian), _(doc.doctype), frappe.bold(doc.name)
+            )
+        )
+    return customer
+
+
 def change_guardian_phone_number(guardian, new_phone: str) -> dict:
     guardian_row = get_guardian_record(guardian)
     guardian_name = guardian_row.get("name")

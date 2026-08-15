@@ -189,7 +189,7 @@ def _resolve_product_item_group(doc):
     if not doc.category:
         return doc.item_group or "All Item Groups"
 
-    item_group = apply_product_category_to_product(doc, ignore_permissions=True)
+    item_group = apply_product_category_to_product(doc)
     if doc.name and not doc.is_new():
         updates = {}
         db_category = frappe.db.get_value("Product", doc.name, "category")

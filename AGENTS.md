@@ -414,3 +414,67 @@ rows are not pushed down, and `custom_store_published` is likewise absent so per
 publishing survives. But `disabled`, `stock_uom`, `item_group`, `brand` and
 `is_stock_item` **are** in that list and will overwrite the variants on every template
 save. Any future template-editing endpoint inherits this whether it intends to or not.
+
+## Clinic Branch Separation
+
+Multiple clinics share one site. Only **worklists** are separated. Implemented 2026-08-11.
+
+Contract: `docs/CLINIC_BRANCH_SEPARATION.md`. Frontend consumer: `docs/frontend-branch-separation.md`.
+
+Branch is ERPNext `Branch`, assigned via standard `User Permission` rows. There is no
+custom branch DocType — an earlier `clinic branch` stub was removed by
+`pet_app/patches/clinic_branch_foundation.py`.
+
+Scoped, and nothing else (`SCOPED_DOCTYPES` in `pet_app/utils/branch.py`):
+
+- `Vet Visit`, `Vet Case Sheet`, `Appointment`, `Pet Queue Ticket`, `PetCareService`,
+  `Pet Procedure`, `Sales Invoice`
+
+Deliberately **not** scoped:
+
+- **Patient record** — Pet, Guardian, Pet Medical Profile, Pet Care Episode, vaccination
+  and deworming history. Pets and guardians are shared; a vet must see prior treatment
+  from any clinic. Hiding it is a clinical safety problem.
+- **Boarding** — `Pet Boarding`, `Service Room`. One facility serves every clinic; the
+  Service Room pool is shared and has no branch, so scoping the booking would let one
+  clinic reserve a room another clinic could neither see nor check out. Accountability
+  lives on `Pet Boarding.practitioner`, an **optional, frontend-owned** field the backend
+  never infers.
+- **Diagnostics** — `Lab`, `Imaging`. One lab/radiology operation serves all clinics.
+  `_diagnostic_items` in `pet_app/api/workspace.py` is unscoped **by decision**; do not
+  "fix" it.
+- **The money** — Customer, Payment Entry, GL Entry, POS Profile. One Company, one
+  receivable ledger, so a customer's balance is company-wide and a debt raised at one
+  clinic is collectable at another. `Sales Invoice` **is** scoped (the document belongs
+  to the clinic that raised it, inherited from the linked visit) but the balance is not.
+  Scoping a balance would make a customer look settled at one clinic while owing at
+  another.
+
+`SCOPED_DOCTYPES` is an allow-list, not a deny-list. ERPNext already puts an unrelated
+`branch` custom field on Sales Invoice, Sales Order, Payment Entry, Stock Entry and POS
+Profile for reporting; a deny-list would silently scope billing.
+
+Rules:
+
+- A **NULL branch is visible to every clinic**, not none — Frappe emits
+  `ifnull(branch,'')='' or branch in (...)`. Backfill is a correctness requirement, and
+  no write path may leave the field empty. `apply_strict_user_permissions` is **not**
+  enabled; it is global and would change existing warehouse/POS/practitioner restrictions.
+- A **user** with no Branch User Permission is likewise unrestricted and sees everything.
+  Administrator is intentionally left unassigned so they see every clinic.
+- Stamp through the `before_insert` hook (`pet_app.utils.branch.stamp_branch_on_insert`),
+  never per call site — `Vet Visit` alone has five non-test insert paths.
+- `Healthcare Practitioner.clinic_branch` is a read-only mirror of the User Permission.
+  The sync hook runs on `after_delete`, not `on_trash`, because `on_trash` fires before
+  the row leaves the table.
+- Filtering is applied per endpoint in the API layer, because `frappe.get_all` does not
+  check permissions. This is **worklist separation, not tenant isolation** — say so
+  plainly rather than implying the site is multi-tenant.
+
+Do not build a UI that configures which doctypes are scoped. Branches and assignments are
+data; the rules are code. See the "Permissions Refactor" section above — this app already
+deleted five permission DocTypes built that way.
+
+Tests: `pet_app/tests/test_branch_scope.py`. Several assert that history, diagnostics and
+billing stay **global**, so a future change that scopes them fails with a message naming
+the decision.

@@ -128,7 +128,19 @@ def get_providers_for_category(category: str) -> list:
             order_by="practitioner_name asc",
         )
 
-    providers = frappe.get_all(
+    # get_list, not get_all: get_all sets ignore_permissions=True (frappe/__init__.py
+    # "will **not** check for permissions"), which skipped the Branch User Permission and
+    # showed a hotel coordinator every clinic's service providers. Healthcare Practitioner
+    # links to Branch via `clinic_branch` (ignore_user_permissions = 0), so Frappe filters
+    # this correctly on its own once permissions are actually consulted - no branch filter
+    # is needed here, and none would fit: Healthcare Practitioner is not in
+    # utils.branch.SCOPED_DOCTYPES.
+    #
+    # Deliberately NOT applied to the medical branch above. Every Doctor and Nurse on this
+    # site sits in `main` (16 of 18, the other 2 blank) and none in `hotel`, so filtering
+    # that list would hand hotel users an empty doctor picker. Attribution of medical staff
+    # is a separate decision; this change only closes the leak that was reported.
+    providers = frappe.get_list(
         "Healthcare Practitioner",
         filters={
             "disabled": 0,
@@ -136,6 +148,7 @@ def get_providers_for_category(category: str) -> list:
         },
         fields=fields,
         order_by="practitioner_name asc",
+        limit_page_length=0,
     )
 
     result = []

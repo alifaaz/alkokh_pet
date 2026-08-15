@@ -13,7 +13,8 @@
   "specialization",
   "photo",
   "disabled",
-  "service_categories"
+  "service_categories",
+  "clinic_branch"
  ],
  "fields": [
   {
@@ -76,12 +77,21 @@
    "fieldtype": "Table",
    "label": "Service Categories",
    "options": "Healthcare Practitioner Service Category"
+  },
+  {
+   "description": "Mirror of the user's Branch User Permission. Set automatically; edit the User Permission instead.",
+   "fieldname": "clinic_branch",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Branch",
+   "options": "Branch",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-23 04:23:23.272584",
+ "modified": "2026-08-11 08:29:53.604431",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Healthcare Practitioner",

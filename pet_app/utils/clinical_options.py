@@ -245,7 +245,6 @@ def visit_clinical_payload(visit) -> dict[str, Any]:
 		"examination": visit.get("examination_notes"),
 		"examination_notes": visit.get("examination_notes"),
 		"case_summary": visit.get("case_summary"),
-		"illness": visit.get("illness"),
 		"diagnosis": visit.get("diagnosis"),
 		"treatment_plan": visit.get("treatment_plan"),
 		"plan": visit.get("treatment_plan"),

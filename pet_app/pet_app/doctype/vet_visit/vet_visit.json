@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "naming_series:",
- "creation": "2026-03-27 00:00:00",
+ "creation": "2026-07-23 21:31:30.632843",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -32,6 +32,7 @@
   "doctor_name",
   "visit_type",
   "weight",
+  "resaon_cancel",
   "examination_tab",
   "section_break_examination",
   "temperature",
@@ -45,7 +46,6 @@
   "case_summary",
   "intake_summary",
   "overview",
-  "illness",
   "diagnosis",
   "assessment_findings",
   "assessment_note",
@@ -321,12 +321,6 @@
    "label": "Overview"
   },
   {
-   "fieldname": "illness",
-   "fieldtype": "Select",
-   "label": "Illness / Condition",
-   "options": "Gastrointestinal\nDermatological\nRespiratory\nCardiovascular\nMusculoskeletal\nDental\nOphthalmic\nOtic\nParasitic\nInfectious\nNutritional\nEndocrine\nUrinary\nReproductive\nNeurological\nBehavioral\nPreventive Care\nPost-Surgical\nOther"
-  },
-  {
    "fieldname": "diagnosis",
    "fieldtype": "Text Editor",
    "label": "Diagnosis"
@@ -544,12 +538,17 @@
    "fieldname": "assessment",
    "fieldtype": "Data",
    "label": "assessment"
+  },
+  {
+   "fieldname": "resaon_cancel",
+   "fieldtype": "Small Text",
+   "label": "cancel reason"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-21 06:25:00.641971",
+ "modified": "2026-08-13 20:53:50.015698",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Vet Visit",

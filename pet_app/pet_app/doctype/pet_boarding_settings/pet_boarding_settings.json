@@ -8,7 +8,9 @@
   "travel_boarding_item",
   "treatment_boarding_item",
   "column_break_defaults",
-  "default_boarding_type"
+  "default_boarding_type",
+  "attribution_section",
+  "boarding_branch"
  ],
  "fields": [
   {
@@ -38,6 +40,18 @@
    "fieldtype": "Select",
    "label": "Default Boarding Type",
    "options": "Travel\nTreatment"
+  },
+  {
+   "fieldname": "attribution_section",
+   "fieldtype": "Section Break",
+   "label": "Attribution"
+  },
+  {
+   "fieldname": "boarding_branch",
+   "fieldtype": "Link",
+   "label": "Boarding Branch",
+   "options": "Branch",
+   "description": "The branch every boarding stay is attributed to. Boarding happens at the boarding facility, so this is never taken from the user processing the stay. Checkout refuses to bill until it is set."
   }
  ],
  "grid_page_length": 50,

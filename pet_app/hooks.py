@@ -283,9 +283,19 @@ doc_events = {
         "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
     },
     "User Permission": {
-        "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
-        "on_update": "pet_app.api.permissions.clear_access_snapshot_cache",
+        "after_insert": [
+            "pet_app.api.permissions.clear_access_snapshot_cache",
+            "pet_app.utils.branch.on_user_permission_change",
+        ],
+        "on_update": [
+            "pet_app.api.permissions.clear_access_snapshot_cache",
+            "pet_app.utils.branch.on_user_permission_change",
+        ],
         "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
+        # after_delete, not on_trash: on_trash fires before the row leaves the table
+        # (frappe/model/delete_doc.py:165 vs :184), so the mirror would recompute
+        # against the permission row that is being removed.
+        "after_delete": "pet_app.utils.branch.on_user_permission_change",
     },
     "DocPerm": {
         "after_insert": "pet_app.api.permissions.clear_access_snapshot_cache",
@@ -306,7 +316,10 @@ doc_events = {
         "on_trash": "pet_app.api.permissions.clear_access_snapshot_cache",
     },
     "Vet Visit": {
-        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+        "before_insert": [
+            "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_branch_on_insert",
+        ],
         "on_update": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
         "on_trash": "pet_app.pet_app.doctype.medication.medication.sync_medication_counters_for_visit",
     },
@@ -314,33 +327,74 @@ doc_events = {
         "before_insert": [
             "pet_app.utils.appointment.link_appointment_identity",
             "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_branch_on_insert",
         ],
         "validate": "pet_app.utils.appointment.link_appointment_identity",
     },
     "Vet Case Sheet": {
-        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+        "before_insert": [
+            "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_branch_on_insert",
+        ],
+    },
+    "Pet Queue Ticket": {
+        "before_insert": "pet_app.utils.branch.stamp_branch_on_insert",
     },
     "Pet Boarding": {
-        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+        # Boarding stays global -- one shared facility serving every clinic -- so it is
+        # still NOT in branch.SCOPED_DOCTYPES and every clinic still sees and checks out
+        # every stay. `practitioner` is an optional field set by the frontend,
+        # deliberately not auto-filled here.
+        #
+        # stamp_boarding_branch is attribution, not scoping: the stay records where it
+        # physically happened, at the moment it happened, so a later change to
+        # Pet Boarding Settings cannot rewrite history. It was reverted once because the
+        # resulting invoice carried a branch the acting user had no claim to and Frappe
+        # refused the insert, blocking checkout entirely. That is now fixed at the
+        # invoice: check_out_boarding authorises the caller and then passes
+        # branch_authorised, which covers both the doc_event and the user-permission
+        # check. Re-wired on that basis.
+        "before_insert": [
+            "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_boarding_branch",
+        ],
     },
     "PetCareService": {
-        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+        "before_insert": [
+            "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_branch_on_insert",
+        ],
     },
     "Pet Procedure": {
-        "before_insert": "pet_app.utils.mortality.validate_document_not_deceased",
+        "before_insert": [
+            "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_branch_on_insert",
+        ],
     },
     "Sales Order": {
+        # before_validate, not validate: the row lock must be held before ERPNext's own
+        # validate_coupon_code() reads `used`. Bound to the doctype so the desk and every
+        # other creation path are covered, not just the mobile endpoint.
+        "before_validate": "pet_app.api.coupons.enforce_coupon_limits",
         "before_update_after_submit": "pet_app.api.order.before_sales_order_update",
         "on_update_after_submit": "pet_app.api.order.on_sales_order_update",
     },
     "Sales Invoice": {
-        "before_insert": "pet_app.utils.sales_invoice_guard.before_insert",
+        "before_insert": [
+            "pet_app.utils.sales_invoice_guard.before_insert",
+            # Scopes the invoice LIST to the raising clinic. Does not touch the
+            # customer, the receivable ledger, Payment Entry or any balance.
+            "pet_app.utils.branch.stamp_branch_on_insert",
+        ],
         "on_submit": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_cancel": [
             "pet_app.utils.visit_billing.on_sales_invoice_cancel",
             "pet_app.api.mobile.home_builder.clear_home_cache",
         ],
-        "validate": "pet_app.utils.sales_invoice_guard.fix_due_date",
+        # before_validate, not validate: SalesInvoice.validate() moves posting_date
+        # (validate_auto_set_posting_time) and then throws on the stale due_date
+        # (validate_due_date), both before any doc_event validate hook can run.
+        "before_validate": "pet_app.utils.sales_invoice_guard.fix_due_date",
     },
     "Stock Entry": {
         "on_submit": "pet_app.api.mobile.home_builder.clear_home_cache",
@@ -416,10 +470,11 @@ doc_events = {
     "Customer": {
         "validate": "pet_app.utils.guardian_customer.validate_customer_identity_projection",
     },
-    "Coupon Code": {                                        # ← add this
+    # Pricing Rule owns discount configuration; the coupon no longer projects itself
+    # onto one, so after_insert/on_update are gone. Rules are created and updated by the
+    # admin endpoints in pet_app.api.coupons.
+    "Coupon Code": {
         "validate":     "pet_app.api.coupons.validate",
-        "after_insert": "pet_app.api.coupons.after_insert",
-        "on_update":    "pet_app.api.coupons.on_update",
         "on_trash":     "pet_app.api.coupons.on_delete",
     },
 }
@@ -444,6 +499,11 @@ scheduler_events = {
         "pet_app.tasks.reminders.send_due_reminders",
         "pet_app.notifications.scheduler.create_daily_reminders",
         "pet_app.notifications.scheduler.cleanup_old_webhook_events",
+        # Creation is already refused on overlap (_assert_no_conflict), so this is the
+        # backstop for rules that predate that check or were edited outside the admin
+        # API. It reports overlapping scopes and any blank for_price_list - a blank one
+        # matches EVERY price list, which is how a clinical rule would reach retail.
+        "pet_app.api.coupons.review_active_pricing_rule_conflicts",
     ],
     
 }

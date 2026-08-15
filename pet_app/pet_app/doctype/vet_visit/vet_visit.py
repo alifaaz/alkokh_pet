@@ -19,13 +19,20 @@ from pet_app.utils.medical_profile import (
 	sync_treatment_from_visit,
 	update_profile_for_visit,
 )
+from pet_app.utils.invoice_reuse import get_or_create_open_invoice
 from pet_app.utils.price_list import get_veterinary_selling_price_list
 from pet_app.utils.visit_billing import (
+	ALL_CHARGES_ALREADY_BILLED_MESSAGE,
+	BILLED_ROW_LOCK_MESSAGE,
 	BILLED_VISIT_LOCK_MESSAGE,
+	SKIP_INVOICE_ROW_STATUSES,
 	STRICT_MODE,
 	apply_billable_item_amounts,
+	billable_row_label,
+	billed_row_field_changed,
 	get_care_service_doc,
 	log_visit_billing_event,
+	summarise_visit_billing,
 	upsert_visit_billable_item,
 )
 from pet_app.utils.practitioner import get_practitioner_for_user
@@ -259,9 +266,6 @@ class VetVisit(Document):
 	def _validate_completion_rules(self):
 		if self.status != "Completed":
 			return
-
-		if not self.illness:
-			frappe.throw(_("Illness is required before completing the visit."))
 
 		if not self.diagnosis:
 			frappe.throw(_("Diagnosis is required before completing the visit."))
@@ -596,8 +600,16 @@ class VetVisit(Document):
 			if before.status != "Billed":
 				continue
 			for fieldname in locked_fields:
-				if cstr(before.get(fieldname)) != cstr(row.get(fieldname)):
-					frappe.throw(_(BILLED_VISIT_LOCK_MESSAGE))
+				# Compared by value, not by text. The client posts the whole document back,
+				# and a whole float serialises to a JSON integer - so cstr() saw 1 against
+				# a stored 1.0 and refused a save that changed nothing. Orders now bill at
+				# their own completion, so a row can be Billed while the visit is still
+				# open and being edited, which is what made a latent comparison bug a daily
+				# one. The scope is unchanged: an edit to an invoiced charge is refused.
+				if billed_row_field_changed(before, row, fieldname):
+					frappe.throw(
+						_(BILLED_ROW_LOCK_MESSAGE).format(frappe.bold(billable_row_label(before)))
+					)
 
 	def _get_medication_rate(self, item) -> float:
 		price_list = get_veterinary_selling_price_list()
@@ -770,6 +782,15 @@ def get_care_service_billing_details(care_service_name: str) -> dict:
 @standardize_response
 def create_sales_invoice(visit_name: str) -> dict:
 	_require_visit_role(VISIT_BILLING_ROLES, allow_docperm=True)
+
+	# Now the common case, not an edge case: every order on this visit billed at its own
+	# completion, so there is no remainder to invoice. That is success, not an error - the
+	# work IS billed - so it answers with where the money went instead of throwing.
+	# `sales_invoice` is None here; callers must read `status` before using it.
+	already = _already_fully_billed_response(visit_name)
+	if already:
+		return already
+
 	result = _create_sales_invoice_for_visit(visit_name)
 	visit = result["visit"]
 	sales_invoice = result["sales_invoice"]
@@ -781,10 +802,52 @@ def create_sales_invoice(visit_name: str) -> dict:
 	)
 
 	return {
+		"status": "invoiced",
 		"sales_invoice": sales_invoice.name,
 		"customer": visit.customer,
 		"total_billable_amount": result["total_billable_amount"],
 		"guardian_reference_field": result["guardian_reference_field"],
+	}
+
+
+def _already_fully_billed_response(visit_name: str) -> dict | None:
+	"""A clean answer for a visit whose charges were all billed at order completion.
+
+	Returns None when there is real work for the invoicing path to do, so the normal route
+	is untouched. Only claims "already billed" when at least one row actually reached an
+	invoice - a visit with no rows at all, or only cancelled ones, still falls through to
+	the existing throw, which is truthful for that case.
+	"""
+	if not visit_name or not frappe.db.exists("Vet Visit", visit_name):
+		return None
+
+	visit = frappe.get_doc("Vet Visit", visit_name)
+	if visit.sales_invoice:
+		# Its own invoice exists; the normal path reports that, and says which one.
+		return None
+
+	rows = [row for row in visit.billable_items or [] if row.status != "Cancelled"]
+	if not rows or any(row.status != "Billed" for row in rows):
+		return None
+
+	summary = summarise_visit_billing(visit)
+	return {
+		"status": "already_billed",
+		"sales_invoice": None,
+		"customer": visit.customer,
+		"total_billable_amount": summary.total,
+		"guardian_reference_field": None,
+		"message": _(ALL_CHARGES_ALREADY_BILLED_MESSAGE).format(visit.name),
+		"invoices": [
+			{
+				"sales_invoice": inv.get("name"),
+				"branch": inv.get("branch"),
+				"docstatus": inv.get("docstatus"),
+				"status": inv.get("status"),
+				"outstanding_amount": flt(inv.get("outstanding_amount")),
+			}
+			for inv in summary.invoices
+		],
 	}
 
 
@@ -813,30 +876,32 @@ def _create_sales_invoice_for_visit(visit_name: str) -> dict:
 	items, total_amount = get_billable_invoice_items(visit)
 	updates_stock = any(item.get("warehouse") for item in items)
 
-	sales_invoice = frappe.get_doc(
-		{
-			"doctype": "Sales Invoice",
-			"customer": visit.customer,
-			"posting_date": getdate(),
-			"due_date": getdate(),
-			"ignore_pricing_rule": 1,
-			"selling_price_list": get_veterinary_selling_price_list(),
-			"update_stock": 1 if updates_stock else 0,
-			"items": items,
-		}
+	# Appends to this customer's open Draft when one exists for the same company, branch
+	# and stock kind; creates one only when it does not. The invoice belongs to the clinic
+	# that did the work, not to whoever bills it, so the visit's branch is passed rather
+	# than the acting user's - and it is part of the match key, so two branches never
+	# share an invoice.
+	result = get_or_create_open_invoice(
+		customer=visit.customer,
+		items=items,
+		source_doctype="Vet Visit",
+		source_name=visit.name,
+		branch=visit.get("branch"),
+		posting_date=getdate(),
+		due_date=getdate(),
+		selling_price_list=get_veterinary_selling_price_list(),
+		ignore_pricing_rule=1,
+		remarks=_("Vet Visit {0} billed.").format(visit.name),
+		guardian=visit.guardian,
+		requires_stock=updates_stock,
 	)
-	guardian_field = None
-	if visit.guardian:
-		for fieldname in ("guardian_id", "guardian", "custom_guardian_id", "custom_guardian"):
-			if sales_invoice.meta.has_field(fieldname):
-				sales_invoice.set(fieldname, visit.guardian)
-				guardian_field = fieldname
-				break
-	sales_invoice.flags.from_custom_flow = True
-	sales_invoice.insert()
+	sales_invoice = result.invoice
+	guardian_field = result.guardian_reference_field
 	sales_invoice.add_comment(
 		"Comment",
-		_("Draft Sales Invoice created from Vet Visit {0} by {1}.").format(visit.name, frappe.session.user),
+		_("Draft Sales Invoice {0} from Vet Visit {1} by {2}.").format(
+			_("created") if result.created else _("extended"), visit.name, frappe.session.user
+		),
 	)
 	log_visit_billing_event(
 		"INVOICE_CREATED",
@@ -861,7 +926,13 @@ def _mark_visit_invoiced(visit, sales_invoice, total_amount: float):
 
 	visit.sales_invoice = sales_invoice.name
 	visit.billed = 1
-	visit.total_billable_amount = total_amount
+	# The visit's full clinical value, NOT this invoice's total. Since orders bill at their
+	# own completion, `total_amount` is only the remainder that reached this invoice -
+	# writing it here would make the field silently understate the work done, and it is
+	# summed as per-visit revenue by clinical_reports and analytics. apply_billable_item_
+	# amounts stays authoritative; what is still OWED is computed by summarise_visit_billing
+	# from the invoices the rows actually landed on.
+	visit.total_billable_amount = apply_billable_item_amounts(visit)
 	visit.flags.ignore_billing_lock = True
 	visit.save()
 
@@ -876,7 +947,16 @@ def get_billable_invoice_items(visit, *, allow_non_invoiceable: bool = False) ->
 	medication_rows = {row.name: row for row in visit.get("prescribed_medications") or [] if row.name}
 	total_amount = 0
 	for row in visit.billable_items or []:
-		if row.status == "Cancelled":
+		# "Billed" is now reachable BEFORE this visit is invoiced. An order whose service
+		# is performed at another branch bills at its own completion, to its own branch,
+		# and marks its row Billed on the way out. Without this skip that row would be
+		# emitted again here and the customer would pay for one X-ray twice - once on the
+		# hotel invoice at release, once on the clinic's invoice at visit close.
+		#
+		# Nothing else sets Billed before invoicing: _mark_visit_invoiced sets it only
+		# after the invoice exists, and the visit is locked from that point, so this skip
+		# is a no-op for every visit that does not use per-order billing.
+		if row.status in SKIP_INVOICE_ROW_STATUSES:
 			continue
 
 		if not row.item_code:
@@ -907,6 +987,11 @@ def get_billable_invoice_items(visit, *, allow_non_invoiceable: bool = False) ->
 	if not items:
 		if allow_non_invoiceable:
 			return [], 0
+		# Distinguish "there is nothing to bill" from "it has all been billed already".
+		# Telling a cashier to add a billable item when every charge is already on an
+		# invoice sends them to create a duplicate.
+		if any(row.status == "Billed" for row in visit.billable_items or []):
+			frappe.throw(_(ALL_CHARGES_ALREADY_BILLED_MESSAGE).format(frappe.bold(visit.name)))
 		frappe.throw(_("Add at least one active billable item before invoicing."))
 	if total_amount <= 0:
 		if allow_non_invoiceable:

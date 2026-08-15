@@ -8,6 +8,7 @@ from frappe.utils import cint, cstr, flt
 
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import standardize_response
+from pet_app.pet_app.doctype.product_category.product_category import STORE_ROOT_ITEM_GROUP
 
 
 # ─────────────────────────────────────────
@@ -89,13 +90,17 @@ ITEM_ATTRIBUTE_DOCTYPE = "Item Attribute"
 # derived from the Item Group nested set - every leaf under this root - rather than a
 # hardcoded name list, so adding a retail group makes it available with no code change.
 #
-# The root is "Mobile Shop", NOT its parent "Pet Supplies". That distinction is the whole
-# guard: Mobile Shop (lft 55-68) is a SIBLING of Pharmacy (lft 69-166) under Pet Supplies,
-# so rooting at Pet Supplies would hand the store the entire clinical pharmacy tree -
-# Antibiotics, Controlled Drugs (Narcotics), Anesthetics, all of it.
+# The root is the store root itself, NOT its parent "Pet Supplies". That distinction is
+# the whole guard: the store root is a SIBLING of Pharmacy under Pet Supplies, so rooting
+# at Pet Supplies would hand the store the entire clinical pharmacy tree - Antibiotics,
+# Controlled Drugs (Narcotics), Anesthetics, all of it.
+#
+# The name is imported, not redeclared. It used to be a second literal ("Mobile Shop")
+# that drifted from the storefront root's own name and left the two trees disagreeing
+# about what the store is called.
 # ─────────────────────────────────────────
 
-STORE_ITEM_GROUP_ROOT = "Mobile Shop"
+STORE_ITEM_GROUP_ROOT = STORE_ROOT_ITEM_GROUP
 
 # Store-side ceiling on one generate request. ERPNext only refuses at 600 and silently
 # BACKGROUNDS anything from 10 up - so 590 Items from a single click is a supported
@@ -149,7 +154,7 @@ def _store_item_groups():
     """Leaf Item Groups the store may create templates in.
 
     `lft > root.lft` / `rgt < root.rgt` excludes the root itself, and `is_group = 0`
-    requires a leaf - a template belongs in "Dog Food", not in the "Mobile Shop" node.
+    requires a leaf - a template belongs in "Dog Food", not in the "Store" node itself.
     """
     root = frappe.db.get_value("Item Group", STORE_ITEM_GROUP_ROOT, ["lft", "rgt"], as_dict=True)
     if not root:

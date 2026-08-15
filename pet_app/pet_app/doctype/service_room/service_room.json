@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "field:room_code",
- "creation": "2026-04-20 00:00:00.000000",
+ "creation": "2026-04-20 00:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -11,6 +11,7 @@
   "arabic_name",
   "room_type",
   "status",
+  "branch",
   "column_break_basic",
   "image",
   "notes"
@@ -33,10 +34,7 @@
   {
    "fieldname": "arabic_name",
    "fieldtype": "Data",
-   "label": "Arabic Name",
-   "translatable": 0,
-   "permlevel": 0,
-   "hidden": 0
+   "label": "Arabic Name"
   },
   {
    "fieldname": "room_type",
@@ -66,12 +64,18 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Branch"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-20 00:00:00.000000",
+ "modified": "2026-08-12 17:19:46.036834",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Service Room",

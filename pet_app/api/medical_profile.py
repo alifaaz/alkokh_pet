@@ -140,6 +140,7 @@ def create_or_update_care_episode_from_visit(visit=None, data=None, **kwargs):
 			choice,
 			episode=payload.get("care_episode") or payload.get("episode"),
 			note=payload.get("case_choice_note") or payload.get("note"),
+			case_title=payload.get("case_title") or payload.get("episode_title"),
 		)
 		episode_name = context.get("visit_care_episode")
 		episode = _doc_payload(frappe.get_doc("Pet Care Episode", episode_name)) if episode_name else {}

@@ -96,16 +96,23 @@ ACTION_ALLOWED_STATUSES = {
 	},
 	"PetCareService": {
 		"start_service": {"pending", "overdue"},
-		"finish_service": {"pending", "overdue", "completed"},
-		"close_service": {"pending", "overdue", "completed"},
+		# "completed" removed from both: finish_service and close_service are aliases that
+		# each drive the service TO "completed", so admitting it meant either could fire
+		# again on an already-completed service. Harmless while completion only stamped
+		# end_date; not harmless now that it also raises a charge.
+		"finish_service": {"pending", "overdue"},
+		"close_service": {"pending", "overdue"},
 		"cancel_service": {"pending", "overdue"},
 	},
 	"Pet Procedure": {
 		"attach_file": {"In Progress", "Completed"},
 		"start_procedure": {"Pending", "In Progress"},
 		"save_procedure_note": {"Pending", "In Progress", "Completed"},
+		# "Completed" stays here: complete_procedure is idempotent by design and raises no
+		# charge. "Closed" is removed below - close_procedure is the billing moment, and a
+		# second close on an already-Closed procedure would be a second charge.
 		"complete_procedure": {"Pending", "In Progress", "Completed"},
-		"close_procedure": {"Pending", "In Progress", "Completed", "Closed"},
+		"close_procedure": {"Pending", "In Progress", "Completed"},
 		"cancel_procedure": {"Pending", "In Progress"},
 	},
 }

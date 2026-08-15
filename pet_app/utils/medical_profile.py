@@ -84,7 +84,15 @@ def create_or_update_care_episode_from_visit(visit):
 	return episode.name
 
 
-def set_visit_case_choice(visit, doctor_case_choice: str, *, episode: str | None = None, note: str | None = None):
+def set_visit_case_choice(visit, doctor_case_choice: str, *, episode: str | None = None, note: str | None = None, case_title: str | None = None):
+	"""Apply the doctor's case choice to ``visit``.
+
+	``case_title`` is the doctor-authored name for a case being OPENED. It is honoured only on
+	the ``new_case`` paths that actually bring an episode into being - a fresh insert, or the
+	reactivation of a cancelled episode this same visit opened. It is deliberately ignored when
+	``new_case`` resolves to an already-active episode, so a stray title cannot silently rename a
+	case the doctor is really just continuing.
+	"""
 	if isinstance(visit, str):
 		visit = frappe.get_doc("Vet Visit", visit)
 	if not visit.get("animal_patient"):
@@ -112,9 +120,9 @@ def set_visit_case_choice(visit, doctor_case_choice: str, *, episode: str | None
 		else:
 			target_episode = _cancelled_episode_opened_by_visit(visit)
 			if target_episode:
-				_reactivate_episode_from_visit(target_episode, visit)
+				_reactivate_episode_from_visit(target_episode, visit, case_title=case_title)
 			else:
-				target_episode = _new_episode_from_visit(visit)
+				target_episode = _new_episode_from_visit(visit, case_title=case_title)
 				target_episode.insert(ignore_permissions=True)
 		_set_visit_episode(visit, target_episode.name)
 		_touch_episode_from_visit(target_episode, visit)
@@ -432,7 +440,7 @@ def _profile_doc(pet, guardian=None, customer=None):
 	return profile
 
 
-def _new_episode_from_visit(visit):
+def _new_episode_from_visit(visit, *, case_title: str | None = None):
 	opening_practitioner = visit_practitioner(visit)
 	if not opening_practitioner:
 		frappe.throw(_("Visit must have a practitioner before opening a new case."))
@@ -444,7 +452,9 @@ def _new_episode_from_visit(visit):
 			"guardian": visit.guardian,
 			"customer": visit.customer,
 			"primary_doctor": opening_practitioner,
-			"episode_title": _first_text(_case_sheet_complaint(visit.case_sheet), visit.get("diagnosis"), _("Active Case")),
+			# Doctor-authored name wins; _first_text skips it when blank, so the
+			# complaint -> diagnosis -> "Active Case" fallback is untouched.
+			"episode_title": _first_text(_episode_title_text(case_title), _case_sheet_complaint(visit.case_sheet), visit.get("diagnosis"), _("Active Case")),
 			"episode_type": _episode_type_from_visit(visit),
 			"episode_status": "Under Diagnosis" if visit.status == "In Progress" else "Open",
 			"priority": _priority(visit.get("priority")),
@@ -487,11 +497,16 @@ def _cancelled_episode_opened_by_visit(visit):
 	return None
 
 
-def _reactivate_episode_from_visit(episode, visit):
+def _reactivate_episode_from_visit(episode, visit, *, case_title: str | None = None):
 	episode.episode_status = "Under Diagnosis" if visit.get("status") == "In Progress" else "Open"
 	for fieldname in ("closed_on", "closed_by", "closure_reason", "resolved_on", "outcome"):
 		if episode.meta.has_field(fieldname):
 			episode.set(fieldname, None)
+	# Reopening a cancelled episode is the doctor opening a case, so an explicit
+	# title applies here too. Blank leaves the previous title in place.
+	title = _episode_title_text(case_title)
+	if title:
+		episode.episode_title = title
 	episode.save(ignore_permissions=True)
 
 
@@ -845,6 +860,19 @@ def _first_text(*values) -> str | None:
 		if text:
 			return text
 	return None
+
+
+# episode_title is a Data field with no explicit length, so MariaDB caps it at
+# Frappe's 140-char default. Truncate rather than let a long doctor-typed title
+# throw on insert - the name is presentation, not clinical data.
+EPISODE_TITLE_MAX_LENGTH = 140
+
+
+def _episode_title_text(value) -> str | None:
+	text = _text(value)
+	if not text:
+		return None
+	return text[:EPISODE_TITLE_MAX_LENGTH]
 
 
 def _text(value) -> str:

@@ -712,7 +712,6 @@ def ensure_demo_case_sheets_and_visits():
 		case_sheet=luna_case.name,
 		doctor=doctor,
 		status="Completed",
-		illness="Preventive Care",
 		diagnosis="Healthy patient. Preventive vaccination visit.",
 		treatment_plan="Administer core vaccine and monitor for adverse reaction.",
 		doctor_notes="Normal exam. No complications observed.",
@@ -731,7 +730,6 @@ def ensure_demo_case_sheets_and_visits():
 		case_sheet=max_case.name,
 		doctor=doctor,
 		status="In Progress",
-		illness="Gastrointestinal",
 		diagnosis="Pending doctor assessment.",
 		treatment_plan="Initial exam and CBC if symptoms persist.",
 		doctor_notes="Seeded open visit for workflow testing.",
@@ -781,7 +779,6 @@ def ensure_visit(case_sheet: str, doctor: str, **values):
 	doc.visit_datetime = now_datetime()
 	doc.visit_type = "Consultation"
 	doc.status = values["status"]
-	doc.illness = values["illness"]
 	doc.diagnosis = values["diagnosis"]
 	doc.treatment_plan = values["treatment_plan"]
 	doc.doctor_note = values["doctor_notes"]

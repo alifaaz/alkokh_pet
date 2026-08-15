@@ -190,6 +190,87 @@ class TestClinicalHardening(FrappeTestCase):
 		self.assertEqual(second_visit.care_episode, first_visit.care_episode)
 		self.assertEqual(continued["case_context"]["profile_active_episode"], first_visit.care_episode)
 
+	def test_new_case_uses_doctor_supplied_case_title(self):
+		visit = self._make_visit()
+		workspace.perform_action(
+			"Visit",
+			visit.name,
+			"set_case_choice",
+			{"doctor_case_choice": "new_case", "case_title": "Chronic Otitis - Left Ear"},
+		)
+		visit.reload()
+
+		episode = frappe.get_doc("Pet Care Episode", visit.care_episode)
+		self.assertEqual(episode.episode_title, "Chronic Otitis - Left Ear")
+
+	def test_new_case_without_case_title_keeps_default_title(self):
+		visit = self._make_visit()
+		workspace.perform_action("Visit", visit.name, "set_case_choice", {"doctor_case_choice": "new_case"})
+		visit.reload()
+
+		episode = frappe.get_doc("Pet Care Episode", visit.care_episode)
+		# Falls back through chief complaint -> diagnosis -> "Active Case"; the
+		# exact value depends on the fixture, but it must never be blank.
+		self.assertTrue(episode.episode_title)
+
+	def test_case_title_is_ignored_when_case_choice_reuses_episode(self):
+		visit = self._make_visit()
+		workspace.perform_action(
+			"Visit",
+			visit.name,
+			"set_case_choice",
+			{"doctor_case_choice": "new_case", "case_title": "Original Name"},
+		)
+		visit.reload()
+		episode_name = visit.care_episode
+
+		# continue_case must never rename the case the doctor is joining.
+		second_visit = self._make_visit(frappe.get_doc("Guardian", visit.guardian), frappe.get_doc("Pet", visit.animal_patient))
+		workspace.perform_action(
+			"Visit",
+			second_visit.name,
+			"set_case_choice",
+			{"doctor_case_choice": "continue_case", "case_title": "Renamed By Mistake"},
+		)
+		self.assertEqual(frappe.db.get_value("Pet Care Episode", episode_name, "episode_title"), "Original Name")
+
+		# Re-affirming new_case on the visit that already owns the episode resolves
+		# to that same episode, so it is a reuse - not an open - and must not rename.
+		workspace.perform_action(
+			"Visit",
+			visit.name,
+			"set_case_choice",
+			{"doctor_case_choice": "new_case", "case_title": "Renamed By Mistake"},
+		)
+		self.assertEqual(frappe.db.get_value("Pet Care Episode", episode_name, "episode_title"), "Original Name")
+
+	def test_case_title_is_truncated_to_field_length(self):
+		visit = self._make_visit()
+		workspace.perform_action(
+			"Visit",
+			visit.name,
+			"set_case_choice",
+			{"doctor_case_choice": "new_case", "case_title": "A" * 300},
+		)
+		visit.reload()
+
+		episode = frappe.get_doc("Pet Care Episode", visit.care_episode)
+		self.assertEqual(episode.episode_title, "A" * 140)
+
+	def test_blank_case_title_does_not_override_default(self):
+		visit = self._make_visit()
+		workspace.perform_action(
+			"Visit",
+			visit.name,
+			"set_case_choice",
+			{"doctor_case_choice": "new_case", "case_title": "   "},
+		)
+		visit.reload()
+
+		episode = frappe.get_doc("Pet Care Episode", visit.care_episode)
+		self.assertTrue(episode.episode_title)
+		self.assertNotEqual(episode.episode_title.strip(), "")
+
 	def test_add_plan_item_schedule_and_convert_idempotent(self):
 		visit = self._make_visit()
 		workspace.perform_action("Visit", visit.name, "set_case_choice", {"doctor_case_choice": "new_case"})
@@ -1115,7 +1196,6 @@ class TestClinicalHardening(FrappeTestCase):
 
 	def _complete_case_payload(self, label):
 		return {
-			"illness": "Other",
 			"diagnosis": f"Diagnosis {label}",
 			"doctor_note": f"Clinical note {label}",
 		}

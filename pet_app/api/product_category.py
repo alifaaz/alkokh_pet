@@ -8,7 +8,6 @@ from frappe.utils import cint, cstr
 
 from pet_app.pet_app.doctype.product_category.product_category import (
 	PRODUCT_CATEGORY_DOCTYPE,
-	ensure_product_root_item_group,
 )
 from pet_app.api.response import standardize_response
 
@@ -76,16 +75,13 @@ def save_product_category(data=None, **kwargs):
 	if name and frappe.db.exists(PRODUCT_CATEGORY_DOCTYPE, name):
 		doc = frappe.get_doc(PRODUCT_CATEGORY_DOCTYPE, name)
 		_require_doc_permission(doc, "write")
-		_require_write_permissions("write", doc.item_group)
 		if category_name and category_name != doc.name:
-			_require_write_permissions("write", doc.item_group)
 			name = frappe.rename_doc(PRODUCT_CATEGORY_DOCTYPE, doc.name, category_name)
 			doc = frappe.get_doc(PRODUCT_CATEGORY_DOCTYPE, name)
 	else:
 		if not category_name:
 			frappe.throw(_("Category Name is required."))
 		_require_doctype_permission(PRODUCT_CATEGORY_DOCTYPE, "create")
-		_require_write_permissions("create")
 		doc = frappe.new_doc(PRODUCT_CATEGORY_DOCTYPE)
 		doc.category_name = category_name
 
@@ -101,7 +97,6 @@ def delete_product_category(name):
 	name = _require_name(name)
 	doc = frappe.get_doc(PRODUCT_CATEGORY_DOCTYPE, name)
 	_require_doc_permission(doc, "delete")
-	_require_write_permissions("delete", doc.item_group)
 	frappe.delete_doc(PRODUCT_CATEGORY_DOCTYPE, name)
 	return {"deleted": name}
 
@@ -132,10 +127,11 @@ def _category_to_dict(doc):
 	return data
 
 
-def _require_write_permissions(operation, item_group=None):
-	_require_doctype_permission("Item Group", operation, item_group)
-	if operation == "create":
-		ensure_product_root_item_group()
+# _require_write_permissions is gone. It demanded Item Group create/write/delete for
+# every Product Category save, a leftover from when saving a category wrote an Item
+# Group. Nothing here touches Item Group any more, and the demand locked out roles that
+# hold full CRUD on Product Category but only read on Item Group. Product Category
+# permission is now the whole rule.
 
 
 def _require_doctype_permission(doctype, ptype, name=None):

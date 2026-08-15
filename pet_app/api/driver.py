@@ -4,15 +4,19 @@ import string
 import frappe
 from frappe import _
 from frappe.rate_limiter import rate_limit
-from frappe.utils import cstr, today, validate_email_address
+from frappe.utils import cint, cstr, today, validate_email_address
 from frappe.utils.password import update_password
 
 from pet_app.api.auth_mobile import create_api_keys, validate_iraqi_phone
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import standardize_response
 
-COMPANY = "HM"
-DRIVER_CASH_PARENT = "Cash In Hand - H"
+# COMPANY = "HM" and DRIVER_CASH_PARENT = "Cash In Hand - H" are gone. Neither existed
+# on this site - there is no Company "HM" and no account by that name - so every code
+# path that touched them was unreachable. Company is now derived from the document being
+# worked on, the way _create_stock_issue does it, and the driver's cash account is a
+# required field on the Driver record chosen by staff.
+DRIVER_ROLE = "Driver"
 DRIVER_MANAGEMENT_ROLES = ("System Manager", "Administrator")
 DRIVER_SYSTEM_EMAIL_DOMAIN = "petapp.com"
 ACTIVE_DRIVER_STATUS = "Active"
@@ -103,9 +107,27 @@ def _expected_user_name(driver_name):
     return generate_driver_system_email(driver_name)
 
 
+def _require_driver_role():
+    """The role is created by pet_app.patches.driver_role_and_fields.
+
+    Appending a role row that does not exist fails Frappe's link validation with a
+    message that says nothing about drivers - which is precisely how this subsystem
+    failed silently for so long. Fail with something actionable instead.
+    """
+    if not frappe.db.exists("Role", DRIVER_ROLE):
+        frappe.throw(
+            _(
+                "The {0} role does not exist, so drivers cannot be provisioned. "
+                "Run `bench --site <site> migrate` to apply "
+                "pet_app.patches.driver_role_and_fields."
+            ).format(frappe.bold(DRIVER_ROLE))
+        )
+
+
 def _ensure_driver_role(user_doc):
-    if "Driver" not in {row.role for row in user_doc.roles}:
-        user_doc.append("roles", {"role": "Driver"})
+    _require_driver_role()
+    if DRIVER_ROLE not in {row.role for row in user_doc.roles}:
+        user_doc.append("roles", {"role": DRIVER_ROLE})
 
 
 def _build_available_username(base, exclude_user=None):
@@ -223,6 +245,8 @@ def validate_driver(doc):
             _("Username {0} is already used by User {1}").format(doc.custom_username, duplicate_user)
         )
 
+    _validate_driver_cash_account(doc)
+
     previous_doc = doc.get_doc_before_save()
     if previous_doc and previous_doc.user and doc.user and doc.user != previous_doc.user:
         frappe.throw(_("Driver user is managed automatically and cannot be edited manually"))
@@ -239,6 +263,10 @@ def validate_driver(doc):
 def sync_driver_user(doc):
     if not doc.name:
         frappe.throw(_("Driver must exist before syncing the linked User"))
+
+    # Checked before the User is built, because the role row is embedded in the insert
+    # payload below and a missing role would fail there with an opaque link error.
+    _require_driver_role()
 
     system_user_name = _expected_user_name(doc.name)
     _release_legacy_user_username(doc, system_user_name)
@@ -257,7 +285,7 @@ def sync_driver_user(doc):
             "mobile_no": doc.cell_number,
             "enabled": _driver_enabled(doc.status),
             "send_welcome_email": 0,
-            "roles": [{"role": "Driver"}],
+            "roles": [{"role": DRIVER_ROLE}],
         })
         user_doc.flags.ignore_permissions = True
         user_doc.insert(ignore_permissions=True)
@@ -338,36 +366,73 @@ def sync_driver_address(doc, address_payload=None):
     return address_doc
 
 
-def _ensure_driver_cash_account(doc):
-    if doc.custom_cash_account and frappe.db.exists("Account", doc.custom_cash_account):
-        return doc.custom_cash_account
+def _app_company():
+    """The company this app books against.
 
-    account_name = f"Driver Cash - {doc.name}"
-    existing = frappe.db.get_value(
-        "Account",
-        {"account_name": account_name, "company": COMPANY},
-        "name",
+    Replaces the COMPANY = "HM" literal. Read from the app's own settings first so the
+    answer is configurable, then Frappe's global default.
+    """
+    return (
+        frappe.db.get_single_value("Pet App Accounting Settings", "default_company")
+        or frappe.defaults.get_user_default("Company")
+        or frappe.defaults.get_global_default("company")
     )
-    if existing:
-        cash_account = existing
-    else:
-        account = frappe.get_doc({
-            "doctype": "Account",
-            "account_name": account_name,
-            "parent_account": DRIVER_CASH_PARENT,
-            "account_type": "Cash",
-            "company": COMPANY,
-        })
-        account.flags.ignore_permissions = True
-        account.insert(ignore_permissions=True)
-        cash_account = account.name
-        _log_driver_event(doc.name, "cash_account_created", details=f"account={cash_account}")
 
-    if doc.custom_cash_account != cash_account:
-        frappe.db.set_value("Driver", doc.name, "custom_cash_account", cash_account, update_modified=False)
-        doc.custom_cash_account = cash_account
 
-    return cash_account
+def _validate_driver_cash_account(doc):
+    """Same shape as Medication._validate_default_warehouse: exists, not a group, not
+    disabled, right company - plus required, because a driver without a cash account
+    cannot handle money.
+
+    Deliberately NOT derived. The previous _ensure_driver_cash_account invented an
+    account under a hardcoded parent that does not exist on this site; which ledger a
+    driver's float sits in is a bookkeeping decision for staff to make explicitly.
+    """
+    account = cstr(doc.custom_cash_account).strip()
+    if not account:
+        frappe.throw(_("Cash Account is required for a Driver."))
+
+    row = frappe.db.get_value(
+        "Account",
+        account,
+        ["name", "company", "is_group", "disabled", "account_type"],
+        as_dict=True,
+    )
+    if not row:
+        frappe.throw(_("Cash Account {0} does not exist.").format(frappe.bold(account)))
+    if cint(row.disabled):
+        frappe.throw(_("Cash Account {0} is disabled.").format(frappe.bold(account)))
+    if cint(row.is_group):
+        frappe.throw(_("Cash Account {0} must be a ledger account, not a group.").format(frappe.bold(account)))
+
+    company = _app_company()
+    if company and row.company != company:
+        frappe.throw(
+            _("Cash Account {0} belongs to Company {1}, not {2}.").format(
+                frappe.bold(account), frappe.bold(row.company), frappe.bold(company)
+            )
+        )
+
+    doc.custom_cash_account = row.name
+    return row.name
+
+
+def _receiving_cashier_till(company=None):
+    """The till of the cashier who is receiving the driver's cash, right now.
+
+    Supersedes the Phase 1 global handover account, which has been removed: the driver
+    hands cash to a person, and that person's own profile decides which ledger it lands
+    in. There is no site-wide default and no admin exception - an admin or the doctor
+    receiving cash does so through their own cashier profile like anyone else.
+
+    Resolution and validation both live in pet_app.api.accounting.cashier, which already
+    owns cashier profiles; this is a thin call-through so there is only one resolver.
+    Throws with an actionable message when the acting user has no profile or the profile
+    has no cash account, and never falls back.
+    """
+    from pet_app.api.accounting.cashier import resolve_session_cashier_till
+
+    return resolve_session_cashier_till(company=company)
 
 
 def _disable_driver_user(user_name):
@@ -415,16 +480,16 @@ def before_driver_save(doc, method=None):
 
 
 def after_driver_insert(doc, method=None):
+    # No cash-account provisioning step: the account is a required field validated in
+    # validate_driver, so by the time we are here it is already set and checked.
     sync_driver_user(doc)
     sync_driver_address(doc, getattr(doc.flags, "driver_address_payload", None))
-    _ensure_driver_cash_account(doc)
     _log_driver_event(doc.name, "provisioned", user_id=doc.user)
 
 
 def on_driver_update(doc, method=None):
     sync_driver_user(doc)
     sync_driver_address(doc)
-    _ensure_driver_cash_account(doc)
     _log_driver_event(doc.name, "updated", user_id=doc.user)
 
 
@@ -433,6 +498,7 @@ def on_driver_update(doc, method=None):
 def create_driver(
     full_name,
     phone,
+    custom_cash_account=None,
     custom_username=None,
     custom_email=None,
     email=None,
@@ -454,6 +520,9 @@ def create_driver(
         "cell_number": phone,
         "custom_email": custom_email or email,
         "custom_username": custom_username or (name_parts[0] if name_parts else ""),
+        # Required and never derived - staff choose which ledger this driver's cash
+        # sits in. validate_driver refuses the record if it is missing or unsuitable.
+        "custom_cash_account": custom_cash_account,
         "status": status or ACTIVE_DRIVER_STATUS,
         "license_number": license_number,
         "expiry_date": license_expiry,
@@ -511,25 +580,38 @@ def _driver_collection_legacy_remark(doc):
     return f"Driver Collection - {doc.name}"
 
 
+def _document_company(doc):
+    """Company of the order being booked, the way _create_stock_issue reads doc.company.
+
+    _collect_driver_cash and _reverse_driver_entry receive the frappe._dict built by
+    order._driver_context rather than the Sales Order itself, so that dict now carries
+    company too. Falls back to the app default only if the document has none.
+    """
+    company = getattr(doc, "company", None) or (doc.get("company") if hasattr(doc, "get") else None)
+    company = cstr(company).strip() or _app_company()
+    if not company:
+        frappe.throw(
+            _("Cannot determine the Company for order {0}; driver accounting needs one.").format(
+                frappe.bold(getattr(doc, "name", "?"))
+            )
+        )
+    return company
+
+
 def _get_driver_cash_account(driver_id):
     return frappe.db.get_value("Driver", driver_id, "custom_cash_account")
 
 
-def _get_company_receivable_account():
-    return frappe.db.get_value("Company", COMPANY, "default_receivable_account")
-
-
-def _get_main_cash_account():
-    return frappe.db.get_value(
-        "Account",
-        {
-            "account_type": "Cash",
-            "company": COMPANY,
-            "parent_account": DRIVER_CASH_PARENT,
-            "name": ["not like", "Driver Cash%"],
-        },
-        "name",
-    )
+def _get_company_receivable_account(company):
+    """Company now comes from the document being booked, not a module constant."""
+    if not company:
+        frappe.throw(_("Company is required to resolve the receivable account."))
+    account = frappe.db.get_value("Company", company, "default_receivable_account")
+    if not account:
+        frappe.throw(
+            _("Company {0} has no Default Receivable Account set.").format(frappe.bold(company))
+        )
+    return account
 
 
 def _journal_entry_exists(*remarks):
@@ -541,6 +623,19 @@ def _journal_entry_exists(*remarks):
 
 
 def _require_journal_entry_create_submit():
+    """Retained for any caller that books outside an authorised order transition.
+
+    NOT used by the three order-driven entries below. Those run underneath a transition
+    the caller was already authorised for - by ORDER_ROLES for staff, or by ownership for
+    a driver whose Driver record matches the order's custom_driver - and re-checking here
+    would demand Journal Entry permissions that no driver will ever hold, which is
+    exactly how the guardian stock reversal used to fail.
+
+    Safe to elevate because the elevation cannot widen scope: every entry is keyed to one
+    Sales Order, books only that order's grand_total, and touches only the cash account of
+    the driver named on that order plus one counterpart resolved from the acting user's
+    own cashier profile or the order's company. None of it can reach another order's books.
+    """
     require_doctype_permission("Journal Entry", "create")
     require_doctype_permission("Journal Entry", "submit")
 
@@ -560,8 +655,9 @@ def _create_driver_debit_entry(doc):
     if _journal_entry_exists(remark):
         return
 
+    company = _document_company(doc)
     cash_account = _get_driver_cash_account(doc.custom_driver)
-    receivable_account = _get_company_receivable_account()
+    receivable_account = _get_company_receivable_account(company)
     if not cash_account or not receivable_account:
         frappe.log_error(
             f"Missing account for driver debit on order {doc.name}",
@@ -569,11 +665,10 @@ def _create_driver_debit_entry(doc):
         )
         return
 
-    _require_journal_entry_create_submit()
     je = frappe.get_doc({
         "doctype": "Journal Entry",
         "voucher_type": "Journal Entry",
-        "company": COMPANY,
+        "company": company,
         "posting_date": today(),
         "user_remark": remark,
         "accounts": [
@@ -608,20 +703,26 @@ def _collect_driver_cash(doc):
     if _journal_entry_exists(_driver_collection_remark(doc), _driver_collection_legacy_remark(doc)):
         return
 
+    company = _document_company(doc)
     cash_account = _get_driver_cash_account(doc.custom_driver)
-    main_cash_account = _get_main_cash_account()
-    if not cash_account or not main_cash_account:
+    if not cash_account:
         frappe.log_error(
             f"Missing account for driver collection on order {doc.name}",
             "Driver Accounting Error",
         )
         return
 
-    _require_journal_entry_create_submit()
+    # The receiving side is the acting cashier's own till, resolved at the moment of
+    # handover. Throws with an actionable message when that user has no profile or the
+    # profile has no cash account - cash that moved physically but was never booked is
+    # worse than a loud refusal, so this never logs-and-continues.
+    till = _receiving_cashier_till(company=company)
+    main_cash_account = till.cash_account
+
     je = frappe.get_doc({
         "doctype": "Journal Entry",
         "voucher_type": "Cash Entry",
-        "company": COMPANY,
+        "company": company,
         "posting_date": today(),
         "user_remark": _driver_collection_remark(doc),
         "accounts": [
@@ -651,8 +752,9 @@ def _reverse_driver_entry(doc):
     if _journal_entry_exists(remark):
         return
 
+    company = _document_company(doc)
     cash_account = _get_driver_cash_account(doc.custom_driver)
-    receivable_account = _get_company_receivable_account()
+    receivable_account = _get_company_receivable_account(company)
     if not cash_account or not receivable_account:
         frappe.log_error(
             f"Missing account for driver return on order {doc.name}",
@@ -660,11 +762,10 @@ def _reverse_driver_entry(doc):
         )
         return
 
-    _require_journal_entry_create_submit()
     je = frappe.get_doc({
         "doctype": "Journal Entry",
         "voucher_type": "Journal Entry",
-        "company": COMPANY,
+        "company": company,
         "posting_date": today(),
         "user_remark": remark,
         "accounts": [
@@ -718,8 +819,10 @@ def delete_driver(driver_id):
     if doc.address and frappe.db.exists("Address", doc.address):
         frappe.delete_doc("Address", doc.address, ignore_permissions=True, force=True)
 
-    if cash_account and frappe.db.exists("Account", cash_account):
-        frappe.delete_doc("Account", cash_account, ignore_permissions=True, force=True)
+    # The cash account is deliberately NOT deleted. It used to be auto-created per
+    # driver under a hardcoded parent, so deleting it with the driver was tidy-up. It is
+    # now a real ledger chosen by staff and very likely shared between drivers, so
+    # deleting it here would destroy live books to remove one person.
 
     if doc.user and frappe.db.exists("User", doc.user):
         frappe.delete_doc("User", doc.user, ignore_permissions=True, force=True)
