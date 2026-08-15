@@ -320,6 +320,64 @@ def _get_authorized_profile(profile: str, *, allow_disabled: bool = False):
 	return doc
 
 
+def resolve_session_cashier_till(company: str | None = None) -> frappe._dict:
+	"""The acting user's own cashier profile and the till behind it.
+
+	Added here rather than in the caller because profile resolution belongs to this
+	module: it is composed from _get_authorized_profile (assignment, disabled and
+	restriction checks) and _resolve_payment_account (the cash-account lookup plus
+	_validate_account), so there is exactly one place that decides which till a user
+	stands behind.
+
+	Never falls back to a default. Every user who receives cash does so through their
+	own profile - admins and the doctor included - so an unassigned user is an error to
+	report, not a case to paper over.
+	"""
+	user = _current_user()
+	# Sorted in Python, not SQL: `default` is a reserved word, and Frappe's ORDER BY
+	# validator rejects the backticks that would be needed to sort on it.
+	assigned = frappe.get_all(
+		"POS Profile User",
+		filters={"parenttype": "POS Profile", "user": user},
+		fields=["parent", "default", "idx"],
+		ignore_permissions=True,
+	)
+	assigned.sort(key=lambda row: (-cint(row.get("default")), cint(row.get("idx"))))
+	if not assigned:
+		frappe.throw(
+			_(
+				"{0} has no cashier profile, so cash cannot be received. "
+				"Assign the user to a POS Profile before collecting driver cash."
+			).format(frappe.bold(user))
+		)
+
+	candidates = [row.parent for row in assigned]
+	if company:
+		matching = [
+			name for name in candidates
+			if frappe.db.get_value("POS Profile", name, "company") == company
+		]
+		if not matching:
+			frappe.throw(
+				_(
+					"{0} has no cashier profile for Company {1}. Profiles held: {2}."
+				).format(frappe.bold(user), frappe.bold(company), ", ".join(candidates))
+			)
+		candidates = matching
+
+	# _get_authorized_profile enforces existence, not-disabled, restriction scope and
+	# assignment; it throws with its own message when any of those fail.
+	profile = _get_authorized_profile(candidates[0])
+
+	# Same call the cashier payment path uses to answer "where does this cashier's cash
+	# land", which validates the account exists, is a ledger, is not disabled, is of type
+	# Cash and belongs to the profile's company.
+	account = _resolve_payment_account(
+		profile.company, _default_cash_mode_of_payment(profile), profile
+	)
+	return frappe._dict(profile=profile.name, company=profile.company, cash_account=account)
+
+
 def _get_cashier_employee(user: str | None = None) -> str | None:
 	user = user or _current_user()
 	if not frappe.db.exists("DocType", "Employee"):

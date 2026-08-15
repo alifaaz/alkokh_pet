@@ -40,7 +40,11 @@ def assign_driver(driver=None, sales_order=None, sales_invoice=None, data=None, 
 @frappe.whitelist()
 def get_driver_tasks(driver=None, status=None):
 	try:
-		driver = driver or frappe.db.get_value("Driver", {"custom_user": frappe.session.user}, "name") or frappe.db.get_value("Driver", {"user": frappe.session.user}, "name")
+		# Driver.custom_user does not exist and never did - this half of the expression
+		# queried a missing column. The stock Driver.user field is the link, and
+		# sync_driver_user is what populates it, so there is nothing to add: repointed
+		# rather than creating a second field holding the same fact.
+		driver = driver or frappe.db.get_value("Driver", {"user": frappe.session.user}, "name")
 		filters = {"driver": driver} if driver else {}
 		if status:
 			filters["status"] = status
