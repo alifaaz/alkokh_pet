@@ -4,12 +4,13 @@ import json
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt, getdate, nowdate
+from frappe.utils import cint, cstr, flt, getdate, nowdate
 
 from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
 from pet_app.api.response import standardize_response
+from pet_app.utils.invoice_reuse import get_or_create_open_invoice
 
 INVOICE_CREATION_ROLES = {
     "System Manager",
@@ -107,38 +108,57 @@ def create_sales_invoice_for_guardian(
         if rate <= 0:
             frappe.throw(_("Price is not configured for item {0}.").format(item_code))
 
-        invoice_items.append(
-            {
-                "item_code": item_code,
-                "qty": qty,
-                "rate": rate,
-                "description": row.get("description"),
-            }
-        )
+        line = {
+            "item_code": item_code,
+            "qty": qty,
+            "rate": rate,
+            "description": row.get("description"),
+        }
+        # Optional per-line provenance. Without it every line billed here carries the
+        # same [alkokh-source-group:Guardian:<id>] marker, so three services for one
+        # guardian are indistinguishable and none can be reversed on its own. The caller
+        # (the coordinator page) supplies the record that produced the charge; validated
+        # so a marker can never point at something that does not exist.
+        source_doctype = cstr(row.get("source_doctype")).strip()
+        source_name = cstr(row.get("source_name")).strip()
+        if source_doctype or source_name:
+            if not (source_doctype and source_name):
+                frappe.throw(_("Both source_doctype and source_name are required to attribute a line."))
+            if not frappe.db.exists("DocType", source_doctype):
+                frappe.throw(_("Source DocType {0} does not exist.").format(frappe.bold(source_doctype)))
+            if not frappe.db.exists(source_doctype, source_name):
+                frappe.throw(
+                    _("Source {0} {1} does not exist.").format(_(source_doctype), frappe.bold(source_name))
+                )
+            line["source_doctype"] = source_doctype
+            line["source_name"] = source_name
+        invoice_items.append(line)
 
     posting_date = getdate(posting_date) if posting_date else getdate(nowdate())
     due_date = getdate(due_date) if due_date else posting_date
 
-    invoice = frappe.get_doc(
-        {
-            "doctype": "Sales Invoice",
-            "customer": customer_id,
-            "posting_date": posting_date,
-            "due_date": due_date,
-            "is_pos": cint(is_pos),
-            "items": invoice_items,
-        }
+    # is_pos is unchanged and still defaults to 1. A POS invoice always creates: it
+    # demands immediate payment, so it must neither absorb an open draft nor be found by
+    # a later lookup. Only is_pos = 0 participates in reuse.
+    result = get_or_create_open_invoice(
+        customer=customer_id,
+        items=invoice_items,
+        source_doctype="Guardian",
+        source_name=guardian_row.get("name"),
+        posting_date=posting_date,
+        due_date=due_date,
+        guardian=guardian_row.get("name"),
+        is_pos=cint(is_pos),
+        pos_profile=pos_profile,
+        remarks=_("Guardian billing for {0}.").format(guardian_row.get("name")),
     )
-
-    if pos_profile:
-        invoice.pos_profile = pos_profile
-
-    guardian_field = _set_optional_guardian_reference(invoice, guardian_row.get("name"))
-    invoice.flags.from_custom_flow = True
-    invoice.insert()
+    invoice = result.invoice
+    guardian_field = result.guardian_reference_field
     invoice.add_comment(
         "Comment",
-        _("Sales Invoice created via guarded guardian billing API by {0}.").format(frappe.session.user),
+        _("Sales Invoice {0} via guarded guardian billing API by {1}.").format(
+            _("created") if result.created else _("extended"), frappe.session.user
+        ),
     )
     _log_invoice_event(
         "GUARDIAN_INVOICE_CREATED",
