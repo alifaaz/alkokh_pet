@@ -6,6 +6,7 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "pet",
   "item_name",
   "item_code",
   "item_type",
@@ -25,6 +26,13 @@
   "order_id"
  ],
  "fields": [
+  {
+   "description": "Which animal this charge is for. Nullable: at Stage 2 the Room Stay row still belongs to the booking rather than to an occupant. Never printed on the invoice - one guardian pays - but the data has to exist to answer what a pet cost.",
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "label": "Pet",
+   "options": "Pet"
+  },
   {
    "fieldname": "item_name",
    "fieldtype": "Data",

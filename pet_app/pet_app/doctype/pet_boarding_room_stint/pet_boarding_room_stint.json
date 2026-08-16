@@ -1,0 +1,119 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-08-16 00:00:00.000000",
+ "description": "Append-only record of which room a pet occupied, and when. Standalone rather than a child table of Pet Boarding on purpose: Frappe rewrites a child table on every parent save, and this is the record that answers where an animal was on the night it got sick.",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "boarding",
+  "pet",
+  "service_room",
+  "column_break_when",
+  "from_datetime",
+  "to_datetime",
+  "section_break_why",
+  "moved_by",
+  "reason"
+ ],
+ "fields": [
+  {
+   "fieldname": "boarding",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Pet Boarding",
+   "options": "Pet Boarding",
+   "reqd": 1
+  },
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "service_room",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Service Room",
+   "options": "Service Room",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_when",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "from_datetime",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "From",
+   "reqd": 1
+  },
+  {
+   "description": "Empty means the pet is still in this room. Exactly one open stint per pet per booking.",
+   "fieldname": "to_datetime",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "To"
+  },
+  {
+   "fieldname": "section_break_why",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "moved_by",
+   "fieldtype": "Link",
+   "label": "Moved By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "description": "Why this pet was moved - isolation, aggression, illness.",
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-16 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Boarding Room Stint",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Healthcare Practitioner"
+  },
+  {
+   "read": 1,
+   "role": "Coordinator"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "from_datetime",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
