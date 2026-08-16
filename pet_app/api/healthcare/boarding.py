@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from math import ceil
 
 import frappe
 from frappe import _
@@ -29,11 +30,19 @@ from pet_app.utils.case_assignment import DIRECT_ASSIGN_ROLES, visit_practitione
 from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
 from pet_app.utils.invoice_reuse import get_or_create_open_invoice
+from pet_app.utils.boarding_occupancy import (
+	boarding_lock,
+	find_active_boarding_for_pet,
+	get_max_pets_per_booking,
+	open_stint,
+	pet_locks,
+)
 from pet_app.utils.price_list import get_veterinary_selling_price_list
 
 
 ROOM_STAY_SERVICE_PREFIX = "boarding_room_stay"
 LOCK_TIMEOUT_SECONDS = 15
+BOARDING_TYPES = ("Travel", "Treatment")
 BILLABLE_ITEM_STATUSES = ("Draft", "Billable", "Billed", "Cancelled")
 BILLABLE_ITEM_TYPES = ("Room Stay", "Service", "Medication", "Lab", "Imaging", "Procedure", "Product", "Other")
 MEDICATION_PLAN_TYPES = {"Medication", "Injection"}
@@ -55,6 +64,12 @@ ORDER_TERMINAL_STATUSES = {
 BOARDING_READ_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
 BOARDING_WRITE_ROLES = ("System Manager", "Healthcare Practitioner", "Doctor", "Accounts User", "Healthcare", "Accounting")
 VISIT_BOARDING_ACTIVE_STATUSES = ACTIVE_BOARDING_STATUSES
+
+# A stay started from a visit is almost always medical - every visit-linked stay on record is.
+# That makes Treatment a sound DEFAULT and an unsound assumption. It used to be written into
+# the record with no way for the operator to see or change it; now it is only what they get
+# when they express no preference, and it is surfaced so the UI can show it as a choice.
+VISIT_BOARDING_SUGGESTED_TYPE = "Treatment"
 CANCELLABLE_BOARDING_STATUSES = (PENDING_ROOM_STATUS, "Reserved")
 
 
@@ -271,16 +286,24 @@ def list_boarding_records(
 
 @frappe.whitelist(methods=["POST"])
 @standardize_response
-def start_visit_boarding(visit=None, note=None, expected_check_out=None, data=None, **kwargs):
+def start_visit_boarding(visit=None, note=None, expected_check_out=None, boarding_type=None, data=None, **kwargs):
+	"""Start a stay from a visit.
+
+	`boarding_type` is the operator's choice. Omitted, it falls to
+	VISIT_BOARDING_SUGGESTED_TYPE - which is what every existing caller gets, so behaviour
+	is unchanged for them - but it is now a stated default rather than a hardcoded value
+	the operator never saw.
+	"""
 	payload = _coerce_payload(data, kwargs)
 	visit_name = cstr(payload.get("visit") or visit).strip()
 	boarding_note = cstr(payload.get("note") if "note" in payload else note).strip()
 	expected = payload.get("expected_check_out") if "expected_check_out" in payload else expected_check_out
+	chosen_type = payload.get("boarding_type") if "boarding_type" in payload else boarding_type
 
 	savepoint = f"start_visit_boarding_{frappe.generate_hash(length=10)}"
 	frappe.db.savepoint(savepoint)
 	try:
-		boarding = _start_visit_boarding_atomic(visit_name, boarding_note, expected)
+		boarding = _start_visit_boarding_atomic(visit_name, boarding_note, expected, boarding_type=chosen_type)
 	except Exception:
 		frappe.db.rollback(save_point=savepoint)
 		raise
@@ -292,6 +315,8 @@ def start_visit_boarding(visit=None, note=None, expected_check_out=None, data=No
 		"boarding_id": boarding.name,
 		"record_status": boarding.record_status,
 		"status": boarding.status,
+		"boarding_type": boarding.boarding_type,
+		"suggested_boarding_type": VISIT_BOARDING_SUGGESTED_TYPE,
 		"boarding": _serialize_boarding_doc(boarding),
 	}
 
@@ -313,12 +338,16 @@ def cancel_boarding(boarding=None, boarding_id=None, name=None, note=None, data=
 	else:
 		frappe.db.release_savepoint(savepoint)
 
+	credit = cancelled.flags.get("deposit_credit")
 	return {
 		"success": True,
 		"boarding_id": cancelled.name,
 		"record_status": cancelled.record_status,
 		"status": cancelled.status,
 		"sales_invoice": cancelled.sales_invoice,
+		# Surfaced so the counter sees the money did not vanish and is not owed back.
+		"deposit_credit_remaining": flt(credit.unallocated_amount) if credit else 0.0,
+		"deposit_payment_entry": credit.payment_entry if credit else None,
 		"boarding": _serialize_boarding_doc(cancelled),
 	}
 
@@ -355,6 +384,9 @@ def _cancel_boarding_atomic(boarding_name: str, cancel_note: str):
 		boarding.save(ignore_permissions=True)
 		boarding.add_comment("Comment", _("Boarding cancelled by {0}. Reason: {1}").format(frappe.session.user, cancel_note))
 		_log_boarding_event("BOARDING_CANCELLED", boarding=boarding.name, user=frappe.session.user)
+		# The deposit is not refunded and not reversed - it stays as customer credit. Said
+		# out loud on the stay and on the entry so it is not left dangling silently.
+		boarding.flags.deposit_credit = _surface_deposit_credit_on_cancel(boarding)
 
 	if boarding.service_room:
 		with _service_room_lock(boarding.service_room):
@@ -365,7 +397,7 @@ def _cancel_boarding_atomic(boarding_name: str, cancel_note: str):
 	return boarding
 
 
-def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_check_out=None):
+def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_check_out=None, *, boarding_type=None):
 	if not visit_name:
 		frappe.throw(_("Visit is required."))
 	if not boarding_note:
@@ -384,6 +416,8 @@ def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_c
 		frappe.throw(_("Visit {0} has no guardian to board.").format(frappe.bold(visit_doc.name)))
 
 	customer = visit_doc.get("customer") or get_or_create_customer_from_guardian(guardian)
+	resolved_type = _resolve_visit_boarding_type(boarding_type)
+	operator_chose_type = bool(cstr(boarding_type).strip())
 	boarding = frappe.get_doc(
 		{
 			"doctype": "Pet Boarding",
@@ -391,7 +425,7 @@ def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_c
 			"pet": pet,
 			"guardian": guardian,
 			"customer": customer,
-			"boarding_type": "Treatment",
+			"boarding_type": resolved_type,
 			"record_status": PENDING_ROOM_STATUS,
 			"status": "Open",
 			"workflow_state": PENDING_ROOM_STATUS,
@@ -404,11 +438,24 @@ def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_c
 		}
 	)
 	boarding.insert(ignore_permissions=True)
-	boarding.add_comment("Comment", _("Visit boarding started from {0} by {1}.").format(visit_doc.name, frappe.session.user))
+	# The type and where it came from are recorded on the record itself: when a stay is
+	# later queried at the travel or medical rate, the trail says whether a person picked
+	# that or the system suggested it.
+	boarding.add_comment(
+		"Comment",
+		_("Visit boarding started from {0} by {1} as {2} ({3}).").format(
+			visit_doc.name,
+			frappe.session.user,
+			resolved_type,
+			_("operator choice") if operator_chose_type else _("suggested default"),
+		),
+	)
 	_log_boarding_event(
 		"VISIT_BOARDING_STARTED",
 		boarding=boarding.name,
 		visit=visit_doc.name,
+		boarding_type=resolved_type,
+		boarding_type_source="operator" if operator_chose_type else "suggested",
 		user=frappe.session.user,
 	)
 	return boarding
@@ -576,22 +623,38 @@ def _coerce_payload(data, kwargs) -> dict:
 
 @frappe.whitelist()
 @standardize_response
-def reserve_room(roomId, petId=None, guardianId=None, checkIn=None, checkOut=None, note=None, boardingType=None, boarding_id=None, boardingId=None, name=None):
+def reserve_room(roomId, petId=None, petIds=None, guardianId=None, checkIn=None, checkOut=None, note=None, boardingType=None, boarding_id=None, boardingId=None, name=None):
+	"""Reserve a room for one guardian's pets.
+
+	`petIds` (a list) is the forward-looking parameter; `petId` (a single name) still works
+	alone so no existing caller breaks. Supplying both is fine when they agree and refused
+	when they do not - a caller in two minds gets told, not guessed at.
+
+	Capacity is enforced, never truncated: while Pet Boarding Settings allows one pet, a
+	two-pet request is REFUSED with the limit in the message rather than quietly reserving
+	the first. When that setting rises to 7 this same code accepts seven, unchanged.
+	"""
 	_require_boarding_write_access()
 	room_id = cstr(roomId).strip()
 	boarding_name = cstr(boarding_id or boardingId or name).strip()
 	if boarding_name:
 		return _reserve_existing_pending_boarding(boarding_name, room_id, checkIn=checkIn, checkOut=checkOut, note=note)
 
-	pet_id = cstr(petId).strip()
+	pets = _resolve_reservation_pets(petId, petIds)
 	guardian_id = cstr(guardianId).strip()
 
 	if not room_id:
 		frappe.throw(_("Service Room is required."))
-	if not pet_id:
-		frappe.throw(_("Pet is required."))
 
-	with _service_room_lock(room_id):
+	_assert_reservation_capacity(len(pets))
+
+	# Both rooms and pets are contended, and by different callers. The room lock stops two
+	# guardians claiming one room; the pet locks stop one pet being reserved into two rooms
+	# at once, which the room lock cannot see because the two callers hold different rooms.
+	# There is no booking lock here because the booking does not exist yet - nothing else
+	# can be adding pets to it. The booking lock belongs on the paths that mutate an
+	# existing occupant set.
+	with _service_room_lock(room_id), pet_locks(*pets):
 		room = _get_service_room(room_id)
 		if room.status != "Active":
 			frappe.throw(_("Service Room {0} is inactive.").format(frappe.bold(room_id)))
@@ -606,31 +669,51 @@ def reserve_room(roomId, petId=None, guardianId=None, checkIn=None, checkOut=Non
 				)
 			)
 
-		guardian_id = _resolve_guardian_for_pet(pet_id, guardian_id)
+		# The first pet resolves the guardian when none was sent; every pet is then checked
+		# against that guardian, so a mixed-guardian list cannot slip through on the
+		# strength of its first entry.
+		guardian_id = _resolve_guardian_for_pet(pets[0], guardian_id)
+		_assert_pets_reservable(pets, guardian_id)
 		customer_id = get_or_create_customer_from_guardian(guardian_id)
 
+		boarding_type = _normalize_boarding_type(boardingType)
+		joined_at = _coerce_datetime(checkIn)
 		boarding = frappe.get_doc(
 			{
 				"doctype": "Pet Boarding",
 				"service_room": room.name,
-				"pet": pet_id,
+				# Legacy single-pet field, still mandatory until Stage 6. The first pet is
+				# the booking's nominal pet; the occupant rows are the truth.
+				"pet": pets[0],
 				"guardian": guardian_id,
 				"customer": customer_id,
-				"boarding_type": _normalize_boarding_type(boardingType),
+				"boarding_type": boarding_type,
 				"record_status": "Reserved",
 				"status": "Open",
 				"workflow_state": "Reserved",
 				"reserved_at": now_datetime(),
-				"check_in": _coerce_datetime(checkIn),
+				"check_in": joined_at,
 				"check_out": _coerce_datetime(checkOut),
 				"note": note,
 				"billing_status": "Unbilled",
 			}
 		)
+		_append_reservation_occupants(boarding, pets, room.name, boarding_type, joined_at)
 		_ensure_room_stay_billable_item(boarding)
 		boarding.insert()
-		boarding.add_comment("Comment", _("Boarding reserved by {0}.").format(frappe.session.user))
-		_log_boarding_event("BOARDING_RESERVED", boarding=boarding.name, room=room.name, user=frappe.session.user)
+		_open_reservation_stints(boarding, pets, room.name)
+		boarding.add_comment(
+			"Comment",
+			_("Boarding reserved by {0} for {1}.").format(frappe.session.user, ", ".join(pets)),
+		)
+		_log_boarding_event(
+			"BOARDING_RESERVED",
+			boarding=boarding.name,
+			room=room.name,
+			pets=pets,
+			pet_count=len(pets),
+			user=frappe.session.user,
+		)
 
 	return {
 		"success": True,
@@ -639,8 +722,133 @@ def reserve_room(roomId, petId=None, guardianId=None, checkIn=None, checkOut=Non
 		"record_status": boarding.record_status,
 		"occupancy": "Reserved",
 		"customer": boarding.customer,
+		"pets": pets,
 		"boarding": _serialize_boarding_doc(boarding),
 	}
+
+
+def _resolve_reservation_pets(pet_id, pet_ids) -> list[str]:
+	"""One ordered list of pets from either parameter, or a refusal.
+
+	Order is preserved from `petIds` because the first entry becomes the booking's legacy
+	`pet` field, and a caller that lists them in a particular order should get that order
+	back rather than something sorted behind its back.
+	"""
+	single = cstr(pet_id).strip()
+	listed = _coerce_pet_list(pet_ids)
+
+	if listed and single and single not in listed:
+		frappe.throw(
+			_("petId {0} is not in petIds ({1}). Send one or the other, or the same pets in both.").format(
+				frappe.bold(single), frappe.bold(", ".join(listed))
+			)
+		)
+	if listed and single and len(listed) > 1:
+		# They agree as far as it goes, but petId cannot express the rest of the list and a
+		# caller sending both plainly means different things by them.
+		frappe.throw(
+			_("petIds holds {0} pets while petId names only {1}. Send petIds alone.").format(
+				len(listed), frappe.bold(single)
+			)
+		)
+
+	pets = listed or ([single] if single else [])
+	if not pets:
+		frappe.throw(_("Pet is required. Send petIds (a list) or petId."))
+	return pets
+
+
+def _coerce_pet_list(value) -> list[str]:
+	"""Accept a real list, a JSON array string, or a single name; refuse duplicates."""
+	if value in (None, ""):
+		return []
+	if isinstance(value, str):
+		text = value.strip()
+		if not text:
+			return []
+		try:
+			parsed = frappe.parse_json(text)
+		except Exception:
+			parsed = text
+		value = parsed if isinstance(parsed, (list, tuple)) else [text]
+	if not isinstance(value, (list, tuple)):
+		frappe.throw(_("petIds must be a list of Pet names."))
+
+	pets: list[str] = []
+	for entry in value:
+		pet = cstr(entry).strip()
+		if not pet:
+			continue
+		if pet in pets:
+			frappe.throw(_("Pet {0} appears twice in petIds.").format(frappe.bold(pet)))
+		pets.append(pet)
+	if not pets:
+		frappe.throw(_("petIds must name at least one pet."))
+	return pets
+
+
+def _assert_reservation_capacity(count: int):
+	limit = get_max_pets_per_booking()
+	if count > limit:
+		frappe.throw(
+			_("This booking would hold {0} pets. The limit is {1}. Reserve a second room for the rest.").format(
+				count, limit
+			)
+		)
+
+
+def _assert_pets_reservable(pets: list[str], guardian_id: str):
+	"""Every pet exists, belongs to this guardian, and is not already boarding.
+
+	Each failure names the pet. A list that fails on its fourth entry should say so rather
+	than report that "a pet" was wrong.
+	"""
+	for pet in pets:
+		if not frappe.db.exists("Pet", pet):
+			frappe.throw(_("Pet {0} was not found.").format(frappe.bold(pet)))
+		if not frappe.db.exists("PetGuardian", {"pet_id": pet, "guardian_id": guardian_id}):
+			frappe.throw(
+				_("Pet {0} is not linked to Guardian {1}.").format(frappe.bold(pet), frappe.bold(guardian_id))
+			)
+		active = find_active_boarding_for_pet(pet)
+		if active:
+			frappe.throw(
+				_("Pet {0} is already on boarding {1} ({2}).").format(
+					frappe.bold(pet), frappe.bold(active["name"]), frappe.bold(active["record_status"])
+				)
+			)
+
+
+def _append_reservation_occupants(boarding, pets: list[str], service_room: str, boarding_type: str, joined_at):
+	"""One occupant per pet, all sharing the reserved room.
+
+	Sharing is the normal case; a pet gets its own room only through a later per-pet
+	transfer. `joined_at` stays empty unless a check-in time was supplied - reserving a
+	room is not the animal arriving in it.
+	"""
+	if not boarding.meta.has_field("occupants"):
+		# Pre-migrate: the table is not on the doctype yet. The booking is still created,
+		# with its legacy `pet` field, and the backfill patch will give it an occupant.
+		return
+	for pet in pets:
+		boarding.append(
+			"occupants",
+			{
+				"pet": pet,
+				"status": "Active",
+				"boarding_type": boarding_type,
+				"service_room": service_room,
+				"joined_at": joined_at,
+			},
+		)
+
+
+def _open_reservation_stints(boarding, pets: list[str], service_room: str):
+	"""A stint per pet, opened at reservation - the room is held from that moment."""
+	if not frappe.db.table_exists("Pet Boarding Room Stint"):
+		return
+	for pet in pets:
+		open_stint(boarding.name, pet, service_room, boarding.reserved_at, reason=_("Room reserved."))
 
 
 def _reserve_existing_pending_boarding(boarding_name: str, room_id: str, *, checkIn=None, checkOut=None, note=None):
@@ -658,7 +866,10 @@ def _reserve_existing_pending_boarding(boarding_name: str, room_id: str, *, chec
 	if boarding.service_room:
 		frappe.throw(_("Pet Boarding {0} already has room {1}.").format(frappe.bold(boarding.name), frappe.bold(boarding.service_room)))
 
-	with _service_room_lock(room_id):
+	# Here the booking DOES exist, so its occupant set is contended: this path assigns a
+	# room to every occupant, and something else could be adding one. The booking lock
+	# spans that read-decide-write; the room lock spans the room's.
+	with boarding_lock(boarding.name), _service_room_lock(room_id):
 		room = _get_service_room(room_id)
 		if room.status != "Active":
 			frappe.throw(_("Service Room {0} is inactive.").format(frappe.bold(room_id)))
@@ -699,7 +910,13 @@ def _reserve_existing_pending_boarding(boarding_name: str, room_id: str, *, chec
 
 @frappe.whitelist()
 @standardize_response
-def check_in_boarding(boarding_id):
+def check_in_boarding(boarding_id, deposit=None):
+	"""Check a reserved stay in, optionally taking a deposit (عربون) at the counter.
+
+	`deposit` is optional. Absent, blank or zero means no deposit and no Payment Entry -
+	byte-for-byte the behaviour before it existed. A positive amount is written to
+	Pet Boarding.deposit and _create_boarding_deposit_payment_entry raises the advance.
+	"""
 	_require_boarding_write_access()
 	if not boarding_id:
 		frappe.throw(_("Pet Boarding is required."))
@@ -730,6 +947,11 @@ def check_in_boarding(boarding_id):
 		boarding.workflow_state = "Checked In"
 		boarding.check_in = now_datetime()
 		boarding.customer = boarding.customer or get_or_create_customer_from_guardian(boarding.guardian)
+		# Validated before it is written, so a rejected amount leaves the stay untouched
+		# rather than checked in with a bad figure on it. Only a supplied value is honoured;
+		# a deposit already set on the record (from Desk) keeps working as before.
+		if deposit is not None and cstr(deposit).strip() != "":
+			boarding.deposit = _validate_deposit_amount(boarding, deposit)
 		deposit_payment_entry = _create_boarding_deposit_payment_entry(boarding)
 		if deposit_payment_entry:
 			boarding.deposit_payment_entry = deposit_payment_entry.name
@@ -744,6 +966,7 @@ def check_in_boarding(boarding_id):
 		"record_status": boarding.record_status,
 		"occupancy": "Occupied",
 		"boarding": _serialize_boarding_doc(boarding),
+		"deposit": flt(boarding.get("deposit")),
 		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
 	}
 
@@ -830,6 +1053,8 @@ def check_out_boarding(boarding_id):
 				),
 			)
 
+		deposit_allocation = _allocate_boarding_deposit(boarding, invoice)
+
 		for row in boarding.billable_items or []:
 			if row.status != "Cancelled":
 				row.status = "Billed"
@@ -873,9 +1098,213 @@ def check_out_boarding(boarding_id):
 		"customer": boarding.customer,
 		"guardian_reference_field": guardian_field,
 		"total_cost": boarding.total_cost,
+		# An ESTIMATE of what will be due (total_cost - deposit), not a ledger figure. The
+		# invoice is shared under reuse, so its outstanding is the customer's, not this
+		# stay's. The keys below are the ones that are actually true.
 		"balance": boarding.balance,
+		"invoice_grand_total": flt(invoice.grand_total) if invoice else 0.0,
+		"deposit": flt(boarding.get("deposit")),
+		"deposit_allocated": flt(deposit_allocation.allocated) if deposit_allocation else 0.0,
+		"deposit_unallocated_remainder": (
+			flt(deposit_allocation.unallocated_remainder) if deposit_allocation else 0.0
+		),
+		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
 		"boarding": _serialize_boarding_doc(boarding),
 	}
+
+
+def _surface_deposit_credit_on_cancel(boarding):
+	"""A cancelled stay keeps its deposit as customer credit. Say so, in both places.
+
+	The owner's rule is no refund path: the money stays on the customer's account as an
+	unallocated advance and is consumed by their next invoice. That is defensible, but it
+	must not be silent - an unallocated Payment Entry with a cancelled stay behind it is
+	invisible unless somebody thinks to look at the customer ledger.
+
+	Writes a comment on the stay and on the Payment Entry itself, and returns the figure
+	so the cancel response can carry it. Deliberately does NOT cancel or amend the entry:
+	the cash was genuinely received and the ledger should keep saying so.
+	"""
+	pe_name = cstr(boarding.get("deposit_payment_entry")).strip()
+	if not pe_name:
+		return None
+	pe = frappe.db.get_value(
+		"Payment Entry", pe_name, ["name", "docstatus", "party", "unallocated_amount"], as_dict=True
+	)
+	if not pe or cint(pe.docstatus) != 1:
+		return None
+	remaining = flt(pe.unallocated_amount)
+	if remaining <= 0:
+		return None
+
+	note = _(
+		"Pet Boarding {0} was cancelled. Deposit {1} remains as unallocated credit on {2} "
+		"and will be applied to their next invoice. No refund was made."
+	).format(
+		boarding.name,
+		frappe.format_value(remaining, {"fieldtype": "Currency"}),
+		pe.party,
+	)
+	boarding.add_comment("Comment", note)
+	frappe.get_doc("Payment Entry", pe_name).add_comment("Comment", note)
+	_log_boarding_event(
+		"BOARDING_DEPOSIT_CREDIT_RETAINED",
+		boarding=boarding.name,
+		payment_entry=pe_name,
+		customer=pe.party,
+		unallocated_amount=remaining,
+	)
+	return frappe._dict(payment_entry=pe_name, customer=pe.party, unallocated_amount=remaining)
+
+
+def _allocate_boarding_deposit(boarding, invoice):
+	"""Put the deposit against the invoice this checkout produced.
+
+	Written to `Sales Invoice.advances`, not to `Payment Entry.references`. That is not a
+	shortcut - it is the only mechanism that works here. The invoice is a DRAFT (invoice
+	reuse keeps one open draft per customer per branch), and ERPNext's
+	reconcile_against_document reconciles against posted vouchers: a draft has no GL and
+	no outstanding to reconcile with. An advance row on the draft is exactly ERPNext's
+	"deposit taken before invoicing" form, and on submit it becomes the Payment Entry
+	Reference, with outstanding computed net of it.
+
+	The invoice is still raised in full - nothing is deducted from the total. The advance
+	records that the customer paid X on the day they paid it, which is the trail the owner
+	asked for.
+
+	Allocates only what fits. A deposit larger than the bill allocates up to the invoice
+	total and the remainder stays unallocated on the customer, available to the next
+	invoice. Idempotent: a Payment Entry already present on this invoice is left alone.
+	"""
+	pe_name = cstr(boarding.get("deposit_payment_entry")).strip()
+	if not pe_name or not invoice:
+		return None
+
+	pe = frappe.db.get_value(
+		"Payment Entry", pe_name,
+		["name", "docstatus", "party", "unallocated_amount"], as_dict=True,
+	)
+	if not pe or cint(pe.docstatus) != 1:
+		# Draft or cancelled: nothing to allocate, and re-raising it is not this path's job.
+		return None
+	if cstr(pe.party) != cstr(invoice.customer):
+		# Would be somebody else's money. Refuse quietly rather than misapply it.
+		frappe.log_error(
+			f"Boarding {boarding.name}: deposit {pe_name} belongs to {pe.party}, "
+			f"invoice {invoice.name} is for {invoice.customer}. Not allocated.",
+			"Boarding deposit allocation",
+		)
+		return None
+
+	available = flt(pe.unallocated_amount)
+	if available <= 0:
+		return None
+
+	for row in invoice.get("advances") or []:
+		if row.reference_type == "Payment Entry" and cstr(row.reference_name) == pe_name:
+			return None
+
+	already = sum(flt(row.allocated_amount) for row in invoice.get("advances") or [])
+	room = flt(invoice.grand_total) - already
+	if room <= 0:
+		return None
+
+	allocated = min(available, room)
+	invoice.append("advances", {
+		"reference_type": "Payment Entry",
+		"reference_name": pe_name,
+		"advance_amount": available,
+		"allocated_amount": allocated,
+		"remarks": _("Boarding deposit for Pet Boarding {0}.").format(boarding.name),
+	})
+	invoice.flags.from_custom_flow = True
+	invoice.flags.ignore_permissions = True
+	invoice.save(ignore_permissions=True)
+	invoice.add_comment(
+		"Comment",
+		_("Boarding deposit {0} allocated ({1}) from Pet Boarding {2}.").format(
+			pe_name, frappe.format_value(allocated, {"fieldtype": "Currency"}), boarding.name
+		),
+	)
+	_log_boarding_event(
+		"BOARDING_DEPOSIT_ALLOCATED",
+		boarding=boarding.name,
+		payment_entry=pe_name,
+		sales_invoice=invoice.name,
+		available=available,
+		allocated=allocated,
+		remainder=available - allocated,
+	)
+	return frappe._dict(
+		payment_entry=pe_name,
+		available=available,
+		allocated=allocated,
+		unallocated_remainder=flt(available - allocated),
+	)
+
+
+def _expected_stay_cost(boarding) -> float:
+	"""Roughly what this stay is expected to cost, for sanity-checking a deposit.
+
+	Read-only: it resolves the room-stay item's rate and multiplies by the expected
+	nights, without touching the billable table the way _ensure_room_stay_billable_item
+	does. Returns 0.0 when it cannot work it out, which callers must read as "no opinion"
+	rather than as "free".
+	"""
+	try:
+		item_code = _get_room_stay_item_code(boarding.boarding_type)
+		rate = flt(_get_item_details(item_code).get("rate"))
+	except Exception:
+		return 0.0
+	if rate <= 0:
+		return 0.0
+
+	nights = 1
+	expected_out = boarding.get("expected_check_out")
+	if expected_out:
+		start = get_datetime(boarding.get("check_in") or now_datetime())
+		hours = (get_datetime(expected_out) - start).total_seconds() / 3600
+		if hours > 0:
+			nights = max(ceil(hours / 24), 1)
+	return rate * nights
+
+
+# How far above the expected cost of the stay a deposit may go before it is refused.
+#
+# Not a cap at the expected cost: the owner's rule is that a deposit MAY exceed the final
+# bill - a guest who leaves early pays less than they put down, and the remainder stays as
+# credit. Capping at the estimate would refuse the very case the design is built to handle.
+#
+# Doubling catches what is actually worth catching, which is a keying slip: an extra zero
+# is 10x and is refused, while every plausible real deposit is allowed through. Expressed
+# as a multiple of the stay rather than a fixed number of dinars so it keeps working when
+# prices change.
+DEPOSIT_MAX_MULTIPLE_OF_EXPECTED_STAY = 2
+
+
+def _validate_deposit_amount(boarding, amount: float) -> float:
+	"""Positive, and not wildly out of proportion to the stay. Returns the amount."""
+	amount = flt(amount)
+	if amount < 0:
+		frappe.throw(_("Deposit cannot be negative."))
+	if amount == 0:
+		return 0.0
+
+	expected = _expected_stay_cost(boarding)
+	if expected > 0:
+		ceiling = expected * DEPOSIT_MAX_MULTIPLE_OF_EXPECTED_STAY
+		if amount > ceiling:
+			frappe.throw(
+				_(
+					"Deposit {0} is more than {1}x the expected cost of this stay ({2}). "
+					"Check the amount; a deposit larger than the final bill is fine, but this looks like a typing error."
+				).format(
+					frappe.bold(frappe.format_value(amount, {"fieldtype": "Currency"})),
+					DEPOSIT_MAX_MULTIPLE_OF_EXPECTED_STAY,
+					frappe.bold(frappe.format_value(expected, {"fieldtype": "Currency"})),
+				)
+			)
+	return amount
 
 
 def _create_boarding_deposit_payment_entry(boarding):
@@ -928,6 +1357,21 @@ def _create_boarding_deposit_payment_entry(boarding):
 
 
 def _resolve_boarding_deposit_account(company: str, mode_of_payment: str | None) -> str:
+	"""Where a deposit's cash lands: one site-wide treasury account.
+
+	Deliberate and temporary. The app already has the better answer -
+	cashier.resolve_session_cashier_till resolves the acting user's own POS Profile and
+	till, and refuses to guess, which is what the driver cash handover uses. Boarding does
+	NOT use it, because no user on this site holds a POS Profile: wiring deposits to the
+	till would make every check-in throw "has no cashier profile" on the first day.
+
+	What it costs, plainly: the deposit records that cash was received, but not WHO
+	received it. There is no till attribution and nothing for a cashier settlement to
+	reconcile against, so a shortfall at the end of a shift cannot be traced to a person.
+	Assigning POS Profiles is the prerequisite for fixing it; once every counter user has
+	one, this should become resolve_session_cashier_till(company).cash_account and the
+	setting below becomes the fallback rather than the rule.
+	"""
 	if _is_cash_mode(mode_of_payment):
 		settings = _get_settings_doc()
 		account = settings.get("treasury_cash_account")
@@ -1073,14 +1517,17 @@ def create_order(
 	care_service_id=None,
 	priority=None,
 	note=None,
+	pet=None,
 ):
 	"""Raise a single lab / imaging / care-service order for a checked-in boarding.
 
-	The visit order flow is visit-scoped; boarding records only carry a pet +
-	guardian, so this is their own entry point. The frontend sends one call per
-	selected order. The created order is linked back to the boarding via
-	``source_doctype``/``source_name`` and a matching ``billable_items`` row is
-	appended so it settles through the existing checkout invoice path.
+	The visit order flow is visit-scoped; this is boarding's own entry point. The frontend
+	sends one call per selected order. The created order is linked back to the boarding via
+	``source_doctype``/``source_name`` and a matching ``billable_items`` row is appended so
+	it settles through the existing checkout invoice path.
+
+	``pet`` is REQUIRED and names the animal the order is for. A stay holds one pet today,
+	so it can only be that pet - but see _resolve_order_pet for why it is not defaulted.
 	"""
 	_require_boarding_write_access()
 
@@ -1109,32 +1556,37 @@ def create_order(
 	boarding = frappe.get_doc("Pet Boarding", boarding_name)
 	boarding.check_permission("write")
 	_assert_boarding_orderable(boarding)
+	order_pet = _resolve_order_pet(boarding, pet)
 
 	if kind == "medication":
-		return _create_boarding_medication_order(boarding, medication=template_id, item_code=item_code, note=note)
+		return _create_boarding_medication_order(
+			boarding, pet=order_pet, medication=template_id, item_code=item_code, note=note
+		)
 
 	order_doctype = ORDER_KIND_DOCTYPE[kind]
 	require_doctype_permission(order_doctype, "create")
 
-	existing = _find_recent_duplicate_order(order_doctype, boarding.name, kind, care_service)
+	existing = _find_recent_duplicate_order(order_doctype, boarding.name, kind, care_service, order_pet)
 	if existing:
 		_log_boarding_event(
 			"BOARDING_ORDER_DUPLICATE",
 			boarding=boarding.name,
 			kind=kind,
+			pet=order_pet,
 			order=existing.name,
 			user=frappe.session.user,
 		)
 		return _boarding_order_response(boarding, kind, existing, reused=True)
 
 	order = _create_boarding_order_doc(
-		boarding, kind, care_service=care_service, item_code=item_code, priority=priority, note=note
+		boarding, kind, pet=order_pet, care_service=care_service, item_code=item_code, priority=priority, note=note
 	)
 	_append_boarding_order_billable(boarding, kind, order, care_service=care_service, item_code=item_code, note=note)
 	_log_boarding_event(
 		"BOARDING_ORDER_CREATED",
 		boarding=boarding.name,
 		kind=kind,
+		pet=order_pet,
 		order=order.name,
 		user=frappe.session.user,
 	)
@@ -1220,6 +1672,41 @@ def dispense_medication(boarding=None, item_id=None, qty=None, note=None, data=N
 	}
 
 
+def _resolve_order_pet(boarding, pet) -> str:
+	"""The pet a boarding order is for. Required, and it must be on this stay.
+
+	Required rather than defaulted to `boarding.pet`, even though a stay holds one pet
+	today and the default would therefore always be right. That is precisely the danger:
+	a default lets a caller that was never updated keep working, filing every order
+	against whichever pet the stay happens to name - silently, and correctly, until the
+	day a booking holds seven. Then it is wrong with no error and no way to tell from the
+	data which animal was meant.
+
+	Stage 2 replaces the membership test below with a lookup against the occupant table.
+	Nothing else about this function changes.
+	"""
+	chosen = cstr(pet).strip()
+	if not chosen:
+		frappe.throw(_("Pet is required. Send the pet this order is for."))
+	if chosen != cstr(boarding.pet).strip():
+		frappe.throw(
+			_("Pet {0} is not on Pet Boarding {1}.").format(
+				frappe.bold(chosen), frappe.bold(boarding.name)
+			)
+		)
+	return chosen
+
+
+def _boarding_order_id(boarding, kind: str, care_service: str, pet: str) -> str:
+	"""Identity of a boarding order, per pet.
+
+	The pet belongs in this key. Without it two pets in one booking ordering the same
+	service produce an identical id, and _find_recent_duplicate_order reads the second as
+	a repeat of the first: no order, no charge, no error, and a missing clinical record.
+	"""
+	return f"{boarding.name}-{kind}-{care_service}-{pet}"
+
+
 def _assert_boarding_orderable(boarding):
 	if boarding.docstatus != 0:
 		frappe.throw(_("Orders can only be added to open Pet Boarding records."))
@@ -1251,17 +1738,18 @@ def _normalize_order_priority(priority) -> str:
 	return normalized
 
 
-def _create_boarding_medication_order(boarding, *, medication: str, item_code: str | None = None, note: str | None = None) -> dict:
+def _create_boarding_medication_order(boarding, *, pet: str, medication: str, item_code: str | None = None, note: str | None = None) -> dict:
 	require_doctype_permission("Medication", "read")
 	medication_name = cstr(medication).strip()
 	if not medication_name or not frappe.db.exists("Medication", medication_name):
 		return _boarding_validation_error(_("Medication {0} was not found.").format(frappe.bold(medication_name or "")))
 
-	existing = _find_recent_duplicate_medication_billable(boarding, medication_name)
+	existing = _find_recent_duplicate_medication_billable(boarding, medication_name, pet)
 	if existing:
 		_log_boarding_event(
 			"BOARDING_MEDICATION_ORDER_DUPLICATE",
 			boarding=boarding.name,
+			pet=pet,
 			medication=medication_name,
 			item=existing.name,
 			user=frappe.session.user,
@@ -1288,6 +1776,7 @@ def _create_boarding_medication_order(boarding, *, medication: str, item_code: s
 	row = boarding.append(
 		"billable_items",
 		{
+			"pet": pet,
 			"item_name": medication_doc.get("medication_name") or item.get("item_name"),
 			"item_code": item.get("item_code"),
 			"item_type": "Medication",
@@ -1302,7 +1791,7 @@ def _create_boarding_medication_order(boarding, *, medication: str, item_code: s
 			"order_id": order_id,
 		},
 	)
-	_set_child_value_if_field(row, "care_episode", _active_episode_name_for_pet(boarding.pet))
+	_set_child_value_if_field(row, "care_episode", _active_episode_name_for_pet(pet))
 	_set_child_value_if_field(row, "dispense_status", "Pending Dispense")
 	_set_child_value_if_field(row, "dispensed_qty", 0)
 
@@ -1316,6 +1805,7 @@ def _create_boarding_medication_order(boarding, *, medication: str, item_code: s
 	_log_boarding_event(
 		"BOARDING_MEDICATION_ORDER_CREATED",
 		boarding=boarding.name,
+		pet=pet,
 		medication=medication_name,
 		item=row.name,
 		user=frappe.session.user,
@@ -1323,8 +1813,8 @@ def _create_boarding_medication_order(boarding, *, medication: str, item_code: s
 	return _boarding_medication_order_response(boarding, row)
 
 
-def _create_boarding_order_doc(boarding, kind, *, care_service, item_code, priority, note):
-	order_id = f"{boarding.name}-{kind}-{care_service}"
+def _create_boarding_order_doc(boarding, kind, *, pet, care_service, item_code, priority, note):
+	order_id = _boarding_order_id(boarding, kind, care_service, pet)
 	if kind == "service":
 		template = frappe.db.get_value(
 			"CareService template", care_service, ["service_name", "default_price"], as_dict=True
@@ -1333,7 +1823,7 @@ def _create_boarding_order_doc(boarding, kind, *, care_service, item_code, prior
 			{
 				"doctype": "PetCareService",
 				"pet_service_name": (template.service_name if template else None) or _("Care Service"),
-				"pet_id": boarding.pet,
+				"pet_id": pet,
 				"guardian_id": boarding.guardian,
 				"care_service_id": care_service,
 				"item_code": item_code or None,
@@ -1350,7 +1840,7 @@ def _create_boarding_order_doc(boarding, kind, *, care_service, item_code, prior
 		doc = frappe.get_doc(
 			{
 				"doctype": ORDER_KIND_DOCTYPE[kind],
-				"pet": boarding.pet,
+				"pet": pet,
 				"care_service": care_service,
 				"item_code": item_code or None,
 				"priority": priority,
@@ -1372,6 +1862,7 @@ def _append_boarding_order_billable(boarding, kind, order, *, care_service, item
 	boarding.append(
 		"billable_items",
 		{
+			"pet": order.get("pet") or order.get("pet_id"),
 			"item_name": item_name,
 			"item_code": resolved_item,
 			"item_type": ORDER_KIND_BILLABLE_TYPE[kind],
@@ -1422,12 +1913,20 @@ def _resolve_order_billing(order, care_service, item_code):
 	return resolved_item, flt(rate or 0), item_name or item.get("item_name")
 
 
-def _find_recent_duplicate_order(order_doctype, boarding_name, kind, care_service):
+def _find_recent_duplicate_order(order_doctype, boarding_name, kind, care_service, pet):
+	"""A double-click guard, not a uniqueness rule - hence the short window.
+
+	The pet filter is what keeps it a double-click guard. Without it the window catches
+	any two identical orders on the same stay, so the second pet to need the same test
+	within two minutes gets the first pet's order handed back instead of one of its own.
+	"""
 	since = add_to_date(now_datetime(), seconds=-DUPLICATE_ORDER_WINDOW_SECONDS)
+	pet_field = "pet_id" if kind == "service" else "pet"
 	filters = {
 		"source_doctype": "Pet Boarding",
 		"source_name": boarding_name,
 		"creation": [">=", since],
+		pet_field: pet,
 	}
 	filters["care_service_id" if kind == "service" else "care_service"] = care_service
 	rows = frappe.get_all(order_doctype, filters=filters, fields=["name", "status"], order_by="creation desc")
@@ -1443,6 +1942,9 @@ def _boarding_order_response(boarding, kind, order, reused=False) -> dict:
 		"success": True,
 		"order_id": order.name,
 		"kind": kind,
+		# Echoed so the caller can confirm which animal the order was filed against
+		# rather than inferring it from the stay.
+		"pet": order.get("pet") or order.get("pet_id"),
 		"boarding_id": boarding.name,
 		"linked_doctype": order.doctype,
 		"reused": reused,
@@ -1458,6 +1960,9 @@ def _boarding_medication_order_response(boarding, row, reused=False) -> dict:
 		"order_id": row.get("order_id") or row.name,
 		"item_id": row.name,
 		"kind": "medication",
+		# Present for the same reason as on _boarding_order_response: the caller should
+		# read back which animal the order was filed against, not infer it from the stay.
+		"pet": row.get("pet"),
 		"boarding_id": boarding.name,
 		"linked_doctype": row.get("linked_doctype"),
 		"linked_name": row.get("linked_name"),
@@ -1489,7 +1994,10 @@ def _validate_boarding_medication_plan_item(boarding, plan) -> dict | None:
 	if plan.pet != boarding.pet:
 		return _boarding_validation_error(_("Plan item does not belong to the boarded pet."))
 
-	active_episode = _active_episode_name_for_pet(boarding.pet)
+	# The plan item's own pet, not the stay's. Identical today - the guard above just
+	# proved they are equal - but it is the plan item that names the animal, and that
+	# stays true once a stay holds several.
+	active_episode = _active_episode_name_for_pet(plan.pet)
 	if not active_episode:
 		return _boarding_validation_error(_("The boarded pet does not have an open care episode."))
 	if plan.get("care_episode") != active_episode:
@@ -1549,14 +2057,28 @@ def _serialize_plan_item_for_boarding(plan) -> dict:
 	}
 
 
-def _find_recent_duplicate_medication_billable(boarding, medication: str):
+def _find_recent_duplicate_medication_billable(boarding, medication: str, pet: str):
+	"""Double-click guard for medication, now scoped to one animal.
+
+	The pet filter is what keeps this a double-click guard rather than a rule that two
+	pets may not receive the same drug within two minutes. It became possible only once
+	Pet Billable Item gained its `pet` column; before that this function could not tell
+	two animals apart and would have handed the second pet the first pet's row.
+
+	A row with no pet is treated as NOT a match. Those are pre-backfill rows, and
+	assuming they belong to whoever is asking is exactly the misattribution the column
+	was added to prevent.
+	"""
 	since = add_to_date(now_datetime(), seconds=-DUPLICATE_ORDER_WINDOW_SECONDS)
+	pet = cstr(pet).strip()
 	for row in boarding.billable_items or []:
 		if cstr(row.get("item_type")).strip() != "Medication":
 			continue
 		if cstr(row.get("linked_doctype")).strip() != "Medication":
 			continue
 		if cstr(row.get("linked_name")).strip() != medication:
+			continue
+		if cstr(row.get("pet")).strip() != pet:
 			continue
 		if cstr(row.get("status")).strip() in {"Cancelled", "Billed"}:
 			continue
@@ -1898,6 +2420,7 @@ def _serialize_boarding_record(row) -> dict:
 def _serialize_billable_item(row) -> dict:
 	return {
 		"name": row.name,
+		"pet": row.get("pet"),
 		"item_name": row.item_name,
 		"item_code": row.item_code,
 		"item_type": row.item_type,
@@ -2086,9 +2609,30 @@ def _get_primary_guardian_id(pet_id: str) -> str | None:
 
 
 def _normalize_boarding_type(boarding_type: str | None) -> str:
-	if boarding_type in ("Travel", "Treatment"):
+	if boarding_type in BOARDING_TYPES:
 		return boarding_type
 	return frappe.db.get_single_value("Pet Boarding Settings", "default_boarding_type") or "Travel"
+
+
+def _resolve_visit_boarding_type(boarding_type=None) -> str:
+	"""The type for a visit-started stay: the operator's choice, or the suggested default.
+
+	Deliberately NOT _normalize_boarding_type, which silently falls back to the settings
+	default for anything it does not recognise. Here that would turn a mistyped "Medical"
+	into a Travel stay billed at the travel rate - the same silent switch this endpoint
+	used to perform, only in the other direction and harder to spot. An unrecognised value
+	is refused instead, so a bad caller fails loudly rather than cheaply.
+	"""
+	chosen = cstr(boarding_type).strip()
+	if not chosen:
+		return VISIT_BOARDING_SUGGESTED_TYPE
+	if chosen not in BOARDING_TYPES:
+		frappe.throw(
+			_("Invalid boarding type {0}. Expected one of: {1}.").format(
+				frappe.bold(chosen), ", ".join(BOARDING_TYPES)
+			)
+		)
+	return chosen
 
 
 def _coerce_datetime(value):
@@ -2097,15 +2641,52 @@ def _coerce_datetime(value):
 	return get_datetime(value)
 
 
+def _room_stay_note(boarding_type: str) -> str:
+	return _("Auto-added {0} boarding room stay.").format(boarding_type)
+
+
+def _is_generated_room_stay_note(note) -> bool:
+	"""Whether this note is still one we wrote, and therefore safe to rewrite.
+
+	The note reaches the customer: _build_sales_invoice_items uses `row.note or
+	row.item_name` as the invoice description. So a row re-pointed at the other boarding
+	type has to have its description corrected too - but not at the cost of discarding a
+	note a human typed through sync_billable_items.
+	"""
+	current = cstr(note).strip()
+	return not current or any(current == _room_stay_note(known) for known in BOARDING_TYPES)
+
+
+def _find_room_stay_row(boarding, linked_service_id):
+	"""The stay's room-stay row and whether it was written under the current type.
+
+	Matching only on the current type's `linked_service_id` is what produced the silent
+	under-bill: `boarding_type` is editable from Desk, and after a change the id no longer
+	matches, so checkout found nothing and left the reserve-time qty of 1 and the old rate
+	in place, while the reserve path appended a SECOND room-stay row.
+
+	A stay has one room-stay row whatever type it was booked under, so fall back to type
+	regardless. Cancelled rows are skipped - a cancelled charge is not the live one, and
+	reviving it would resurrect a charge somebody deliberately removed.
+	"""
+	fallback = None
+	for row in boarding.billable_items or []:
+		if row.item_type != "Room Stay":
+			continue
+		if row.linked_service_id == linked_service_id:
+			return row, True
+		if fallback is None and cstr(row.status).strip() != "Cancelled":
+			fallback = row
+	return fallback, False
+
+
 def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 	boarding.run_method("_compute_stay_days")
 	stay_days = flt(boarding.get("stay_days") or 1)
 	linked_service_id = _room_stay_service_id(boarding.boarding_type)
-	existing_row = None
-	for row in boarding.billable_items or []:
-		if row.linked_service_id == linked_service_id:
-			existing_row = row
-			break
+	# Resolved BEFORE the add_if_missing bail-out. Deciding there is nothing to update while
+	# a row written under the other type is sitting in the table is the whole defect.
+	existing_row, written_under_current_type = _find_room_stay_row(boarding, linked_service_id)
 
 	if not existing_row and not add_if_missing:
 		return
@@ -2115,18 +2696,22 @@ def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 	if flt(item.get("rate")) <= 0:
 		frappe.throw(_("Price is not configured for boarding item {0}.").format(frappe.bold(item_code)))
 
-	if not existing_row:
-		for row in boarding.billable_items or []:
-			if row.item_type == "Room Stay" and row.item_code == item_code:
-				existing_row = row
-				break
-
 	if existing_row:
-		existing_row.item_name = existing_row.item_name or item.get("item_name")
+		if written_under_current_type:
+			# Same type as it was written under: a rate already on the row is a deliberate
+			# adjustment, so it survives - unchanged behaviour.
+			existing_row.item_name = existing_row.item_name or item.get("item_name")
+			existing_row.rate = flt(existing_row.rate or item.get("rate"))
+		else:
+			# The type changed under this row. Re-point it at the type now in force; keeping
+			# the old item, rate and description is exactly the mis-bill.
+			existing_row.item_name = item.get("item_name")
+			existing_row.rate = flt(item.get("rate"))
+			if _is_generated_room_stay_note(existing_row.get("note")):
+				existing_row.note = _room_stay_note(boarding.boarding_type)
 		existing_row.item_code = item_code
 		existing_row.item_type = "Room Stay"
 		existing_row.qty = stay_days
-		existing_row.rate = flt(existing_row.rate or item.get("rate"))
 		existing_row.status = "Billable" if existing_row.status == "Draft" else existing_row.status or "Billable"
 		existing_row.linked_service_id = linked_service_id
 		return
@@ -2140,7 +2725,7 @@ def _ensure_room_stay_billable_item(boarding, *, add_if_missing: bool = True):
 			"qty": stay_days,
 			"rate": item.get("rate"),
 			"status": "Billable",
-			"note": _("Auto-added {0} boarding room stay.").format(boarding.boarding_type),
+			"note": _room_stay_note(boarding.boarding_type),
 			"linked_service_id": linked_service_id,
 		},
 	)

@@ -8,6 +8,7 @@ from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.api.response import fail, ok
 from pet_app.api.healthcare.boarding import (
+	VISIT_BOARDING_SUGGESTED_TYPE,
 	can_cancel_visit_boarding,
 	can_start_visit_boarding,
 	checked_in_boarding_for_visit,
@@ -330,6 +331,9 @@ def _workbench_permissions(visit_doc) -> dict:
 		"visit_practitioner": visit_doctor,
 		"team_episode": team_episode,
 		"can_start_boarding": can_start_visit_boarding(visit_doc),
+		# What start_visit_boarding will record if the operator expresses no preference.
+		# Sent so the UI can present it as a pre-selected choice rather than apply it unseen.
+		"suggested_boarding_type": VISIT_BOARDING_SUGGESTED_TYPE,
 		"can_cancel_boarding": can_cancel_visit_boarding(visit_doc),
 		"is_billed": cint(billed),
 		"is_cancelled": cint(cancelled),

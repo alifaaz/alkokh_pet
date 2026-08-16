@@ -35,6 +35,8 @@
   "billing_status",
   "sales_invoice",
   "billable_items",
+  "occupants_section",
+  "occupants",
   "notes_section",
   "note",
   "boarding_note",
@@ -56,8 +58,8 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Service Room",
-   "options": "Service Room",
-   "mandatory_depends_on": "eval:![\"Pending Room\", \"Cancelled\"].includes(doc.record_status)"
+   "mandatory_depends_on": "eval:![\"Pending Room\", \"Cancelled\"].includes(doc.record_status)",
+   "options": "Service Room"
   },
   {
    "fieldname": "pet",
@@ -171,6 +173,7 @@
   },
   {
    "default": "0",
+   "description": "Deposit (\u0639\u0631\u0628\u0648\u0646) taken at check-in. Captured as a submitted Receive Payment Entry against the customer and allocated to the checkout invoice as an advance; any remainder stays as customer credit.",
    "fieldname": "deposit",
    "fieldtype": "Currency",
    "label": "Deposit"
@@ -184,9 +187,10 @@
    "read_only": 1
   },
   {
+   "description": "Estimate only: total cost minus deposit. NOT a ledger figure - the invoice is raised in full and the deposit is allocated against it as an advance, and that invoice may carry other records' charges too. The real outstanding lives on the Sales Invoice.",
    "fieldname": "balance",
    "fieldtype": "Currency",
-   "label": "Balance",
+   "label": "Estimated Balance Due",
    "read_only": 1
   },
   {
@@ -215,6 +219,18 @@
    "fieldtype": "Table",
    "label": "Billable Items",
    "options": "Pet Billable Item"
+  },
+  {
+   "fieldname": "occupants_section",
+   "fieldtype": "Section Break",
+   "label": "Occupants"
+  },
+  {
+   "description": "The pets on this booking. One row per pet, each with its own room, arrival and departure. `pet` above is the legacy single-pet field and is retained until Stage 6.",
+   "fieldname": "occupants",
+   "fieldtype": "Table",
+   "label": "Occupants",
+   "options": "Pet Boarding Occupant"
   },
   {
    "fieldname": "notes_section",

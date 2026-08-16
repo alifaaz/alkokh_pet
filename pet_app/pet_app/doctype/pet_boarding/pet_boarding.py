@@ -98,9 +98,37 @@ class PetBoarding(Document):
 		frappe.throw(_("Invalid boarding record status {0}.").format(self.record_status))
 
 	def _validate_single_active_room_boarding(self):
+		"""One guardian per room, and no more pets in it than capacity allows.
+
+		This replaced "one active booking per room". The old rule cannot survive the
+		occupant model: a guardian's pets share a room, and a booking mid-transfer holds
+		two. The new rule is weaker in one direction and stricter in another, and at a
+		capacity of 1 the two are equivalent - which is what makes the swap safe to ship
+		before per-occupant pricing and departure exist.
+		"""
 		if self.record_status not in ROOM_ASSIGNED_ACTIVE_BOARDING_STATUSES or not self.service_room:
 			return
 
+		# Until `bench migrate` creates the occupant table, the new rule has nothing to
+		# read. Falling through to the old check rather than to "no opinion": an absent
+		# table must not be the reason two guardians end up in one room. This branch dies
+		# with the legacy `pet` field in Stage 6.
+		if not frappe.db.table_exists("Pet Boarding Occupant"):
+			self._validate_legacy_single_active_room_boarding()
+			return
+
+		from pet_app.utils.boarding_occupancy import assert_room_available
+
+		# Occupants of THIS booking are excluded and counted separately: on a new booking
+		# they are not yet persisted, so they cannot be read back from the room.
+		assert_room_available(
+			self.service_room,
+			self.guardian,
+			exclude_boarding=self.name,
+			adding=self._pets_entering_room(),
+		)
+
+	def _validate_legacy_single_active_room_boarding(self):
 		existing = get_active_boarding_for_room(self.service_room, exclude_name=self.name)
 		if existing:
 			frappe.throw(
@@ -110,6 +138,19 @@ class PetBoarding(Document):
 					frappe.bold(existing.record_status),
 				)
 			)
+
+	def _pets_entering_room(self) -> int:
+		"""How many of this booking's pets will be in `service_room`.
+
+		Falls back to 1 while occupants are unpopulated, which is every record until the
+		backfill patch runs and every new booking until reserve_room writes its rows.
+		"""
+		occupants = [
+			row
+			for row in (self.get("occupants") or [])
+			if row.status == "Active" and (not row.service_room or row.service_room == self.service_room)
+		]
+		return len(occupants) or 1
 
 	def _apply_billable_item_amounts(self):
 		for row in self.billable_items or []:

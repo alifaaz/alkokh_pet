@@ -10,7 +10,9 @@
   "column_break_defaults",
   "default_boarding_type",
   "attribution_section",
-  "boarding_branch"
+  "boarding_branch",
+  "capacity_section",
+  "max_pets_per_booking"
  ],
  "fields": [
   {
@@ -52,6 +54,18 @@
    "label": "Boarding Branch",
    "options": "Branch",
    "description": "The branch every boarding stay is attributed to. Boarding happens at the boarding facility, so this is never taken from the user processing the stay. Checkout refuses to bill until it is set."
+  },
+  {
+   "fieldname": "capacity_section",
+   "fieldtype": "Section Break",
+   "label": "Capacity"
+  },
+  {
+   "default": "1",
+   "description": "Maximum ACTIVE pets on one booking. Held at 1 until per-occupant pricing, death and departure land: the model can hold seven before the rest of the system can bill or close them correctly. Raise to 7 when Stage 5 ships.",
+   "fieldname": "max_pets_per_booking",
+   "fieldtype": "Int",
+   "label": "Max Pets Per Booking"
   }
  ],
  "grid_page_length": 50,

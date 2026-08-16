@@ -1,0 +1,115 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-08-16 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "pet",
+  "pet_name",
+  "status",
+  "boarding_type",
+  "service_room",
+  "joined_at",
+  "departed_at",
+  "death_record",
+  "departure_note"
+ ],
+ "fields": [
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "pet.pet_name",
+   "fieldname": "pet_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Pet Name",
+   "read_only": 1
+  },
+  {
+   "default": "Active",
+   "description": "Cancelled is not a departure: it is an occupant of a booking that never happened.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Active\nDeparted\nDeceased\nCancelled",
+   "reqd": 1
+  },
+  {
+   "description": "Per occupant, not per booking. Two pets on one booking may board at different rates.",
+   "fieldname": "boarding_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Boarding Type",
+   "options": "Travel\nTreatment",
+   "reqd": 1
+  },
+  {
+   "description": "This pet's CURRENT room. Normally the same room as every other occupant; it differs only after a per-pet transfer. Empty while the booking is Pending Room.",
+   "fieldname": "service_room",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Service Room",
+   "options": "Service Room"
+  },
+  {
+   "description": "When this pet arrived. Not the booking's check-in: a pet may join mid-stay.",
+   "fieldname": "joined_at",
+   "fieldtype": "Datetime",
+   "label": "Joined At"
+  },
+  {
+   "description": "When this pet left. Empty while it is still boarding.",
+   "fieldname": "departed_at",
+   "fieldtype": "Datetime",
+   "label": "Departed At"
+  },
+  {
+   "fieldname": "death_record",
+   "fieldtype": "Link",
+   "label": "Death Record",
+   "options": "Pet Death Record",
+   "read_only": 1
+  },
+  {
+   "fieldname": "departure_note",
+   "fieldtype": "Small Text",
+   "label": "Departure Note"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-16 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet Boarding Occupant",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
