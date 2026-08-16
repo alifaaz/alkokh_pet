@@ -30,6 +30,7 @@ class TestBoardingOrders(FrappeTestCase):
 		res = boarding_api.create_order(
 			boarding_id=boarding.name,
 			kind="lab",
+			pet=boarding.pet,
 			template_id=care_service.name,
 			priority="High",
 			note="Fasting sample",
@@ -48,6 +49,9 @@ class TestBoardingOrders(FrappeTestCase):
 		self.assertEqual(lab.pet, boarding.pet)
 		self.assertEqual(lab.care_service, care_service.name)
 		self.assertEqual(lab.priority, "High")
+		# the pet is part of the order identity, not merely a field on it
+		self.assertEqual(data["pet"], boarding.pet)
+		self.assertTrue(lab.order_id.endswith(f"-{boarding.pet}"), lab.order_id)
 		self.assertEqual(lab.status, "Ordered")
 
 		# A matching billable row is appended to the boarding for checkout.
@@ -67,7 +71,7 @@ class TestBoardingOrders(FrappeTestCase):
 		care_service = self._make_care_service("Imaging")
 
 		res = boarding_api.create_order(
-			boarding_id=boarding.name, kind="radiology", template_id=care_service.name
+			boarding_id=boarding.name, kind="radiology", pet=boarding.pet, template_id=care_service.name
 		)
 
 		self.assertTrue(res["ok"], res)
@@ -85,6 +89,7 @@ class TestBoardingOrders(FrappeTestCase):
 		res = boarding_api.create_order(
 			boarding_id=boarding.name,
 			kind="service",
+			pet=boarding.pet,
 			template_id=care_service.name,
 			care_service_id=care_service.name,
 		)
@@ -107,6 +112,7 @@ class TestBoardingOrders(FrappeTestCase):
 		res = boarding_api.create_order(
 			boarding_id=boarding.name,
 			kind="medication",
+			pet=boarding.pet,
 			template_id=medication.name,
 			note="Boarding dose",
 		)
@@ -135,6 +141,7 @@ class TestBoardingOrders(FrappeTestCase):
 		order = boarding_api.create_order(
 			boarding_id=boarding.name,
 			kind="medication",
+			pet=boarding.pet,
 			template_id=medication.name,
 		)
 		self.assertTrue(order["ok"], order)
@@ -218,7 +225,7 @@ class TestBoardingOrders(FrappeTestCase):
 		care_service = self._make_care_service("Lab")
 
 		res = boarding_api.create_order(
-			boarding_id=boarding.name, kind="lab", template_id=care_service.name
+			boarding_id=boarding.name, kind="lab", pet=boarding.pet, template_id=care_service.name
 		)
 		self.assertFalse(res["ok"])
 		self.assertEqual(frappe.db.count("Lab", {"source_name": boarding.name}), 0)
@@ -226,13 +233,13 @@ class TestBoardingOrders(FrappeTestCase):
 	def test_invalid_kind_rejected(self):
 		boarding = self._make_checked_in_boarding()
 		res = boarding_api.create_order(
-			boarding_id=boarding.name, kind="surgery", template_id="anything"
+			boarding_id=boarding.name, kind="surgery", pet=boarding.pet, template_id="anything"
 		)
 		self.assertFalse(res["ok"])
 
 	def test_missing_template_rejected(self):
 		boarding = self._make_checked_in_boarding()
-		res = boarding_api.create_order(boarding_id=boarding.name, kind="lab", template_id="")
+		res = boarding_api.create_order(boarding_id=boarding.name, kind="lab", pet=boarding.pet, template_id="")
 		self.assertFalse(res["ok"])
 
 	def test_duplicate_order_within_window_is_reused(self):
@@ -240,10 +247,10 @@ class TestBoardingOrders(FrappeTestCase):
 		care_service = self._make_care_service("Lab")
 
 		first = boarding_api.create_order(
-			boarding_id=boarding.name, kind="lab", template_id=care_service.name
+			boarding_id=boarding.name, kind="lab", pet=boarding.pet, template_id=care_service.name
 		)
 		second = boarding_api.create_order(
-			boarding_id=boarding.name, kind="lab", template_id=care_service.name
+			boarding_id=boarding.name, kind="lab", pet=boarding.pet, template_id=care_service.name
 		)
 
 		self.assertTrue(first["ok"])
