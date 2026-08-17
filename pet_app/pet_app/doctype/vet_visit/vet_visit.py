@@ -8,8 +8,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt, getdate, now_datetime
 
-from pet_app.api.permissions import require_doctype_permission, require_restriction_value
+from pet_app.api.permissions import require_doctype_permission
 from pet_app.pet_app.doctype.medication.medication import resolve_dose_option_placeholder_uom
+from pet_app.utils.medication_stock import resolve_dispense_warehouse
 from pet_app.pet_app.doctype.vet_case_sheet.vet_case_sheet import build_case_summary
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.clinical_options import has_internal_clinical_note, validate_visit_clinical_selections
@@ -876,6 +877,20 @@ def _create_sales_invoice_for_visit(visit_name: str) -> dict:
 	items, total_amount = get_billable_invoice_items(visit)
 	updates_stock = any(item.get("warehouse") for item in items)
 
+	# A line carrying the warehouse key with an empty value is one whose goods were
+	# already issued at dispense. ERPNext's update_stock is a DOCUMENT flag with no
+	# per-row equivalent, so an invoice cannot deduct one stock line while leaving
+	# another alone: with the flag on it demands a warehouse for every stock item
+	# and refuses to save without one. Of the three possible outcomes - deduct
+	# twice, block the invoice, or let this invoice stop being a stock document -
+	# only the third neither corrupts stock nor stops the clinic billing. It can
+	# under-deduct a second medication that is not yet opted in and happens to
+	# share the invoice; that is recorded on the invoice rather than left silent.
+	already_issued = [item for item in items if "warehouse" in item and not item["warehouse"]]
+	stock_flag_dropped = bool(already_issued and updates_stock)
+	if stock_flag_dropped:
+		updates_stock = False
+
 	# Appends to this customer's open Draft when one exists for the same company, branch
 	# and stock kind; creates one only when it does not. The invoice belongs to the clinic
 	# that did the work, not to whoever bills it, so the visit's branch is passed rather
@@ -903,6 +918,14 @@ def _create_sales_invoice_for_visit(visit_name: str) -> dict:
 			_("created") if result.created else _("extended"), visit.name, frappe.session.user
 		),
 	)
+	if stock_flag_dropped:
+		sales_invoice.add_comment(
+			"Comment",
+			_(
+				"Update Stock was turned off on this invoice: {0} medication line(s) were already issued from stock at dispense. "
+				"Any other stock line on this invoice is therefore not deducted here."
+			).format(len(already_issued)),
+		)
 	log_visit_billing_event(
 		"INVOICE_CREATED",
 		visit=visit.name,
@@ -1012,28 +1035,34 @@ def _get_stock_invoice_context(billable_row, medication_rows: dict) -> dict:
 		return {}
 
 	medication_row = _get_billable_medication_row(billable_row, medication_rows)
-	warehouse = None
+
+	# The goods for this line already left the warehouse when it was dispensed.
+	# Invoicing it with a warehouse would deduct the same medication twice - once
+	# at the bedside and once at the till - and the invoice is the wrong one of the
+	# two to keep, because it bills the PRESCRIBED qty while the dispense issued
+	# what was actually handed over. An explicit empty string, not a missing key:
+	# ERPNext backfills `warehouse` from Item Default when the value is None, which
+	# would silently reinstate the second deduction.
+	if medication_row and flt(medication_row.get("stock_issued_qty")) > 0:
+		return {"warehouse": ""}
+
 	medication_defaults = {}
+	medication_label = (
+		cstr(medication_row.get("medication") if medication_row else "").strip()
+		or cstr(billable_row.get("item_name")).strip()
+		or item.name
+	)
 	if medication_row:
 		medication_defaults = _get_medication_invoice_defaults(medication_row)
-		warehouse = cstr(medication_row.get("warehouse")).strip()
-		if not warehouse:
-			warehouse = medication_defaults.get("default_warehouse")
-	if not warehouse:
-		warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
-	if not warehouse:
-		medication_label = (
-			cstr(medication_row.get("medication") if medication_row else "").strip()
-			or cstr(billable_row.get("item_name")).strip()
-			or item.name
-		)
-		frappe.throw(
-			_(
-				"Warehouse is required to invoice medication {0}. Set a Warehouse on the prescription row, "
-				"Medication Default Warehouse, or Stock Settings Default Warehouse."
-			).format(frappe.bold(medication_label))
-		)
-	require_restriction_value("warehouse", warehouse)
+	warehouse = resolve_dispense_warehouse(
+		medication=medication_row.get("medication") if medication_row else None,
+		# Left None for a non-medication stock line so the chain falls straight
+		# through to Stock Settings, exactly as it always has for those rows.
+		medication_item=medication_row.get("medication_item") if medication_row else None,
+		row_warehouse=medication_row.get("warehouse") if medication_row else None,
+		label=medication_label,
+		purpose=_("invoice"),
+	)
 
 	stock_uom = cstr(item.stock_uom).strip()
 	uom = stock_uom

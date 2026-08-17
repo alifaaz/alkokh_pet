@@ -15,9 +15,16 @@
   "amount",
   "status",
   "dispense_status",
+  "dose_option",
+  "warehouse",
   "dispensed_qty",
+  "return_qty",
+  "stock_issued_qty",
   "dispensed_by",
   "dispensed_at",
+  "returned_by",
+  "returned_at",
+  "stock_entry",
   "note",
   "care_episode",
   "linked_service_id",
@@ -81,7 +88,8 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Draft\nBillable\nBilled\nCancelled"
+   "options": "Draft\nBillable\nBilled\nCancelled\nIncluded",
+   "description": "Included means the charge was genuinely incurred and is deliberately not invoiced - a medication absorbed by the medical boarding rate. It is NOT Cancelled: the medication was given, the row is its dispensing record, and its rate is the true cost the inclusive rate absorbed."
   },
   {
    "fieldname": "dispense_status",
@@ -90,10 +98,39 @@
    "options": "\nPrescribed\nPending Dispense\nDispensed\nPartially Dispensed\nCancelled\nReturned"
   },
   {
+   "description": "Which dose this order is for. Only needed when the medication offers more than one dose option - with a single option the dispense resolves it on its own, and with none the medication does not deduct stock at all.",
+   "fieldname": "dose_option",
+   "fieldtype": "Link",
+   "label": "Dose Option",
+   "options": "Medication Dose Option"
+  },
+  {
+   "description": "Where the goods leave from. Boarding is a distinct place with its own branch, so a stay must be able to name its own store rather than silently drawing on the clinic's. Left blank, the dispense falls back to the Medication's default warehouse and then to Stock Settings.",
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse"
+  },
+  {
    "default": "0",
    "fieldname": "dispensed_qty",
    "fieldtype": "Float",
    "label": "Dispensed Qty",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "return_qty",
+   "fieldtype": "Float",
+   "label": "Return Qty",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Stock units actually issued for this row, in the Item's own Stock UOM. Zero unless the medication has a dose option.",
+   "fieldname": "stock_issued_qty",
+   "fieldtype": "Float",
+   "label": "Stock Issued Qty",
    "read_only": 1
   },
   {
@@ -107,6 +144,27 @@
    "fieldname": "dispensed_at",
    "fieldtype": "Datetime",
    "label": "Dispensed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "returned_by",
+   "fieldtype": "Link",
+   "label": "Returned By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "returned_at",
+   "fieldtype": "Datetime",
+   "label": "Returned At",
+   "read_only": 1
+  },
+  {
+   "description": "The most recent Stock Entry this row issued or returned.",
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
    "read_only": 1
   },
   {

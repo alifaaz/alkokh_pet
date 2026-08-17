@@ -306,9 +306,12 @@ def _is_cancelled_billable(row) -> bool:
 def _workbench_permissions(visit_doc) -> dict:
 	billed = clinical_state.is_billed_visit(visit_doc)
 	cancelled = cstr(visit_doc.get("status")) == "Cancelled"
+	# A checked-in stay no longer makes its visit read-only - see
+	# workspace.VISIT_BOARDING_BLOCKED_ACTIONS. It still blocks completion, and only that,
+	# so these flags must not keep hiding the actions the backend now accepts.
 	checked_in_boarding = checked_in_boarding_for_visit(visit_doc.name)
-	can_write_visit = (not billed and not cancelled and not checked_in_boarding) and _can_doctype("Vet Visit", "write")
-	can_update_follow_up = (not billed and not checked_in_boarding) and _can_doctype("Vet Visit", "write")
+	can_write_visit = (not billed and not cancelled) and _can_doctype("Vet Visit", "write")
+	can_update_follow_up = not billed and _can_doctype("Vet Visit", "write")
 	visit_doctor = visit_practitioner(visit_doc)
 	is_visit_doctor = bool(current_user_visit_practitioner(visit_doc))
 	team_episode = _active_episode_name_for_visit(visit_doc)
@@ -319,7 +322,7 @@ def _workbench_permissions(visit_doc) -> dict:
 		"can_save_clinical_note": can_write_visit,
 		"can_save_diagnoses": can_write_visit,
 		"can_create_orders": can_write_visit,
-		"can_complete_case": can_write_visit,
+		"can_complete_case": can_write_visit and not checked_in_boarding,
 		"can_request_follow_up": can_update_follow_up and _can_doctype("Appointment", "create"),
 		"can_add_plan_item": (not billed and not cancelled) and _can_doctype("Pet Care Plan Item", "create"),
 		"can_schedule_plan_item": _can_doctype("Pet Care Plan Item", "write") and _can_doctype("Appointment", "create"),

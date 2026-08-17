@@ -173,17 +173,23 @@ class PetBoarding(Document):
 			self.stay_hours = 0
 			return
 
-		start_datetime = get_datetime(self.check_in)
-		end_datetime = get_datetime(self.check_out or now_datetime())
-		elapsed_seconds = max((end_datetime - start_datetime).total_seconds(), 0)
-		stay_hours = max(ceil(elapsed_seconds / 3600), 1)
+		# Shared with each occupant's billed nights so the two definitions cannot drift.
+		# This figure is now DISPLAY ONLY - ten readers want a booking-level stay length -
+		# and no longer feeds any price.
+		from pet_app.utils.boarding_occupancy import stay_duration
+
+		stay_hours, stay_days = stay_duration(self.check_in, self.check_out or now_datetime())
 		self.stay_hours = stay_hours
-		self.stay_days = max(ceil(stay_hours / 24), 1)
+		self.stay_days = stay_days
+
+	# Charges that never reach an invoice. Included is a medication absorbed by the medical
+	# boarding rate: real, given, priced - and not owed.
+	NON_INVOICED_STATUSES = ("Cancelled", "Included")
 
 	def _compute_totals(self):
 		total = 0
 		for row in self.billable_items or []:
-			if row.status == "Cancelled":
+			if row.status in self.NON_INVOICED_STATUSES:
 				continue
 			total += flt(row.amount)
 

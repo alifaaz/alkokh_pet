@@ -73,3 +73,4 @@ pet_app.patches.per_order_billing_state
 pet_app.patches.boarding_deposit_labels
 pet_app.patches.boarding_order_id_pet
 pet_app.patches.boarding_occupant_model
+pet_app.patches.boarding_catalogue_rates

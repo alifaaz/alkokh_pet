@@ -27,10 +27,11 @@ What is deliberately NOT here:
 from __future__ import annotations
 
 from contextlib import contextmanager
+from math import ceil
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, get_datetime, now_datetime
 
 
 OCCUPANT_DOCTYPE = "Pet Boarding Occupant"
@@ -170,6 +171,45 @@ def _advisory_lock(lock_name: str, failure_message: str):
 	finally:
 		if acquired:
 			frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock_name,))
+
+
+def stay_duration(start, end) -> tuple[int, int]:
+	"""(hours, nights) between two moments. THE definition of a night, in one place.
+
+	Both the booking-level display figure and each occupant's billed nights call this, so
+	they cannot drift apart. A night is 24 hours from arrival, rounded up, minimum one -
+	which is a commercial policy sitting in code, and is on the audit list to move into
+	settings. It is written once here so that move is a one-function change.
+	"""
+	elapsed_seconds = max((get_datetime(end) - get_datetime(start)).total_seconds(), 0)
+	hours = max(ceil(elapsed_seconds / 3600), 1)
+	return hours, max(ceil(hours / 24), 1)
+
+
+def billable_occupants(boarding) -> list:
+	"""Occupants that owe nights.
+
+	Everything except Cancelled. A cancelled occupant never arrived; Departed and Deceased
+	did, and owe the nights they were here. Today every occupant on an open booking is
+	Active, so this is the same set - but it is written for the world Stage 5 creates,
+	where a pet can leave while the booking runs on.
+	"""
+	return [row for row in (boarding.get("occupants") or []) if cstr(row.status).strip() != "Cancelled"]
+
+
+def occupant_nights(occupant, *, reserve_placeholder: int = 1) -> int:
+	"""Nights this occupant owes.
+
+	`joined_at` empty means the room is reserved and the animal has not arrived. That is
+	not zero nights and it is not "now minus nothing" - it is a placeholder, stated here
+	rather than falling out of `flt(0 or 1)` somewhere downstream, and it is replaced by
+	the real figure at check-out.
+	"""
+	joined_at = occupant.get("joined_at")
+	if not joined_at:
+		return reserve_placeholder
+	_hours, nights = stay_duration(joined_at, occupant.get("departed_at") or now_datetime())
+	return nights
 
 
 def active_occupants(boarding) -> list:

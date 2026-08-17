@@ -5,6 +5,12 @@ import math
 from frappe.utils import cint
 from pet_app.api.response import standardize_response
 
+# Per-pet dashboard and doctor suggestions. Implemented in pet_dashboard.py and
+# re-exported here because the frontend calls them at pet_app.api.pet.*.
+# Deliberately not wrapped in standardize_response: both return a plain dict, which
+# is the contract the dashboard client reads.
+from pet_app.api.pet_dashboard import get_pet_dashboard, get_pet_insights  # noqa: F401
+
 
 # ============================================================
 # Helpers

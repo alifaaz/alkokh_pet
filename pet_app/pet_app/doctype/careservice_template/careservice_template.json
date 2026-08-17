@@ -20,6 +20,8 @@
   "performing_branch",
   "column_break_wbjw",
   "animal_species",
+  "animal_type",
+  "boarding_type",
   "category_id",
   "default_price",
   "section_break_couy",
@@ -43,6 +45,23 @@
    "label": "Animal Species",
    "options": "All\nMammal\nBird\nReptile\nFish\nAmphibian\nInsect\nArachnid\nCrustacean",
    "reqd": 1
+  },
+  {
+   "description": "The practical species this row prices, mirroring Pet.animal_type. animal_species above is taxonomic class - cat and dog are both Mammal - so it cannot carry a per-species price. Deliberately has NO default: a default of \"All\" made the fallback row the easiest thing to create by accident, and four boarding rows were saved as \"All\" when two of them meant Dog. Choose the species, or choose All on purpose.",
+   "fieldname": "animal_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Animal Type",
+   "options": "All\nDog\nCat\nBird\nFish\nReptile\nHorse\nRabbit\nOther"
+  },
+  {
+   "depends_on": "eval:doc.category_id",
+   "description": "Travel or medical, for rows under the boarding category. Left blank on every other kind of service. Without it the catalogue cannot tell the two boarding rates apart and the resolver would have to match on the service name, which is exactly the hardcoding this move exists to remove.",
+   "fieldname": "boarding_type",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Boarding Type",
+   "options": "\nTravel\nTreatment"
   },
   {
    "fieldname": "section_break_couy",
