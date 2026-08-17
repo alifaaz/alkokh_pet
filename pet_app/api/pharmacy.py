@@ -9,6 +9,13 @@ from frappe.utils import cstr, flt, now_datetime
 from pet_app.api.link_aliases import enrich_link_aliases
 from pet_app.api.permissions import require_restriction_value
 from pet_app.api.response import fail, ok
+from pet_app.utils.medication_stock import (
+	assert_row_can_record_stock,
+	is_opted_in,
+	issue_for_dispense,
+	receive_for_return,
+	returnable_stock_qty,
+)
 
 
 PENDING_STATUSES = ("", "Prescribed", "Pending Dispense", "Partially Dispensed")
@@ -103,6 +110,30 @@ def dispense_visit_medication(visit=None, row_name=None, medication_row=None, qt
 		if target_warehouse:
 			row.warehouse = target_warehouse
 		_apply_invoice_metadata(row, payload)
+
+		# The goods leave here, before anything is written, because this is the step
+		# that can legitimately refuse - no stock, a fractional qty against a
+		# whole-number UOM, an unresolvable warehouse. Returns None and changes
+		# nothing for a medication with no dose option, which is all but four of
+		# them today. Row `qty` is a dose COUNT when a dose option is in play, so
+		# `dispense_qty` is the number of doses being handed over, never a stock
+		# quantity - the conversion happens once, inside issue_for_dispense.
+		if is_opted_in(row.medication):
+			assert_row_can_record_stock(row.meta, row.medication)
+		issued = issue_for_dispense(
+			medication=row.medication,
+			medication_item=row.medication_item,
+			dose_count=dispense_qty,
+			dose_option=row.get("dose_option"),
+			row_warehouse=row.get("warehouse"),
+			reference=_("Vet Visit {0} row {1}").format(doc.name, row.idx),
+			label=row.medication or row.medication_item,
+		)
+		if issued:
+			row.warehouse = issued["warehouse"]
+			row.stock_issued_qty = flt(row.get("stock_issued_qty")) + flt(issued["qty"])
+			row.stock_entry = issued["stock_entry"]
+
 		row.dispensed_qty = flt(row.dispensed_qty) + dispense_qty
 		row.dispensed_by = frappe.session.user
 		row.dispensed_at = now
@@ -147,6 +178,29 @@ def return_dispensed_medication(visit=None, row_name=None, medication_row=None, 
 
 		now = now_datetime()
 		source_status = row.dispense_status
+
+		# Put back what this row actually took out, at the rate it took it out at.
+		# Computed from the row's own issue history rather than from the dose
+		# option, so an option corrected between dispense and return cannot make
+		# the reversal a different size than the original movement.
+		restore_qty = returnable_stock_qty(
+			stock_issued_qty=row.get("stock_issued_qty"),
+			dispensed_qty=row.get("dispensed_qty"),
+			return_doses=return_qty,
+		)
+		if restore_qty > 0:
+			returned_entry = receive_for_return(
+				medication_item=row.medication_item,
+				qty=restore_qty,
+				warehouse=row.get("warehouse"),
+				medication=row.medication,
+				reference=_("Vet Visit {0} row {1}").format(doc.name, row.idx),
+				label=row.medication or row.medication_item,
+			)
+			if returned_entry:
+				row.stock_issued_qty = max(flt(row.get("stock_issued_qty")) - restore_qty, 0)
+				row.stock_entry = returned_entry
+
 		row.return_qty = flt(row.return_qty) + return_qty
 		row.returned_by = frappe.session.user
 		row.returned_at = now
@@ -244,6 +298,8 @@ def _row_payload(row) -> dict:
 		"returned_at": row.get("returned_at"),
 		"batch_no": row.batch_no,
 		"expiry_date": row.expiry_date,
+		"stock_issued_qty": row.get("stock_issued_qty"),
+		"stock_entry": row.get("stock_entry"),
 	}
 
 

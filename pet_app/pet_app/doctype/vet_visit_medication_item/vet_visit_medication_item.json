@@ -24,11 +24,13 @@
   "dispense_status",
   "dispensed_qty",
   "return_qty",
+  "stock_issued_qty",
   "column_break_dispense",
   "dispensed_by",
   "dispensed_at",
   "returned_by",
   "returned_at",
+  "stock_entry",
   "batch_no",
   "expiry_date",
   "audit_section",
@@ -185,6 +187,22 @@
    "fieldname": "returned_at",
    "fieldtype": "Datetime",
    "label": "Returned At",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Stock units actually issued for this row, in the Item's own Stock UOM. Non-zero means the goods have already left the warehouse at dispense time, so the invoice must not deduct them a second time. Zero on every row prescribed before the medication was given a dose option.",
+   "fieldname": "stock_issued_qty",
+   "fieldtype": "Float",
+   "label": "Stock Issued Qty",
+   "read_only": 1
+  },
+  {
+   "description": "The most recent Stock Entry this row issued or returned.",
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
    "read_only": 1
   },
   {
