@@ -5,6 +5,7 @@
  "engine": "InnoDB",
  "field_order": [
   "boarding_items_section",
+  "boarding_category",
   "travel_boarding_item",
   "treatment_boarding_item",
   "column_break_defaults",
@@ -21,16 +22,27 @@
    "label": "Boarding Items"
   },
   {
+   "description": "The CareService category holding boarding rates. Boarding prices resolve from rows in this category, so adding a species or changing a price is a catalogue edit, never a deploy.",
+   "fieldname": "boarding_category",
+   "fieldtype": "Link",
+   "label": "Boarding Category",
+   "options": "CategoryCareServices"
+  },
+  {
    "fieldname": "travel_boarding_item",
    "fieldtype": "Link",
-   "label": "Travel Boarding Item",
-   "options": "Item"
+   "label": "Travel Boarding Item (Deprecated)",
+   "options": "Item",
+   "description": "DEPRECATED and no longer read. Boarding rates now resolve from the CareService catalogue via Boarding Category above, so a species or a price is a catalogue edit rather than a deploy. Left in place rather than deleted so the old configuration stays visible; safe to clear.",
+   "read_only": 1
   },
   {
    "fieldname": "treatment_boarding_item",
    "fieldtype": "Link",
-   "label": "Treatment Boarding Item",
-   "options": "Item"
+   "label": "Treatment Boarding Item (Deprecated)",
+   "options": "Item",
+   "description": "DEPRECATED and no longer read. Boarding rates now resolve from the CareService catalogue via Boarding Category above, so a species or a price is a catalogue edit rather than a deploy. Left in place rather than deleted so the old configuration stays visible; safe to clear.",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_defaults",
