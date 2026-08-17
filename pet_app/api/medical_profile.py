@@ -65,6 +65,190 @@ def get_pet_medical_timeline(pet=None, pet_id=None, limit=50, cursor=0):
 	return result
 
 
+@frappe.whitelist()
+def get_pet_episode_history(pet=None, pet_id=None, limit=20):
+	"""Care episodes for a pet, each bundled with the records that belong to it.
+
+	get_pet_medical_profile returns only the active episode, and the timeline is flat
+	(ungrouped), so the history tab had no way to show a closed course with its own
+	visits, plan items, orders and invoices attached. Read-only.
+	"""
+	try:
+		pet_name = cstr(pet or pet_id).strip()
+		if not pet_name:
+			return fail(_("Pet is required."), code="VALIDATION_ERROR")
+		_assert_pet_access(pet_name)
+
+		limit = max(min(cint(limit) or 20, 100), 1)
+		episodes = frappe.get_all(
+			"Pet Care Episode",
+			filters={"pet": pet_name},
+			fields=["name", "episode_status"],
+			order_by="started_on desc, creation desc",
+			ignore_permissions=True,
+		)
+
+		active_name = None
+		for row in episodes:
+			if cstr(row.get("episode_status")) in ACTIVE_EPISODE_STATUSES:
+				active_name = row["name"]
+				break
+
+		# Active episode first, then the rest newest-first, capped at `limit`.
+		ordered = ([active_name] if active_name else []) + [
+			row["name"] for row in episodes if row["name"] != active_name
+		]
+
+		active_payload = {}
+		previous = []
+		for name in ordered[:limit]:
+			bundle = _episode_bundle(name)
+			if name == active_name:
+				active_payload = bundle["episode"]
+			previous.append(bundle)
+
+		return ok(
+			{
+				"active_episode": active_payload,
+				"previous_episodes": [b for b in previous if b["episode"].get("name") != active_name],
+				"episodes": previous,
+			},
+			meta={"total": len(episodes), "returned": len(previous)},
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+def _episode_bundle(episode_name: str) -> dict:
+	"""One episode with its visits, plan items, orders and invoices."""
+	episode = frappe.get_doc("Pet Care Episode", episode_name)
+
+	visits = frappe.get_all(
+		"Vet Visit",
+		filters={"care_episode": episode_name},
+		fields=[
+			"name",
+			"visit_datetime",
+			"status",
+			"visit_type",
+			"doctor",
+			"animal_patient",
+			"guardian",
+			"diagnosis",
+			"follow_up_date",
+			"follow_up_status",
+			"sales_invoice",
+			"billing_status",
+			"total_billable_amount",
+		],
+		order_by="visit_datetime asc, creation asc",
+		ignore_permissions=True,
+	)
+	visits = [dict(row) for row in visits]
+	enrich_link_aliases(visits, pet_field="animal_patient", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+
+	plan_items = []
+	if frappe.db.exists("DocType", "Pet Care Plan Item"):
+		plan_items = [
+			dict(row)
+			for row in frappe.get_all(
+				"Pet Care Plan Item",
+				filters={"care_episode": episode_name},
+				fields=["*"],
+				order_by="due_date asc, modified desc",
+				ignore_permissions=True,
+			)
+		]
+		enrich_link_aliases(plan_items, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+
+	# Orders are child rows on the visits that belong to this episode.
+	orders = []
+	visit_names = [v["name"] for v in visits]
+	if visit_names and frappe.db.exists("DocType", "Visit Order"):
+		orders = [
+			dict(row)
+			for row in frappe.get_all(
+				"Visit Order",
+				filters={"parent": ["in", visit_names], "parenttype": "Vet Visit"},
+				fields=["*"],
+				order_by="parent asc, idx asc",
+				ignore_permissions=True,
+			)
+		]
+
+	invoices = _episode_invoices(visit_names)
+	episode_payload = _doc_payload(episode)
+
+	# The documented contract nests the record under `episode`, but a card that reads
+	# row.started_on / row.outcome directly gets undefined and renders a dash - while
+	# row.visits still works, which looks like "the backend only sent visit_count".
+	# The summary fields are mirrored onto the row so both access shapes resolve.
+	bundle = {
+		"episode": episode_payload,
+		"visits": visits,
+		"plan_items": plan_items,
+		"orders": orders,
+		"invoices": invoices,
+		"visit_count": len(visits),
+	}
+	for field in (
+		"name",
+		"episode_title",
+		"episode_type",
+		"episode_status",
+		"outcome",
+		"started_on",
+		"resolved_on",
+		"closed_on",
+		"primary_diagnosis",
+		"diagnosis_summary",
+		"treatment_summary",
+		"chief_complaint",
+		"next_follow_up_date",
+		"follow_up_status",
+		"priority",
+		"severity",
+		"primary_doctor",
+	):
+		bundle.setdefault(field, episode_payload.get(field))
+	# A closed course with no explicit closed_on still has a usable end date.
+	if not bundle.get("closed_on"):
+		bundle["closed_on"] = episode_payload.get("resolved_on")
+	bundle["title"] = episode_payload.get("episode_title") or episode_payload.get("primary_diagnosis")
+	bundle["status"] = episode_payload.get("episode_status")
+	bundle["diagnosis"] = episode_payload.get("primary_diagnosis") or episode_payload.get("diagnosis_summary")
+	return bundle
+
+
+def _episode_invoices(visit_names: list[str]) -> list[dict]:
+	"""Invoices reachable from this episode's visits, if the caller may read them."""
+	if not visit_names or not frappe.db.exists("DocType", "Sales Invoice"):
+		return []
+	if not frappe.has_permission("Sales Invoice", ptype="read"):
+		return []
+
+	names = frappe.get_all(
+		"Vet Visit",
+		filters={"name": ["in", visit_names], "sales_invoice": ["is", "set"]},
+		pluck="sales_invoice",
+		ignore_permissions=True,
+	)
+	unique = sorted({n for n in names if n})
+	if not unique:
+		return []
+
+	return [
+		dict(row)
+		for row in frappe.get_all(
+			"Sales Invoice",
+			filters={"name": ["in", unique]},
+			fields=["name", "posting_date", "status", "currency", "grand_total", "outstanding_amount"],
+			order_by="posting_date desc",
+			ignore_permissions=True,
+		)
+	]
+
+
 @frappe.whitelist(methods=["POST"])
 def recalculate_pet_medical_profile(pet=None, pet_id=None):
 	try:

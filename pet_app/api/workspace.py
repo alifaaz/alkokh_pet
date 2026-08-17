@@ -138,20 +138,25 @@ WORKSPACE_WRITE_ROLES = (
 	| SERVICE_PROVIDER_ROLES
 )
 WORKSPACE_MODES = {"doctor", "service", "coordinator", "diagnostics", "accounting", "management", "all"}
-VISIT_BOARDING_READ_ONLY_ACTIONS = {
-	"set_case_choice",
-	"start_consultation",
-	"save_clinical_note",
-	"save_diagnoses",
-	"create_orders",
-	"cancel_medication",
-	"complete_case",
-	"request_follow_up",
-	"request_consult",
-	"complete_consult",
-	"add_note",
-	"attach_file",
-}
+# A checked-in stay no longer freezes its visit. It used to block every clinical action,
+# because charges only reached an invoice when the visit closed, so an order raised while
+# the animal was in a kennel would have missed the bill. Per-order billing removed that:
+# order_billing raises each charge at the order's own completion and deliberately never
+# writes Vet Visit.sales_invoice, so a late order is charged and the visit stays editable.
+# Documentation (notes, diagnoses, attachments, consults, follow-ups) was never a billing
+# question at all, and each action still has its own status gate in clinical_state.
+#
+# complete_case is NOT released, and not for billing reasons:
+#   - "Completed" is terminal in clinical_state.TRANSITIONS - there is no reopen.
+#   - completing writes Vet Visit.sales_invoice, which turns on _validate_sales_invoice_lock
+#     and makes set_values_from_visit throw BILLED_VISIT_LOCK_MESSAGE on every visit-linked
+#     Lab/Imaging afterwards. Closing the visit mid-stay would strand the very orders this
+#     change exists to allow: they could no longer be released.
+#   - _validate_visit_completion_requirements (and STRICT_MODE's pending-records check)
+#     demand every diagnostic be finished, which mid-stay they routinely are not.
+# The supported order is the other one: close the visit, then board - see
+# boarding.VISIT_BOARDING_BLOCKED_VISIT_STATUSES.
+VISIT_BOARDING_BLOCKED_ACTIONS = {"complete_case"}
 
 OPEN_VISIT_STATUSES = {"Draft", "In Progress", "Follow-up Needed"}
 OPEN_CASE_STATUSES = {"Draft", "Waiting Practitioner", "In Consultation"}
@@ -513,7 +518,7 @@ def _has_legacy_or_doctype_permission(
 
 
 def _assert_record_access(doctype: str, name: str, write: bool = False, action: str | None = None):
-	if write and doctype == "Vet Visit" and action in VISIT_BOARDING_READ_ONLY_ACTIONS:
+	if write and doctype == "Vet Visit" and action in VISIT_BOARDING_BLOCKED_ACTIONS:
 		_assert_visit_not_checked_in_boarding(name, action=action)
 
 	user = frappe.session.user
@@ -1908,6 +1913,13 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 
 
 def _assert_visit_not_checked_in_boarding(visit_name: str, *, action: str | None = None):
+	# A visit that is ALREADY Completed may legitimately own a checked-in stay, because
+	# boarding can now start from a closed visit. This guard exists to stop an open visit
+	# being closed mid-stay; a closed one has nothing left to close, and complete_case on
+	# it is a no-op. Checked here rather than in _complete_case_atomic so both layers - the
+	# perform_action gate and the direct call - agree.
+	if cstr(frappe.db.get_value("Vet Visit", visit_name, "status")).strip() == "Completed":
+		return
 	boarding = checked_in_boarding_for_visit(visit_name)
 	if not boarding:
 		return
