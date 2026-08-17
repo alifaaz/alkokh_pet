@@ -56,6 +56,17 @@ from pet_app.utils.visit_billing import (
 )
 
 # doctype -> the Pet Billable Item `item_type` its charge occupies on the visit.
+# Medication is ABSENT FROM THIS MAP ON PURPOSE, and that absence is now load-bearing.
+#
+# Boarding medications are absorbed by the medical boarding rate: the billable row is
+# created, priced and marked `Included`, and three exclusion points keep it off the
+# invoice. Every one of those lives in the boarding flow. If a Medication order doctype is
+# ever added here, per-order billing would raise a charge for it at completion, outside
+# that flow, and the guardian would be billed for a medication their medical rate already
+# covered - with nothing failing to signal it.
+#
+# Adding "Medication" here therefore requires teaching this module the Included rule
+# first. It is not a one-line extension.
 ORDER_ITEM_TYPES = {
 	"Lab": "Lab",
 	"Imaging": "Imaging",
