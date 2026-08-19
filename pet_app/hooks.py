@@ -130,6 +130,14 @@ after_migrate = "pet_app.patches.enforce_iqd_defaults.ensure_iqd_defaults"
 #
 permission_query_conditions = {
     "PetCareService": "pet_app.permissions.petcareservice.get_permission_query_conditions",
+    # The pet pickers load a guardian's animals over the RAW resource API, so no
+    # whitelisted method sees the request and nothing enforced inside one applies.
+    # Read on PetGuardian is granted to 16 roles and none of them is row-scoped, so
+    # without this any holder can swap the guardian id and enumerate another owner's
+    # pets. Scoping the LINK table is what binds: a condition on Pet would not reach
+    # the `pet_id.*` columns these queries join in - the hook is only consulted for a
+    # query's primary doctype.
+    "PetGuardian": "pet_app.permissions.petguardian.get_permission_query_conditions",
 }
 
 # has_permission = {
