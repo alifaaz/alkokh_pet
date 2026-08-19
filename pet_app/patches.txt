@@ -74,3 +74,17 @@ pet_app.patches.boarding_deposit_labels
 pet_app.patches.boarding_order_id_pet
 pet_app.patches.boarding_occupant_model
 pet_app.patches.boarding_catalogue_rates
+pet_app.patches.boarding_close_stranded_occupants
+# After boarding_close_stranded_occupants: that patch closes active occupants on ended
+# bookings, and this one only fills rooms on occupants still Active. Running it first keeps
+# this one from stamping a room onto a pet whose booking had already finished.
+pet_app.patches.boarding_occupant_room_backfill
+# The owner's decision: every room starts at 7 and is edited down per room. Supersedes
+# the per-room-type seeding that was proposed first; that patch was removed unrun.
+pet_app.patches.service_room_capacity_seven
+# linked_service_id is per-occupant now; a pet's second stay takes a #N suffix. Only the
+# bookings that already have a repeated pet need re-keying - one, today.
+pet_app.patches.boarding_room_stay_occupant_keys
+# Two "when" values converge on scheduled_datetime. Deliberately partial on due_date:
+# only the 31 rows that differ from their creation date carry a decision worth moving.
+pet_app.patches.converge_scheduled_datetime

@@ -863,6 +863,7 @@ def _procedure_items(user: str, roles: set[str], search=None, scope: str | None 
 				"care_service",
 				"status",
 				"scheduled_at",
+				"scheduled_datetime",
 				"started_at",
 				"modified",
 				"creation",
@@ -1013,7 +1014,11 @@ def _service_item(row) -> dict:
 		pet=pet,
 		guardian=guardian,
 		assignee={"id": row.get("provider") or row.get("user") or row.get("doctor"), "name_label": provider.get("name_label") or row.get("user") or doctor.get("name_label")},
-		scheduled_at=row.get("start_date"),
+		# Was `start_date`, which is the moment the work STARTED - stamped by the server,
+		# microseconds and all, on 96.9% of rows. Reporting it as "scheduled" made this
+		# column mean something different for a service than for a procedure in the same
+		# list. Null until someone actually schedules one, which is the honest answer.
+		scheduled_at=row.get("scheduled_datetime"),
 		due_at=row.get("due_date"),
 		next_task="Finish service" if row.get("start_date") else "Start service",
 		modified=row.get("modified"),
@@ -1052,8 +1057,8 @@ def _procedure_item(row) -> dict:
 		pet=pet,
 		guardian=guardian,
 		assignee={"id": provider_id or row.get("doctor"), "name_label": provider_label or doctor.get("name_label")},
-		scheduled_at=row.get("scheduled_at"),
-		due_at=row.get("scheduled_at"),
+		scheduled_at=row.get("scheduled_datetime") or row.get("scheduled_at"),
+		due_at=row.get("scheduled_datetime") or row.get("scheduled_at"),
 		next_task=_procedure_next_task(row),
 		modified=row.get("modified"),
 		creation=row.get("creation"),
@@ -2207,6 +2212,30 @@ def _complete_consult(visit_name: str, payload: dict):
 	visit.add_comment("Comment", _("Consult completed by {0}.").format(frappe.session.user))
 
 
+def _order_scheduled_datetime(raw: dict):
+	"""When a visit order is due to happen, or None. One name across both order routes.
+
+	`scheduled_datetime` is the name; `scheduled_at` is accepted as a deprecated alias so
+	the client that sends it today keeps working through the transition. Procedures had a
+	Datetime and services a Date, for no reason anyone recorded - the split was accidental,
+	and it is how a procedure ended up able to carry a time and a lab not.
+
+	Not to be confused with `due_date`, which stays. That is the DAY a service is owed: it
+	is required, it defaults to today on every one of the four writers, and 98.9% of live
+	rows hold exactly their creation date. It cannot answer "when is this booked" because
+	it is populated whether or not anyone decided anything.
+
+	Delegates the parse to the boarding module so both routes agree on what counts as a
+	schedule, and in particular so neither ever falls back to now().
+	"""
+	from pet_app.api.healthcare.boarding import _coerce_scheduled_datetime
+
+	value = raw.get("scheduled_datetime")
+	if value is None or not cstr(value).strip():
+		value = raw.get("scheduled_at")
+	return _coerce_scheduled_datetime(value)
+
+
 def _create_linked_record_for_order(visit, order_row, raw: dict):
 	kind = _normalize_order_kind(order_row.kind)
 	if kind not in {"lab", "radiology", "service", "procedure"}:
@@ -2220,6 +2249,8 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 	if kind != "procedure" and not template_id:
 		frappe.throw(_("Order {0} requires a Care Service template.").format(order_row.title))
 
+	scheduled_datetime = _order_scheduled_datetime(raw)
+
 	if kind == "lab":
 		doc = frappe.get_doc(
 			{
@@ -2230,6 +2261,7 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 				"doctor": visit.doctor,
 				"care_service": template_id,
 				"status": "Ordered",
+				"scheduled_datetime": scheduled_datetime,
 			}
 		)
 	elif kind == "radiology":
@@ -2249,6 +2281,7 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 				"body_part": body_part or None,
 				"modality": modality or None,
 				"order_note": order_row.note,
+				"scheduled_datetime": scheduled_datetime,
 			}
 		)
 	elif kind == "service":
@@ -2263,7 +2296,11 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 				"visit": visit.name,
 				"order_id": order_row.order_id,
 				"provider": raw.get("provider"),
+				# `due_date` keeps its own meaning - the DAY this is owed, required and
+				# defaulted - and is deliberately not the schedule. See the note on
+				# _order_scheduled_datetime.
 				"due_date": raw.get("due_date") or nowdate(),
+				"scheduled_datetime": scheduled_datetime,
 				"description": order_row.note,
 			}
 		)
@@ -2287,7 +2324,12 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 				"procedure_template": procedure_template,
 				"care_service": care_service,
 				"status": "Pending",
-				"scheduled_at": raw.get("scheduled_at"),
+				# `scheduled_at` is the old name for this and is still accepted on input
+				# (see the coercion above), so a client that has not moved yet keeps
+				# working. Both columns are written for now; `scheduled_at` is the one
+				# scheduled for removal, not this.
+				"scheduled_at": scheduled_datetime,
+				"scheduled_datetime": scheduled_datetime,
 				"indication": raw.get("indication") or order_row.note,
 			}
 		)
@@ -2614,6 +2656,8 @@ def _save_procedure_note(procedure_name: str, payload: dict, save: bool = True, 
 	doc = doc or frappe.get_doc("Pet Procedure", procedure_name)
 	clinical_state.assert_action_allowed(doc, action)
 	field_map = {
+		"scheduled_datetime": "scheduled_datetime",
+		# Deprecated alias, still accepted. Mapped onto the new column as well, below.
 		"scheduled_at": "scheduled_at",
 		"provider": "provider",
 		"indication": "indication",
@@ -2630,6 +2674,13 @@ def _save_procedure_note(procedure_name: str, payload: dict, save: bool = True, 
 	for incoming, fieldname in field_map.items():
 		if incoming in payload and payload.get(incoming) is not None:
 			doc.set(fieldname, payload.get(incoming))
+	# Keep the two columns in step while `scheduled_at` is still being retired: whichever
+	# name arrived, both hold it, so no reader goes blank mid-transition.
+	if "scheduled_datetime" in payload or "scheduled_at" in payload:
+		moment = _order_scheduled_datetime(payload)
+		doc.set("scheduled_datetime", moment)
+		if doc.meta.has_field("scheduled_at"):
+			doc.set("scheduled_at", moment)
 	_update_procedure_checklist(doc, payload)
 	if save:
 		doc.save(ignore_permissions=True)
@@ -2984,6 +3035,7 @@ def _procedure_detail(name: str) -> dict:
 		"rate": doc.rate,
 		"status": doc.status,
 		"scheduled_at": doc.scheduled_at,
+		"scheduled_datetime": doc.get("scheduled_datetime"),
 		"started_at": doc.started_at,
 		"completed_at": doc.completed_at,
 		"closed_at": doc.closed_at,

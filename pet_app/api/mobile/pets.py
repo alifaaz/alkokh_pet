@@ -11,6 +11,7 @@ from pet_app.api.mobile.files import MobileFileError, attach_public_image, get_f
 from pet_app.api.mobile.response import error, ok
 from pet_app.pet_app.doctype.pet_medical_profile.pet_medical_profile import ensure_pet_medical_profile
 from pet_app.utils.guardian_customer import get_guardian_by_user
+from pet_app.utils.mortality import apply_pet_visibility_filters
 
 
 PET_AUTH_ERROR = "auth.wrong_credentials"
@@ -407,7 +408,17 @@ def _unwrap_guardian_portal(result, key):
 
 @frappe.whitelist(methods=["GET"])
 @_mobile_pet_endpoint
-def list_pets(limit=20, cursor=0, include_disabled=0, **kwargs):
+def list_pets(limit=20, cursor=0, include_disabled=0, exclude_deceased=0, **kwargs):
+	"""The guardian's own pets. Deceased ones are KEPT by default, and that is deliberate.
+
+	This is a guardian looking at their own animals, not a clinician picking one to bill.
+	Hiding a pet that died would delete it from its owner's view of their own family, and
+	the payload already carries `is_deceased` and `death_date` so the app can render a
+	memorial state instead of a bookable row.
+
+	`exclude_deceased=1` is for the flows inside the app that DO create records - booking
+	or requesting an appointment - where offering a dead animal is the bug this closes.
+	"""
 	guardian = _current_guardian()
 	limit = max(1, min(cint(limit or 20), 100))
 	offset = max(0, cint(cursor or 0))
@@ -423,6 +434,7 @@ def list_pets(limit=20, cursor=0, include_disabled=0, **kwargs):
 	filters = {"name": ["in", linked_pets]}
 	if not cint(include_disabled) and _pet_has_field("pet_status"):
 		filters["pet_status"] = ["!=", "Archived"]
+	filters = apply_pet_visibility_filters(filters, exclude_deceased=bool(cint(exclude_deceased)))
 
 	rows = frappe.get_all(
 		"Pet",

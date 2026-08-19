@@ -129,7 +129,37 @@ Payload:
 }
 ```
 
-The frontend sends the full final `billable_items` array. Existing child rows are matched by `name`; omitted existing rows are deleted, rows without `name` are created, and totals are recalculated. This action does not check in, check out, create an invoice, or change boarding lifecycle state.
+The frontend sends the full final `billable_items` array. This action does not check in, check out, create an invoice, or change boarding lifecycle state.
+
+**Row identity.** Existing rows are matched on `name` first, then on `order_id` for a row
+that omits `name`. Both are stable for the life of the row: a child row's `name` never
+changes once assigned, and `order_id` is generated once when the order is raised. Echo
+`name` back on every row you did not just create and the row keeps its identity, its
+audit references and its history. A row matching neither key is created; an existing row
+that no incoming row matches is deleted. **Omitting a row is still how you delete it.**
+Payload order is the stored order, so reordering the array reorders the record.
+
+**What you may safely omit.** Only the fields listed below are writable here. Every other
+column on the row is owned by the endpoint that establishes the fact and is left exactly
+as stored when you sync - you do not need to read it, echo it, or defend it:
+
+| | |
+|---|---|
+| Writable by this endpoint | `item_name`, `item_code`, `item_type`, `qty`, `rate`, `amount`, `status`, `note`, `linked_service_id`, `linked_doctype`, `linked_name`, `order_id`, `care_episode` |
+| Preserved, never writable here | `pet`, `dose_option`, `warehouse`, `dosage`, `frequency`, `duration_days`, `dispense_status`, `dispensed_qty`, `dispensed_by`, `dispensed_at`, `return_qty`, `returned_by`, `returned_at`, `stock_issued_qty`, `stock_entry` |
+
+Omitting a writable field leaves it unchanged, with two exceptions worth knowing:
+`amount` is always recomputed as `qty x rate` unless you send it explicitly, and
+`item_code` must resolve to an Item - send it, or let it fall back to the row's stored
+value. For `note` and the five link fields, omission and an empty value are different
+instructions: omit to leave alone, send `""` to clear. For `item_type`, `status`, `qty`
+and `rate`, an empty or null value is treated as "unchanged", not as "clear".
+
+**Creating a row through sync.** A row with no `name` and no matching `order_id` is
+created, and it carries none of the preserved fields - no `pet`, no warehouse, no
+schedule, no dispense or stock trail. Those are set by the endpoint that owns them
+(`create_order` for the schedule and dose option, `dispense_medication` for the stock
+trail). Do not expect to author a prescription schedule here; raise the order instead.
 
 ### Check out
 

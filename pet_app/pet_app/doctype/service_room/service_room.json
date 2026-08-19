@@ -10,6 +10,7 @@
   "room_name",
   "arabic_name",
   "room_type",
+  "capacity",
   "status",
   "branch",
   "column_break_basic",
@@ -41,6 +42,14 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Room Type"
+  },
+  {
+   "fieldname": "capacity",
+   "fieldtype": "Int",
+   "label": "Capacity",
+   "default": "1",
+   "non_negative": 1,
+   "description": "How many animals this room physically holds. Per room, not per booking - a Kennel and a Suite differ. Display only for now: the hub shows occupied/capacity. It is NOT the booking limit, which is Pet Boarding Settings -> max_pets_per_booking."
   },
   {
    "default": "Active",
@@ -75,7 +84,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-12 17:19:46.036834",
+ "modified": "2026-08-17 21:30:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Service Room",
