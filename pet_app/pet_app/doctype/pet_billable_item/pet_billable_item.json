@@ -17,6 +17,10 @@
   "dispense_status",
   "dose_option",
   "warehouse",
+  "dosage",
+  "frequency",
+  "duration_days",
+  "scheduled_datetime",
   "dispensed_qty",
   "return_qty",
   "stock_issued_qty",
@@ -110,6 +114,31 @@
    "fieldtype": "Link",
    "label": "Warehouse",
    "options": "Warehouse"
+  },
+  {
+   "fieldname": "dosage",
+   "fieldtype": "Data",
+   "label": "Dosage",
+   "description": "The clinical dose as written, free text: \"0.5 cc\", \"1 tablet\", \"5 mg/kg\". NOT dose_option - that names a Medication Dose Option and drives the stock deduction, this is what the vet wrote for the human giving it. Either can exist without the other."
+  },
+  {
+   "fieldname": "frequency",
+   "fieldtype": "Data",
+   "label": "Frequency",
+   "description": "How often, free text: \"BID\", \"every 8h\", \"once daily\". No controlled vocabulary - the visit path accepts free text and clinics write frequencies in Arabic and English."
+  },
+  {
+   "fieldname": "duration_days",
+   "fieldtype": "Int",
+   "label": "Duration (Days)",
+   "description": "How many whole days the course runs. Clinical only: it does NOT multiply qty, rate or amount. The dose count stays in qty exactly as the client sends it.",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "scheduled_datetime",
+   "fieldtype": "Datetime",
+   "label": "Scheduled Datetime",
+   "description": "When this order is due to happen. Optional, and never defaulted - an absent value means 'do it now', which is most orders. A stamp written automatically would be indistinguishable from one a person chose, and nothing could then tell a scheduled order from an unscheduled one."
   },
   {
    "default": "0",
@@ -206,7 +235,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-04-20 00:00:00.000000",
+ "modified": "2026-08-18 15:10:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Billable Item",

@@ -32,6 +32,7 @@
   "released_at",
   "doctor_reviewed",
   "doctor_reviewed_at",
+  "scheduled_datetime",
   "result_visibility",
   "attachment_required",
   "report",
@@ -200,6 +201,12 @@
    "fieldname": "doctor_reviewed_at",
    "fieldtype": "Datetime",
    "label": "Practitioner Reviewed At"
+  },
+  {
+   "fieldname": "scheduled_datetime",
+   "fieldtype": "Datetime",
+   "label": "Scheduled Datetime",
+   "description": "When this order is due to happen. Optional, and never defaulted - an absent value means 'do it now', which is most orders. A stamp written automatically would be indistinguishable from one a person chose, and nothing could then tell a scheduled order from an unscheduled one."
   },
   {
    "default": "Clinical Team",

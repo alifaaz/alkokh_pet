@@ -33,6 +33,7 @@
   "end_date",
   "column_break_adis",
   "due_date",
+  "scheduled_datetime",
   "provider",
   "weight",
   "size",
@@ -98,6 +99,12 @@
    "in_list_view": 1,
    "label": "Due Date",
    "reqd": 1
+  },
+  {
+   "fieldname": "scheduled_datetime",
+   "fieldtype": "Datetime",
+   "label": "Scheduled Datetime",
+   "description": "When this order is due to happen. Optional, and never defaulted - an absent value means 'do it now', which is most orders. A stamp written automatically would be indistinguishable from one a person chose, and nothing could then tell a scheduled order from an unscheduled one."
   },
   {
    "fieldname": "pet_service_name",
