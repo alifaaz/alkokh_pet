@@ -123,7 +123,7 @@ ACTIVE_WORK_CONFIGS = [
         "subtitle_field": "category",
         "priority_field": "priority",
         "due_field": "due_date",
-        "scheduled_field": "start_date",
+        "scheduled_field": "scheduled_datetime",
         "route_prefix": "/healthcare/services",
     },
     {
@@ -137,7 +137,7 @@ ACTIVE_WORK_CONFIGS = [
         "title_field": "care_service",
         "subtitle_field": "item_code",
         "priority_field": "priority",
-        "scheduled_field": "start_at",
+        "scheduled_field": "scheduled_datetime",
         "route_prefix": "/healthcare/labs",
     },
     {
@@ -151,7 +151,7 @@ ACTIVE_WORK_CONFIGS = [
         "title_field": "care_service",
         "subtitle_field": "item_code",
         "priority_field": "priority",
-        "scheduled_field": "start_at",
+        "scheduled_field": "scheduled_datetime",
         "route_prefix": ROUTE_PREFIX_BY_DOCTYPE["Imaging"],
     },
     {
@@ -166,7 +166,7 @@ ACTIVE_WORK_CONFIGS = [
         "title_field": "procedure_template",
         "subtitle_field": "care_service",
         "priority_field": "priority",
-        "scheduled_field": "scheduled_at",
+        "scheduled_field": "scheduled_datetime",
         "route_prefix": "/healthcare/procedures",
     },
     {

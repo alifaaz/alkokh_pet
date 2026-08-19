@@ -24,25 +24,77 @@ def get_owner_boarding_updates(boarding=None, pet=None):
 		return _error_response(exc)
 
 
+class _UpdatePetError(Exception):
+	pass
+
+
+def _resolve_update_pet(boarding_doc, requested):
+	"""Which animal this update is about.
+
+	Named explicitly, or inferred only when there is exactly one animal it could be.
+	A booking holding several and no `pet` is refused rather than defaulted: guessing
+	there is how every update on a three-pet stay ended up on one pet's record.
+
+	Both membership shapes are handled by `pet_is_on_boarding` / `boarding_pets`: a booking
+	with no occupant rows - a Pending Room stay from a visit, or one the backfill never
+	reached - falls back to the legacy scalar, and holds one animal by construction, so
+	there is nothing to guess there either.
+	"""
+	from pet_app.utils.boarding_occupancy import boarding_pets, pet_is_on_boarding
+
+	requested = cstr(requested).strip()
+	active = boarding_pets(boarding_doc, active_only=True)
+
+	if requested:
+		if not pet_is_on_boarding(boarding_doc, requested, active_only=True):
+			raise _UpdatePetError(
+				_("Pet {0} is not an active occupant of Pet Boarding {1}.").format(requested, boarding_doc.name)
+			)
+		return requested
+
+	if len(active) == 1:
+		return active[0]
+	if len(active) > 1:
+		raise _UpdatePetError(
+			_("Pet Boarding {0} holds {1} animals ({2}). Send `pet` to say which one this update is about.").format(
+				boarding_doc.name, len(active), ", ".join(active)
+			)
+		)
+	return cstr(boarding_doc.pet).strip() or None
+
+
 @frappe.whitelist(methods=["POST"])
-def add_boarding_update(boarding=None, update_type="Daily Log", summary=None, file=None, data=None, **kwargs):
+def add_boarding_update(boarding=None, update_type="Daily Log", summary=None, file=None, data=None, pet=None, **kwargs):
+	"""Post a daily log, photo or incident report against ONE animal on a stay.
+
+	`pet` is new and optional. It used to be absent entirely and every update was filed
+	against `Pet Boarding.pet` - the legacy single-pet scalar - so on a booking holding
+	three animals every photo, log and incident report was attributed to whichever one
+	that scalar named. Nothing failed; the wrong animal simply went on the record, and
+	these are guardian-visible. A misattributed incident report is worse than a refused
+	one because nobody finds out.
+	"""
 	try:
 		payload = _payload(data, kwargs)
 		boarding_name = boarding or payload.get("boarding")
 		if not boarding_name:
 			return fail(_("Boarding is required."), code="VALIDATION_ERROR")
 		boarding_doc = frappe.get_doc("Pet Boarding", boarding_name)
+		try:
+			update_pet = _resolve_update_pet(boarding_doc, pet or payload.get("pet") or payload.get("pet_id"))
+		except _UpdatePetError as exc:
+			return fail(str(exc), code="VALIDATION_ERROR")
 		doctype = {
 			"Daily Log": "Pet Boarding Daily Log",
 			"Media": "Pet Boarding Media Update",
 			"Incident": "Pet Boarding Incident Report",
 		}.get(update_type or payload.get("update_type"), "Pet Boarding Daily Log")
 		if doctype == "Pet Boarding Media Update":
-			doc = frappe.get_doc({"doctype": doctype, "boarding": boarding_name, "pet": boarding_doc.pet, "file": file or payload.get("file"), "caption": summary or payload.get("summary"), "guardian_visible": cint(payload.get("guardian_visible", 1)), "posted_at": now_datetime()})
+			doc = frappe.get_doc({"doctype": doctype, "boarding": boarding_name, "pet": update_pet, "file": file or payload.get("file"), "caption": summary or payload.get("summary"), "guardian_visible": cint(payload.get("guardian_visible", 1)), "posted_at": now_datetime()})
 		elif doctype == "Pet Boarding Incident Report":
-			doc = frappe.get_doc({"doctype": doctype, "boarding": boarding_name, "pet": boarding_doc.pet, "incident_title": summary or payload.get("summary"), "incident_datetime": now_datetime(), "guardian_visible_summary": payload.get("guardian_visible_summary"), "internal_note": payload.get("internal_note"), "status": "Reported"})
+			doc = frappe.get_doc({"doctype": doctype, "boarding": boarding_name, "pet": update_pet, "incident_title": summary or payload.get("summary"), "incident_datetime": now_datetime(), "guardian_visible_summary": payload.get("guardian_visible_summary"), "internal_note": payload.get("internal_note"), "status": "Reported"})
 		else:
-			doc = frappe.get_doc({"doctype": doctype, "boarding": boarding_name, "pet": boarding_doc.pet, "log_datetime": now_datetime(), "summary": summary or payload.get("summary"), "internal_note": payload.get("internal_note")})
+			doc = frappe.get_doc({"doctype": doctype, "boarding": boarding_name, "pet": update_pet, "log_datetime": now_datetime(), "summary": summary or payload.get("summary"), "internal_note": payload.get("internal_note")})
 		doc.insert(ignore_permissions=True)
 		return ok({"update": _owner_update_payload(doc)})
 	except Exception as exc:

@@ -13,6 +13,7 @@ from pet_app.api.healthcare.boarding import (
 	can_start_visit_boarding,
 	checked_in_boarding_for_visit,
 	visit_boarding_payload,
+	visit_pet_boarding_payload,
 )
 from pet_app.api.visit_referral import can_refer_visit, visit_referrals_payload
 from pet_app.api.workspace import (
@@ -218,6 +219,10 @@ def _visit_payload(doc) -> dict:
 	payload["doctor_name"] = payload.get("doctor_name") or (
 		frappe.db.get_value("Healthcare Practitioner", doctor_id, "practitioner_name") if doctor_id else None
 	)
+	# Whether the ANIMAL is boarding, whoever put it there. The `boarding` block beside
+	# this one keeps its own meaning - the stay THIS visit started - and is null for a pet
+	# added to another booking as an occupant, which is why it cannot gate the action.
+	payload.update(visit_pet_boarding_payload(doc))
 	return payload
 
 

@@ -214,7 +214,7 @@ Supported workspace actions:
 | `pet_app.api.healthcare.boarding.reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=None, boardingType=None)` | Reserve room with locking and Guardian-Pet validation. |
 | `pet_app.api.healthcare.boarding.check_in_boarding(boarding_id)` | Reserved -> Checked In. |
 | `pet_app.api.healthcare.boarding.check_out_boarding(boarding_id)` | Checked In -> invoice, close, submit boarding. Creates Sales Invoice. |
-| `pet_app.api.healthcare.boarding.sync_billable_items(boarding_id=None, billable_items=None, name=None, boardingId=None, billableItems=None)` | Replace/update open boarding billable rows and recompute totals. |
+| `pet_app.api.healthcare.boarding.sync_billable_items(boarding_id=None, billable_items=None, name=None, boardingId=None, billableItems=None)` | Update open boarding billable rows in place and recompute totals. Rows match on `name`, then `order_id`; only the fields a row carries are written, and an omitted row is deleted. Clinical and stock columns (`pet`, `dose_option`, `warehouse`, the schedule, the dispense and stock trail) are never writable here and survive untouched - see `docs/boarding-frontend.md`. |
 
 ### Product, Category, Stock
 
