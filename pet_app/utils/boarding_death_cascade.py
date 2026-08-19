@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import cstr, flt, get_datetime, getdate
+from frappe.utils import cstr, flt, get_datetime, getdate, now_datetime
 
 from pet_app.pet_app.doctype.pet_boarding.pet_boarding import CLOSED_BOARDING_STATUSES
 from pet_app.utils.invoice_reuse import get_or_create_open_invoice
@@ -58,10 +58,20 @@ def run_boarding_death_cascade(death_doc) -> dict:
 	# 1. Pet -> deceased (after this the pet is no longer bookable/boardable).
 	summary["pet_marked_deceased"] = _mark_pet_deceased(pet, death_doc, death_datetime)
 
-	# 2 + 5. Close the boarding and settle its billing.
+	# 2 + 5. Close the boarding and settle its billing - OR close just this occupant.
+	#
+	# The split is not cosmetic. _close_boarding sets check_out and record_status and then
+	# _settle_boarding_billing raises the invoice, and check_out_boarding refuses outright
+	# once `sales_invoice` is set. So on a booking holding several pets, one death would
+	# close the booking, invoice it, and leave the surviving animals in a record that can
+	# never be checked out again - a hard failure, discovered at the counter, with no way
+	# forward but manual surgery on the invoice.
 	if boarding_name and frappe.db.exists("Pet Boarding", boarding_name):
-		boarding_result = _close_boarding(boarding_name, death_doc, death_datetime)
-		summary.update(boarding_result)
+		if _others_remain_on_booking(boarding_name, pet):
+			summary.update(_close_deceased_occupant(boarding_name, pet, death_doc, death_datetime))
+		else:
+			boarding_result = _close_boarding(boarding_name, death_doc, death_datetime)
+			summary.update(boarding_result)
 
 	# 3. Close linked open clinical docs for the pet.
 	summary["closed_clinical_docs"] = _close_open_clinical_docs(pet, boarding_name, death_doc)
@@ -96,6 +106,90 @@ def _mark_pet_deceased(pet: str, death_doc, death_datetime) -> bool:
 	already = bool(row.get("is_deceased")) or row.get("status") == "Deceased"
 	frappe.db.set_value("Pet", pet, updates, update_modified=True)
 	return not already
+
+
+def _others_remain_on_booking(boarding_name: str, pet: str) -> bool:
+	"""Whether this booking still has an active occupant other than the deceased pet.
+
+	Answered from the database rather than from an in-memory doc because the caller may
+	be deep in a death-record submit. Returns False for pre-occupant-model bookings, which
+	correctly routes them to the existing whole-booking path.
+	"""
+	from pet_app.utils.boarding_occupancy import ACTIVE_OCCUPANT_STATUS, OCCUPANT_DOCTYPE
+
+	if not frappe.db.table_exists(OCCUPANT_DOCTYPE):
+		return False
+	rows = frappe.db.sql(
+		f"""
+		SELECT o.name FROM `tab{OCCUPANT_DOCTYPE}` o
+		WHERE o.parenttype = 'Pet Boarding' AND o.parent = %(boarding)s
+		  AND o.status = %(active)s AND o.pet != %(pet)s
+		LIMIT 1
+		""",
+		{"boarding": boarding_name, "active": ACTIVE_OCCUPANT_STATUS, "pet": pet},
+	)
+	return bool(rows)
+
+
+def _close_deceased_occupant(boarding_name: str, pet: str, death_doc, death_datetime) -> dict:
+	"""One pet died; the others are still boarding. Close the occupant, not the booking.
+
+	Nothing on the booking is touched: no check_out, no record_status, and above all no
+	invoice. The surviving animals go on accruing and the booking checks out normally when
+	they leave, raising ONE invoice at the end that includes this pet's nights up to its
+	death alongside everything already performed for it.
+
+	Those already-performed charges stay and bill normally. A drug given on Tuesday to an
+	animal that died on Wednesday was still given, and cancelling the charge would be
+	rewriting what happened, not being kind.
+	"""
+	from pet_app.utils.boarding_occupancy import close_occupant, close_open_stint
+
+	result = {"boarding_closed": False, "boarding_already_closed": False, "invoice": None, "occupant_closed": False}
+
+	boarding = frappe.get_doc("Pet Boarding", boarding_name)
+	when = death_datetime or get_datetime(death_doc.reported_datetime) or now_datetime()
+
+	closed = close_occupant(
+		boarding,
+		pet,
+		status="Deceased",
+		when=when,
+		note=_("Died during boarding (Death Record {0}).").format(death_doc.name),
+		death_record=death_doc.name,
+	)
+	if closed is None:
+		return result
+
+	close_open_stint(boarding_name, pet, when)
+
+	# Stops accrual for THIS pet only: occupant_nights now reads its departed_at instead of
+	# falling back to now. Reconciles in place; add_if_missing=False so a pet nobody billed
+	# does not acquire a charge at the moment it dies.
+	from pet_app.api.healthcare.boarding import _ensure_room_stay_billable_item
+
+	_ensure_room_stay_billable_item(boarding, add_if_missing=False)
+	boarding.run_method("_apply_billable_item_amounts")
+	boarding.run_method("_compute_totals")
+	boarding.flags.ignore_permissions = True
+	boarding.save(ignore_permissions=True)
+	boarding.add_comment(
+		"Comment",
+		_("Pet {0} died during boarding (Death Record {1}); occupant closed by {2}. Booking remains open for the other pets.").format(
+			pet, death_doc.name, frappe.session.user
+		),
+	)
+	frappe.logger("pet_app.boarding").info(
+		{
+			"event": "BOARDING_OCCUPANT_DECEASED",
+			"boarding": boarding_name,
+			"pet": pet,
+			"death_record": death_doc.name,
+			"user": frappe.session.user,
+		}
+	)
+	result["occupant_closed"] = True
+	return result
 
 
 def _close_boarding(boarding_name: str, death_doc, death_datetime) -> dict:

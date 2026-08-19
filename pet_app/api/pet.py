@@ -2,8 +2,9 @@ import frappe
 import hashlib
 import re
 import math
-from frappe.utils import cint
+from frappe.utils import cint, cstr, sbool
 from pet_app.api.response import standardize_response
+from pet_app.utils.mortality import apply_pet_visibility_filters
 
 # Per-pet dashboard and doctor suggestions. Implemented in pet_dashboard.py and
 # re-exported here because the frontend calls them at pet_app.api.pet.*.
@@ -365,7 +366,17 @@ def get_pet_images(doctype, docname):
 
 @frappe.whitelist()
 @standardize_response
-def list_pets(page=1, page_size=10, search=None):
+def list_pets(page=1, page_size=10, search=None, include_deceased=0):
+    """The selection list. Deceased pets are excluded unless explicitly asked for.
+
+    This is the list every clinical and billable flow picks from - boarding, visits,
+    appointments all draw on it, there is no separate picker per flow - so it is the one
+    place where hiding the dead actually prevents the mistake. PET-00191 was offered here
+    like any other animal, chosen, and only refused at submit.
+
+    `include_deceased=1` is for the views that legitimately need them: medical history,
+    the death record itself, mortality reporting.
+    """
     guardian = _require_pet_read_access()
     page = cint(page) or 1
     page_size = cint(page_size) or 10
@@ -390,6 +401,10 @@ def list_pets(page=1, page_size=10, search=None):
         filters["name"] = ["in", linked_pets]
     if search:
         filters["pet_name"] = ["like", f"%{search}%"]
+
+    # Applied before `total` as well as before the fetch: counting on one filter set and
+    # fetching on another gives a page that says 20 results and returns 19.
+    filters = apply_pet_visibility_filters(filters, exclude_deceased=not cint(include_deceased))
 
     total = frappe.db.count("Pet", filters=filters)
     start = (page - 1) * page_size
@@ -447,6 +462,216 @@ def list_pets(page=1, page_size=10, search=None):
         "has_next": page < total_pages,
         "has_prev": page > 1,
         "data": pets,
+    }
+
+
+
+# ============================================================
+# 5b) Pets of one or more guardians - THE guardian-scoped selection list
+# ============================================================
+
+# The fields every caller of the old raw PetGuardian query reads, in one place.
+# Deliberately includes the death markers even in the default (living-only)
+# response: a picker that can SEE a pet is deceased can grey the row out and say
+# why, where one that simply never receives it leaves the operator wondering
+# where the animal went.
+GUARDIAN_PET_FIELDS = [
+    "name", "pet_name", "pet_image",
+    "animal_species", "animal_type", "breed",
+    "gender", "weight", "hight", "birth_date", "color", "blood_type",
+    "status", "pet_status",
+    "is_deceased", "death_date", "death_record",
+]
+
+
+def _flag(value) -> int:
+    """Read a boolean request argument that may arrive as a bool, int or string.
+
+    `cint("true")` is 0. A GET query param is always a string, so a mortality
+    picker asking `include_deceased=true` would have been handed a list with the
+    dead silently filtered out - the exact failure this endpoint exists to stop,
+    pointed the other way. `sbool` maps "true"/"1"/"false"/"0" and passes
+    anything else through for `cint` to reduce.
+    """
+    return cint(sbool(value))
+
+
+def _normalize_guardian_ids(guardians) -> list[str]:
+    """Accept one guardian, a JSON array, or a comma-separated string.
+
+    The six callers this replaces each pass a single id; the mortality and
+    workspace views want several at once. Taking both here means neither side
+    has to build a request body for the one-guardian case.
+    """
+    if guardians is None:
+        return []
+    if isinstance(guardians, str):
+        text = guardians.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            try:
+                guardians = frappe.parse_json(text)
+            except Exception:
+                frappe.throw("Invalid guardians value")
+        else:
+            guardians = text.split(",")
+    if not isinstance(guardians, (list, tuple, set)):
+        guardians = [guardians]
+
+    seen: list[str] = []
+    for value in guardians:
+        gid = cstr(value).strip()
+        if gid and gid not in seen:
+            seen.append(gid)
+    return seen
+
+
+def _require_guardian_pets_access(guardian_ids: list[str]) -> list[str]:
+    """Resolve which of the requested guardians the caller may actually read.
+
+    A guardian user is silently narrowed to themselves rather than refused: the
+    portal has no business asking for another guardian, and a 403 on a picker
+    is a worse failure than an empty one. Staff go through the same Pet read
+    check `_require_pet_read_access` uses, so this endpoint grants nothing that
+    `list_pets` does not already grant.
+    """
+    if frappe.session.user == "Guest":
+        frappe.throw("Not permitted", frappe.PermissionError)
+
+    own_guardian = _guardian_for_current_user()
+    if own_guardian:
+        return [own_guardian] if (not guardian_ids or own_guardian in guardian_ids) else []
+
+    if not frappe.has_permission("Pet", ptype="read"):
+        frappe.throw("Not permitted", frappe.PermissionError)
+    if not frappe.has_permission("PetGuardian", ptype="read"):
+        frappe.throw("Not permitted", frappe.PermissionError)
+    return guardian_ids
+
+
+@frappe.whitelist()
+@standardize_response
+def get_guardian_pets(
+    guardians=None,
+    search=None,
+    include_deceased=False,
+    include_archived=False,
+    page=1,
+    page_size=0,
+):
+    """The pets of one or more guardians. Deceased excluded unless asked for.
+
+    This exists because the guardian-scoped picker was the one selection surface
+    with no method behind it: the client issued a raw
+    `/api/resource/PetGuardian?fields=[...pet_id.status...]` and assembled the
+    list itself, so none of the deceased filtering applied to the other
+    selection endpoints could reach it. PET-00191 was offered for boarding that
+    way. A rule that lives in a method only binds the callers that call it,
+    which is why this ships alongside a PetGuardian permission query.
+
+    `include_deceased=1` is the mortality path - the death report picker and the
+    guardian's own memorial view legitimately want the dead, and they are the
+    reason this is an opt-in rather than a filter nobody can turn off.
+
+    Returns one row per PET, not per link row. `pet_id` is unique on
+    PetGuardian today only by convention - nothing constrains it - so asking for
+    several guardians who share an animal must not put that animal in the picker
+    twice. The link that names it is chosen by the same primary_owner-first rule
+    the rest of the codebase uses, and every matching link is kept in `links`.
+    """
+    guardian_ids = _normalize_guardian_ids(guardians)
+    allowed = _require_guardian_pets_access(guardian_ids)
+    if not allowed:
+        return _empty_guardian_pets(guardian_ids, page, page_size)
+
+    links = frappe.get_all(
+        "PetGuardian",
+        filters={"guardian_id": ["in", allowed]},
+        fields=["name", "pet_id", "guardian_id", "role"],
+    )
+    links = [row for row in links if row.get("pet_id")]
+    if not links:
+        return _empty_guardian_pets(allowed, page, page_size)
+
+    # Applied to the count as well as the fetch, for the reason list_pets spells
+    # out: counting on one filter set and paging on another reports a total the
+    # pages cannot produce.
+    filters = {"name": ["in", sorted({row["pet_id"] for row in links})]}
+    if not _flag(include_archived):
+        filters["pet_status"] = ["!=", "Archived"]
+    if search:
+        filters["pet_name"] = ["like", f"%{cstr(search).strip()}%"]
+    filters = apply_pet_visibility_filters(filters, exclude_deceased=not _flag(include_deceased))
+
+    pets = frappe.get_all(
+        "Pet",
+        filters=filters,
+        fields=GUARDIAN_PET_FIELDS,
+        order_by="pet_name asc, name asc",
+    )
+
+    links_by_pet: dict[str, list[dict]] = {}
+    for row in links:
+        links_by_pet.setdefault(row["pet_id"], []).append(row)
+
+    rows = []
+    for pet in pets:
+        pet_links = links_by_pet.get(pet["name"], [])
+        primary = next((l for l in pet_links if l.get("role") == "primary_owner"), None) or (pet_links[0] if pet_links else {})
+        rows.append({
+            **pet,
+            "pet_id": pet["name"],
+            "pet_name": pet.get("pet_name") or pet["name"],
+            "is_deceased": cint(pet.get("is_deceased")),
+            "link": primary.get("name"),
+            "role": primary.get("role"),
+            "guardian_id": primary.get("guardian_id"),
+            "links": [
+                {"link": l["name"], "guardian_id": l["guardian_id"], "role": l.get("role")}
+                for l in pet_links
+            ],
+        })
+
+    total = len(rows)
+    page = cint(page) or 1
+    if page < 1:
+        page = 1
+    page_size = cint(page_size)
+    if page_size > 0:
+        start = (page - 1) * page_size
+        data = rows[start:start + page_size]
+        total_pages = math.ceil(total / page_size)
+    else:
+        # The default. Guardians hold 1.4 pets on average and 11 at the most on
+        # this site, so paging a picker that small only buys the six callers a
+        # loop they would each have to write.
+        data = rows
+        total_pages = 1 if total else 0
+
+    return {
+        "guardians": allowed,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+        "data": data,
+    }
+
+
+def _empty_guardian_pets(guardian_ids, page, page_size) -> dict:
+    page = cint(page) or 1
+    return {
+        "guardians": list(guardian_ids or []),
+        "page": page,
+        "page_size": cint(page_size),
+        "total": 0,
+        "total_pages": 0,
+        "has_next": False,
+        "has_prev": page > 1,
+        "data": [],
     }
 
 
