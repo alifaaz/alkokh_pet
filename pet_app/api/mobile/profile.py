@@ -111,13 +111,24 @@ def _primary_address(customer_id: str | None) -> dict:
 	)
 	if not address_name:
 		return {}
-	row = frappe.db.get_value(
-		"Address",
-		address_name,
-		["name", "address_line1", "address_line2", "city", "country", "is_primary_address"],
-		as_dict=True,
+	fields = ["name", "address_line1", "address_line2", "city", "country", "is_primary_address"]
+	# Guarded on meta, not assumed: between a code deploy and bench migrate the Custom
+	# Field does not exist yet, and naming a missing column here would 500 the profile.
+	if frappe.get_meta("Address").has_field("custom_notes"):
+		fields.append("custom_notes")
+
+	row = dict(
+		frappe.db.get_value(
+			"Address",
+			address_name,
+			fields,
+			as_dict=True,
+		)
+		or {}
 	)
-	return dict(row or {})
+	if "custom_notes" in row:
+		row["notes"] = row.pop("custom_notes")
+	return row
 
 
 def _profile_payload(guardian: dict) -> dict:

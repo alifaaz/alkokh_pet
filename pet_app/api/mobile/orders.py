@@ -423,6 +423,20 @@ def _assert_order_access(order_id: str, guardian: dict | None = None):
 	return frappe.get_doc("Sales Order", order_id)
 
 
+def _address_notes(address_name) -> str | None:
+	"""The delivery note lives on Address, not on the Sales Order.
+
+	Sales Order carries only the link plus ERPNext's rendered address_display HTML, and
+	the note is deliberately print_hide so it never appears in that render. Reading it
+	takes an explicit lookup - it cannot be picked up from the order's own fields.
+	"""
+	if not address_name:
+		return None
+	if not frappe.get_meta("Address").has_field("custom_notes"):
+		return None
+	return frappe.db.get_value("Address", address_name, "custom_notes")
+
+
 def _order_detail(doc) -> dict:
 	payload = _order_summary(doc)
 	payload["items"] = [_order_item(row) for row in doc.items]
@@ -439,6 +453,7 @@ def _order_detail(doc) -> dict:
 		"shipping_address_name": doc.shipping_address_name,
 		"shipping_address": doc.shipping_address,
 		"address_display": doc.address_display,
+		"notes": _address_notes(doc.shipping_address_name or doc.customer_address),
 	}
 	payload["timeline"] = _status_timeline(payload["status"])
 	return payload
