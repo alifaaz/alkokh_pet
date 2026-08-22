@@ -59,11 +59,41 @@ class TestMobileCatalogConfig(FrappeTestCase):
 		self.assertNotIn("ok", response)
 		self.assertEqual(response["error"]["code"], "catalog.request_invalid")
 
-	def test_unknown_home_filter_is_rejected(self):
+	def test_unknown_home_filter_falls_back_to_all(self):
+		"""A stale chip key must not empty the screen.
+
+		This asserted a `catalog.request_invalid` refusal until the Filter chips tab became
+		the source of the chip list. The client caches that list, so a chip removed in the
+		admin this morning is still on someone's phone this afternoon - and refusing it
+		turned a removed label into a blank shop. Unknown now degrades to "all", which shows
+		products rather than a failure and corrects itself on the next refresh.
+
+		The unknown-LIST case above is deliberately still a refusal: a bad `list` id is a
+		client bug, not a value the admin can invalidate underneath a cached app.
+		"""
 		response = catalog.list_products(**{"filter": "horse"})
 
-		self.assertNotIn("ok", response)
-		self.assertEqual(response["error"]["code"], "catalog.request_invalid")
+		self.assertTrue(response.get("ok"))
+		self.assertTrue(response["data"]["items"])
+
+	def test_configured_chips_are_served_and_filter(self):
+		payload = catalog.home_v2()
+		data = payload.get("data") or payload
+		keys = [row["key"] for row in data["filters"]]
+
+		# "all" is synthesised; the rest are the enabled rows of Mobile Home Filter.
+		self.assertEqual(keys[0], "all")
+		self.assertTrue(data["filters"][0].get("built_in"))
+		for row in data["filters"]:
+			self.assertIn("label_en", row)
+			self.assertIn("label_ar", row)
+
+		configured = [
+			catalog._filter_slug(row.get("filter_key") or row.get("name"))
+			for row in catalog._mobile_filter_chips()
+		]
+		if configured:
+			self.assertEqual(keys[1:], configured)
 
 	def test_product_filter_and_tag_helpers_use_mobile_contract(self):
 		dog_row = {
@@ -79,9 +109,22 @@ class TestMobileCatalogConfig(FrappeTestCase):
 			"tags": "hotdog,best-seller",
 		}
 
-		self.assertEqual(catalog._product_filter(dog_row), "dog")
-		self.assertTrue(catalog._product_matches_filter(dog_row, "dog"))
+		# Chip membership is the admin's `mobile_home_filter` Link and nothing else.
+		# This used to assert that a row NAMED "Adult Dog Food" classified as "dog" purely
+		# from its text. That guess is gone by decision: a filter that shows everything is
+		# not a filter, and a product filed under a chip because of a word in its name was
+		# never assigned to that chip by anyone.
+		self.assertEqual(catalog._product_filter(dog_row), "")
+		self.assertFalse(catalog._product_matches_filter(dog_row, "dog"))
+		# ...but an unclassified product is still everything's business under "all".
 		self.assertTrue(catalog._product_matches_filter(dog_row, "all"))
+
+		assigned_row = dict(dog_row, mobile_home_filter="dog")
+		self.assertEqual(catalog._product_filter(assigned_row), "dog")
+		self.assertTrue(catalog._product_matches_filter(assigned_row, "dog"))
+		self.assertFalse(catalog._product_matches_filter(assigned_row, "cat"))
+
+		# Tags are a separate axis and are unchanged - still a free-text substring match.
 		self.assertTrue(catalog._product_matches_tag(dog_row, "best-seller"))
 		self.assertTrue(catalog._product_matches_tag(dog_row, "DOG"))
 		self.assertFalse(catalog._product_matches_tag(hotdog_row, "dog"))

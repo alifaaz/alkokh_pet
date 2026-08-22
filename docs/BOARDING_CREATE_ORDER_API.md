@@ -2,7 +2,8 @@
 
 **Status** current as of 2026-08-17
 **Breaking:** `create_order` now requires `pet`. **Additive:** `reserve_room` gains `petIds`;
-`create_order` gains `dose_option` and `warehouse` for `kind=medication`.
+`create_order` gains `dose_option` and `warehouse` for `kind=medication`, and **`provider`**
+for every kind.
 
 Everything here is read from the implementation and from real responses captured against
 a live site. Where a shape is surprising it is called out rather than smoothed over.
@@ -11,6 +12,7 @@ a live site. Where a shape is surprising it is called out rather than smoothed o
 |---|---|---|
 | [`create_order`](#part-a--create_order) | `pet` required | **yes** — ship with the client |
 | [`create_order`](#2-request) | `dose_option`, `warehouse` added | no — both optional |
+| [`create_order`](#22-provider--who-performs-the-work) | `provider` added; echoed on `billable_items[]` with `provider_name` | no — optional, absence unchanged |
 | [`reserve_room`](#part-b--reserve_room) | `petIds` list added | no — `petId` still works |
 | [`get_boarding_detail`](#1-the-occupant-read-shape) | now returns `occupants[]` | no — additive |
 | [`add_occupant`](#4-add_occupant--a-pet-joins-an-existing-booking) | new — a pet joins mid-stay | no — new endpoint |
@@ -71,6 +73,11 @@ something new, the signature has to gain it first. Conversely, every name in thi
 | `note` | string | no | Free text |
 | `dose_option` | string — Medication Dose Option name | no | **`medication` only**, ignored for other kinds. Which dose this order is for. Needed only when the medication offers more than one enabled dose option — see [2.1](#21-dose_option-and-warehouse-medication-only) |
 | `warehouse` | string — Warehouse name | no | **`medication` only**, ignored for other kinds. Where the goods leave from at dispense. Blank falls back to `Medication.default_warehouse`, then Stock Settings' default |
+| `dosage` | string | no | **`medication` only.** Free text — `"0.5 cc"`, `"1 tablet"`. Not `dose_option` |
+| `frequency` | string | no | **`medication` only.** Free text — `"BID"`, `"every 8h"` |
+| `duration_days` | int | no | **`medication` only.** Stored only; does **not** multiply `qty`, `rate` or `amount` |
+| `scheduled_datetime` | string — datetime | no | When the order is due. Never defaulted; absent means "do it now". All kinds |
+| `provider` | string — **Healthcare Practitioner name** | no | Who performs the work. Never defaulted to the caller. All kinds — see [2.2](#22-provider--who-performs-the-work) |
 
 ### 2.1 `dose_option` and `warehouse` (medication only)
 
@@ -147,6 +154,59 @@ One of `System Manager`, `Healthcare Practitioner`, `Doctor`, `Accounts User`, `
 (`Lab` / `Imaging` / `PetCareService`), or `read` on `Medication`.
 
 ---
+
+### 2.2 `provider` — who performs the work
+
+**Send the Healthcare Practitioner docname**, e.g. `HCP-00072`. Not a User email.
+
+`provider` is a **Link to `Healthcare Practitioner`** everywhere it exists in this system —
+`PetCareService.provider`, `Pet Procedure.provider` and now `Pet Billable Item.provider`.
+This is the same identifier the visit path has always wanted; the picker's `option.id` is
+already correct and needs no change.
+
+> Earlier revisions of [`frontend-visit-orders-billing-handoff.md`](frontend-visit-orders-billing-handoff.md)
+> showed `provider: "provider@example.com"`. That was **wrong documentation, not a wrong
+> field** — it has been corrected. Visit-path assignment was never broken by it.
+
+A **User email is accepted as a convenience** and resolved through
+`Healthcare Practitioner.user_id`, so a caller holding only a login still gets the
+assignment stored. It is resolved, not stored: what comes back is always the docname. If
+the email matches two practitioners the call is refused rather than guessing.
+
+**Optional, and absence stays valid.** An unassigned order is the ordinary "whoever is
+free" case and works exactly as before. It is **never defaulted to `frappe.session.user`** —
+a defaulted assignee is indistinguishable from a real one, and the desk would lose the
+ability to see what still needs assigning. Same rule as `scheduled_datetime`.
+
+**An unresolvable provider refuses the call.** `{"ok": false, "meta": {"code":
+"ValidationError"}}` with *"Provider `X` is not a Healthcare Practitioner."* Nothing is
+created — no order document, no billable row. Resolution happens before the first write, so
+a bad value cannot leave a Lab behind and fail on the boarding save.
+
+**Where it is stored, per kind.** It always lands on the billable row. It additionally lands
+on the order document wherever that document has somewhere to put it:
+
+| kind | order document | `provider` on the document | on the billable row |
+|---|---|:--:|:--:|
+| `service` | `PetCareService` | ✅ `PetCareService.provider` | ✅ |
+| `lab` | `Lab` | ❌ — `Lab` has `doctor`, not `provider` | ✅ |
+| `radiology` | `Imaging` | ❌ — `Imaging` has `doctor`, not `provider` | ✅ |
+| `medication` | *(none — the row is the order)* | — | ✅ |
+
+Lab and Imaging carry a `doctor` (who ordered) and no `provider` (who performs). Rather than
+add a field to two shared clinical doctypes for boarding's sake, the assignment for those
+kinds lives on the billable row alone — which is the row the orders panel reads, so it is
+visible either way. If a lab or imaging assignee needs to reach the Lab/Imaging worklists
+themselves, say so and it becomes a separate change.
+
+**Medication accepts it too.** The frontend does not offer an assignee on medication and is
+not asked to, but a `provider` sent with `kind=medication` is stored rather than dropped —
+dropping a value the caller supplied is the defect this parameter exists to close.
+
+**No billing effect.** Who performs the work never touches `qty`, `rate` or `amount`, and
+never reaches the invoice. No availability, roster or qualification check is performed: a
+wrong assignment is a desk decision, not an API refusal.
+
 
 ## 3. Response
 
@@ -228,6 +288,15 @@ at the top level** for legacy callers — it is not a second payload. **Read fro
 | `dose_option`, `warehouse` | medication only — echoed back exactly as sent, or `null` |
 | `stock_issued_qty` | medication only — stock units actually issued at dispense, in the **Item's own stock UOM**. `0` means no stock moved, which is the normal case for a medication with no dose option |
 | `stock_entry` | medication only — the most recent Stock Entry this row issued or returned; `null` when none |
+| `dosage`, `frequency`, `duration_days` | medication only — echoed exactly as sent, or `null` |
+| `scheduled_datetime` | when the order is due, or `null`. All kinds |
+| `provider` | **Healthcare Practitioner name** performing the work, or `null` when unassigned. All kinds |
+| `provider_name` | display name for `provider`, or `null`. Present so the orders panel needs no second lookup |
+
+> **`provider` is read back, never assumed.** The row is the only proof the assignment
+> stored. If a client's `provider` failed to store, this reads `null` — the order shows as
+> unassigned rather than showing the name still sitting in the form. Render from this field,
+> not from what you sent. Same rule as `scheduled_datetime`.
 
 > **`Included` is not `Cancelled`.** A medication on a Treatment boarding is absorbed by the
 > medical rate: the row keeps its true `rate`, never reaches an invoice line, and **still

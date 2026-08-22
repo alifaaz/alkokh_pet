@@ -250,6 +250,67 @@ def _set_sales_order_delivery_coordinates(doc, delivery_lat=None, delivery_lng=N
     }
 
 
+def _first_existing_value(doc, fieldnames):
+    for fieldname in fieldnames:
+        if doc.meta.has_field(fieldname):
+            return flt(doc.get(fieldname))
+    return 0.0
+
+
+def _copy_address_coordinates_to_order(doc):
+    """Fall back to the shipping address's saved pin when the order carries none.
+
+    The two coordinate pairs answer different questions and must not be collapsed into
+    one. `Address.custom_latitude` is "where this address is": stable, reused across
+    orders, and the guardian can move it. `Sales Order.custom_delivery_latitude` is
+    "where this delivery went": a historical fact that must stay true after the guardian
+    later drags the pin on their saved address. So this copies forward at creation and
+    never afterwards, and never in the other direction.
+
+    Three refusals, in order of how easily each would be got wrong:
+
+    - An order that already has coordinates is left alone. The app sends a per-delivery
+      pin when the user adjusts the map at checkout, and that is the more specific
+      signal - "deliver to the side gate today" must beat the address's stored default.
+    - Nothing is ever written back to the Address. A one-off adjustment is not a
+      correction to the saved address, and treating it as one would let a single odd
+      delivery quietly relocate every future order to that address.
+    - (0, 0) on the Address means unset, not the Gulf of Guinea. Frappe's Float column
+      is NOT NULL DEFAULT 0, so this is the only "empty" available; the mobile API makes
+      the same read in `_coordinate_value`.
+
+    A no-op until `address_delivery_coordinates` has run, because the guard below finds
+    no such field. Safe to deploy ahead of the patch.
+    """
+    address = doc.get("shipping_address_name")
+    if not address:
+        return None
+
+    if _first_existing_value(doc, DELIVERY_LATITUDE_FIELDS) or _first_existing_value(
+        doc, DELIVERY_LONGITUDE_FIELDS
+    ):
+        return None
+
+    address_meta = frappe.get_meta("Address")
+    if not (address_meta.has_field("custom_latitude") and address_meta.has_field("custom_longitude")):
+        return None
+
+    row = frappe.db.get_value(
+        "Address", address, ["custom_latitude", "custom_longitude"], as_dict=True
+    )
+    if not row:
+        return None
+
+    latitude = flt(row.get("custom_latitude"))
+    longitude = flt(row.get("custom_longitude"))
+    if not latitude and not longitude:
+        return None
+
+    return _set_sales_order_delivery_coordinates(
+        doc, delivery_lat=latitude, delivery_lng=longitude
+    )
+
+
 
 def _coupon_validation_response(message, coupon_code=None, http_status_code=422):
     frappe.local.response["http_status_code"] = http_status_code
@@ -702,6 +763,9 @@ def place_order(customer=None, items=None, payment_method="Cash on Delivery",
     _set_sales_order_delivery_coordinates(so, delivery_lat=delivery_lat, delivery_lng=delivery_lng)
     if shipping_address_name:
         so.shipping_address_name = shipping_address_name
+    # After the address is set and after any per-delivery pin from the caller, so it can
+    # see both. Fills the coordinates only when the caller supplied none.
+    _copy_address_coordinates_to_order(so)
     # ERPNext's pricing engine now owns discounts on this path. The flag stays at 1 on
     # the clinical invoice paths (boarding.py, vet_visit.py), which compute their own
     # rates and must not have them overwritten.

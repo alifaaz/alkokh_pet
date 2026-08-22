@@ -1,5 +1,14 @@
 # Frontend Handoff: Visit Orders, Work Flows, and Billable Items
 
+> **Correction (2026-08-20): `provider` is a Healthcare Practitioner docname, not a User
+> email.** Earlier revisions of this document showed `provider: "provider@example.com"`.
+> That was wrong documentation, not a wrong field. `PetCareService.provider` and
+> `Pet Procedure.provider` are both `Link → Healthcare Practitioner` and always have been,
+> and live data confirms it: 2,922 of 2,962 `PetCareService` rows carry a practitioner
+> docname and **zero** carry anything email-shaped. **Visit-path assignment was never broken
+> by this** — the order dialog's picker submits `option.id`, which is already the docname.
+> Every example below has been corrected to `"HCP-00072"`.
+
 ## Purpose
 
 This document explains how the Vue visit page should handle clinical orders, linked operational work, and billing rows.
@@ -204,7 +213,7 @@ frappe.call({
           kind: "service",
           title: "Grooming",
           care_service_id: "CareService-00006",
-          provider: "provider@example.com",
+          provider: "HCP-00072",
           due_date: "2026-05-18",
           note: "Full grooming"
         }
@@ -232,7 +241,7 @@ frappe.call({
           kind: "procedure",
           title: "Minor wound care",
           procedure_template: "Minor Wound Care",
-          provider: "provider@example.com",
+          provider: "HCP-00072",
           scheduled_at: "2026-05-18 10:00:00",
           priority: "Normal",
           note: "Clean and dress wound"
@@ -588,7 +597,7 @@ type CreateProcedureOrderPayload = {
   procedure_template: string
   care_service?: string
   care_service_id?: string
-  provider?: string
+  provider?: string // Healthcare Practitioner name, e.g. "HCP-00072" — NOT a User email
   scheduled_at?: string
   priority?: "Low" | "Normal" | "Urgent" | "Emergency"
   indication?: string
@@ -665,7 +674,7 @@ frappe.call({
     name: procedureName,
     action: "start_procedure",
     payload: {
-      provider: "provider@example.com"
+      provider: "HCP-00072"
     }
   }
 })
@@ -843,7 +852,7 @@ frappe.call({
     name: serviceName,
     action: "start_service",
     payload: {
-      provider: "provider@example.com",
+      provider: "HCP-00072",
       description: "Started grooming."
     }
   }

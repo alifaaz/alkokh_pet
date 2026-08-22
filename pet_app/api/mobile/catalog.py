@@ -51,6 +51,9 @@ HOME_CATEGORY_COLORS = (
 
 PRODUCT_FIELDS = [
 	"name",
+	# The chip a product was assigned to in the admin. Selected here so _product_filter can
+	# read it; without it every row would fall through to the text guess.
+	"mobile_home_filter",
 	"product_name",
 	"sku",
 	"description",
@@ -220,28 +223,36 @@ def _product_tag_values(row) -> set[str]:
 
 
 def _product_filter(row) -> str:
-	parts = [
-		row.get("category"),
-		row.get("tags"),
-		row.get("product_name"),
-		row.get("name"),
-	]
-	text = " ".join(cstr(part).lower() for part in parts if part)
-	if "dog" in text:
-		return "dog"
-	if "cat" in text:
-		return "cat"
-	if "fish" in text or "aquatic" in text or "aqua" in text:
-		return "fish"
-	if "bird" in text:
-		return "bird"
-	return "other"
+	"""The chip this product was assigned to, or "" if nobody assigned one.
+
+	`Product.mobile_home_filter` - the Link set from Product add/edit - is the only answer.
+	There is deliberately no fallback guess.
+
+	This used to sniff the category, tags and name for "dog"/"cat"/"fish"/"bird" and label
+	anything else "other", which meant the admin's assignment changed nothing and a product
+	could be filed under a chip purely because its name contained a word. The owner's rule
+	settles it: a filter that shows everything is not a filter. An unclassified product is
+	not silently classified for us - it is unclassified, and it says so by returning "".
+
+	The consequence is deliberate and visible rather than hidden: an unassigned product
+	appears under `all` and under no chip at all, so tapping a chip shows only what has
+	actually been classified. That is the same rule the published path has always applied -
+	`home_builder._products_for_filter` queries this exact column - so the two paths now
+	answer identically instead of one guessing.
+	"""
+	return _filter_slug(row.get("mobile_home_filter"))
 
 
 def _product_matches_filter(row, filter_key: str | None) -> bool:
+	"""Everything under `all`; only what carries the chip under a chip.
+
+	The `""` an unclassified product returns can never equal a real key, so exclusion falls
+	out of the comparison rather than needing its own branch - and a chip key that is itself
+	blank has already been normalised to "all" upstream, so it cannot match its way in here.
+	"""
 	if not filter_key or filter_key == "all":
 		return True
-	return _product_filter(row) == filter_key
+	return bool(_product_filter(row)) and _product_filter(row) == filter_key
 
 
 def _product_matches_tag(row, tag: str | None) -> bool:
@@ -544,8 +555,105 @@ def _home_product_list_config(list_id: str | None) -> dict | None:
 	return configs.get(normalized)
 
 
-def _home_filters() -> list[dict]:
-	return [{"key": key, "label": _(label)} for key, label in HOME_FILTERS]
+def _mobile_filter_chips() -> list[dict]:
+	"""The enabled chips the admin configured, in their configured order.
+
+	THE source. `HOME_FILTERS` below it is a last-resort default for a site that has never
+	opened the Filter chips tab - not the answer for one that has. Serving the literal to a
+	site with three configured chips is what made the tab look broken: the admin added Cat
+	and Fish, removed Bird and Other, and the app kept showing all six.
+	"""
+	if not _doctype_exists("Mobile Home Filter"):
+		return []
+	try:
+		return frappe.get_all(
+			"Mobile Home Filter",
+			filters={"enabled": 1},
+			fields=["name", "filter_key", "label_en", "label_ar", "display_order"],
+			order_by="display_order asc, label_en asc, name asc",
+			ignore_permissions=True,
+		)
+	except Exception:
+		return []
+
+
+def _home_filters(locale: str = "en") -> list[dict]:
+	"""`all` plus every enabled chip. Both labels always, so the client can relabel offline.
+
+	`all` is SYNTHESISED, not stored, and deliberately: it is not a filter but the absence
+	of one, it can never be disabled or reordered without breaking the screen, and it has
+	no product membership to assign. Storing it would put a row in the tab that the admin
+	must not edit, which is a worse thing to explain than a row that is not there.
+	"""
+	chips = _mobile_filter_chips()
+	if not chips:
+		# Never configured. Keep the historical six rather than a screen with one chip.
+		# Same SHAPE as the configured path - a client must not have to test which branch
+		# produced its chips, and `built_in` being absent on one of them is exactly the
+		# kind of difference that becomes a null check in the app.
+		return [
+			{
+				"key": key,
+				"label": _(label),
+				"label_en": label,
+				"label_ar": label,
+				"built_in": key == "all",
+			}
+			for key, label in HOME_FILTERS
+		]
+
+	all_en, all_ar = "All", "الكل"
+	filters = [
+		{
+			"key": "all",
+			"label": all_ar if locale == "ar" else all_en,
+			"label_en": all_en,
+			"label_ar": all_ar,
+			"built_in": True,
+		}
+	]
+	for row in chips:
+		key = _filter_slug(row.get("filter_key") or row.get("name"))
+		if not key or key == "all":
+			continue
+		label_en = cstr(row.get("label_en")).strip() or key.replace("-", " ").title()
+		label_ar = cstr(row.get("label_ar")).strip() or label_en
+		filters.append(
+			{
+				"key": key,
+				"label": label_ar if locale == "ar" else label_en,
+				"label_en": label_en,
+				"label_ar": label_ar,
+				"built_in": False,
+			}
+		)
+	return filters
+
+
+def _filter_slug(value) -> str:
+	return cstr(value).strip().lower()
+
+
+def _known_filter_keys() -> set[str]:
+	"""What the server will honour. Derived from the same rows the chips come from."""
+	keys = {_filter_slug(row.get("filter_key") or row.get("name")) for row in _mobile_filter_chips()}
+	keys.discard("")
+	return keys or set(HOME_FILTER_KEYS)
+
+
+def _normalize_filter_key(value) -> str:
+	"""A usable filter key, or "" meaning all. NEVER raises.
+
+	An unknown key is treated as `all` rather than refused. The client caches the chip list,
+	so a chip the admin removed this morning is still on someone's phone this afternoon -
+	and the old behaviour, a hard `Unknown product filter` error, emptied the whole screen
+	over a stale label. Showing everything is the honest degradation: the user sees products
+	rather than a failure, and the chip disappears on the next refresh.
+	"""
+	key = _filter_slug(value)
+	if not key or key == "all":
+		return ""
+	return key if key in _known_filter_keys() else ""
 
 
 def _home_banner_payload(row) -> dict | None:
@@ -640,13 +748,27 @@ def _home_banner_blocks() -> list[dict]:
 	return blocks
 
 
-def _home_product_list_block(list_id: str, *, limit=12) -> dict | None:
+def _home_product_list_block(list_id: str, *, limit=12, filter_key: str | None = None) -> dict | None:
+	"""One product list block, narrowed to the active chip when the list respects one.
+
+	`respects_filter` was already published on every block and the client already reads it,
+	but nothing on this side ever applied the key - the flag described an intention no code
+	carried out. A chip that changes nothing is worse than no chip, so it is applied here.
+
+	Narrowed in the QUERY, so a chip returns a full page of what it has rather than the
+	leftovers of a page fetched for everything. That is only possible because membership is
+	now the `mobile_home_filter` column alone; while it was partly guessed from text it had
+	to be done after the fetch, over-fetching to compensate.
+	"""
 	config = _home_product_list_config(list_id)
 	if not config:
 		return None
 	filters = _published_product_filters()
 	filters.update(config.get("filters") or {})
-	rows = _product_rows(filters, order_by=config["order_by"], limit=_safe_limit(limit, default=12, maximum=50), cursor=0)
+	page = _safe_limit(limit, default=12, maximum=50)
+	if filter_key and config.get("respects_filter"):
+		filters["mobile_home_filter"] = filter_key
+	rows = _product_rows(filters, order_by=config["order_by"], limit=page, cursor=0)
 	products = [card for row in rows if (card := _home_product_card(row))]
 	if not products:
 		return None
@@ -788,9 +910,11 @@ def list_products(
 	if home_list and not home_list_config:
 		raise MobileCatalogError(CATALOG_REQUEST_INVALID, _("Unknown product list {0}.").format(home_list))
 
-	filter_key = cstr(kwargs.get("filter") or kwargs.get("filter_key") or kwargs.get("filterKey")).strip().lower()
-	if filter_key and filter_key not in HOME_FILTER_KEYS:
-		raise MobileCatalogError(CATALOG_REQUEST_INVALID, _("Unknown product filter {0}.").format(filter_key))
+	# Unknown or absent both mean "all" - see _normalize_filter_key for why this no longer
+	# refuses. A stale key from a cached app must not empty the screen.
+	filter_key = _normalize_filter_key(
+		kwargs.get("filter") or kwargs.get("filter_key") or kwargs.get("filterKey")
+	)
 	tag = cstr(kwargs.get("tag")).strip().lower()
 
 	filters = _published_product_filters()
@@ -817,15 +941,23 @@ def list_products(
 		"newest": "creation desc",
 	}.get(cstr(sort), default_order_by)
 
+	# Pushed into the query, not applied to the fetched page. Chip membership is a plain
+	# indexed column now that nothing is derived from text, so the database can do it - and
+	# it has to, because post-filtering a cursor page makes `hasMore` and `nextCursor` lie
+	# about a result set the caller never saw. `tag` stays a row filter; it is a substring
+	# match over a free-text column and has no equivalent.
+	if filter_key:
+		filters["mobile_home_filter"] = filter_key
+
 	def row_filter(row):
-		return _product_matches_filter(row, filter_key) and _product_matches_tag(row, tag)
+		return _product_matches_tag(row, tag)
 
 	return _post_filtered_products_page(
 		filters,
 		limit=limit,
 		cursor=cursor,
 		order_by=order_by,
-		row_filter=row_filter if filter_key or tag else None,
+		row_filter=row_filter if tag else None,
 	)
 
 
@@ -916,12 +1048,19 @@ def home_v2(lang=None, **kwargs):
 	if published:
 		return published
 
+	# Normalised once for the whole response, so the chips listed and the products returned
+	# can never be answering different keys. "" means all.
+	active_filter = _normalize_filter_key(
+		kwargs.get("filter_key") or kwargs.get("filterKey") or kwargs.get("filter")
+	)
+	locale = _home_locale(lang or kwargs.get("locale"))
+
 	blocks = []
 	blocks.extend(_home_banner_blocks())
 	for block in (
-		_home_product_list_block("best-sellers"),
+		_home_product_list_block("best-sellers", filter_key=active_filter),
 		_home_category_grid(),
-		_home_product_list_block("back-in-stock", limit=8),
+		_home_product_list_block("back-in-stock", limit=8, filter_key=active_filter),
 		_home_brand_strip(),
 	):
 		if block:
@@ -936,8 +1075,11 @@ def home_v2(lang=None, **kwargs):
 		"version": HOME_SCHEMA_VERSION,
 		"updated_at": _home_updated_at(),
 		"cache_ttl_seconds": HOME_CACHE_TTL_SECONDS,
-		"locale": _home_locale(lang or kwargs.get("locale")),
-		"filters": _home_filters(),
+		"locale": locale,
+		"filters": _home_filters(locale),
+		# Echoed so a client can see which key the server actually honoured - an unknown one
+		# comes back as "all" rather than as the key it sent.
+		"active_filter": active_filter or "all",
 		"blocks": blocks,
 	}
 

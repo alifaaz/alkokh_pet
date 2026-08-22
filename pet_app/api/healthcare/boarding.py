@@ -504,6 +504,33 @@ def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_c
 			"billing_status": "Unbilled",
 		}
 	)
+	# The visit's animal becomes an occupant HERE, before the insert, not after it.
+	#
+	# This path used to set the legacy `pet` scalar and stop, and it was the only
+	# booking-creation path in the app that did. Everything downstream reads occupants:
+	# `room_occupancy` and the hub's per-room count, the booking's own roster, the
+	# deceased gate at check-in, per-pet pricing. All of them iterate a list, so on a
+	# booking with no rows they iterate nothing and report nothing wrong - the room drew
+	# Available with an animal asleep in it, the stay read "0 pets", and the room-stay
+	# charge still appeared because `_ensure_room_stay_billable_item` falls back to
+	# `_synthetic_occupant` off the scalar. Six bookings reached that state; BRD-00117
+	# was the one somebody finally noticed.
+	#
+	# ORDERING: append, then price, then ONE insert. Do not move the append below
+	# `insert()` and re-save - that is the shape this codebase has now been bitten by
+	# three times, and it is the same shape every time. See
+	# `pet_app/utils/sales_invoice_guard.py:50` (`_refresh_payment_schedule`): a stale
+	# Payment Schedule CHILD row silently overwrote the parent's `due_date` through
+	# `AccountsController.set_due_date()`, and 562 of 713 open drafts could not be saved.
+	# A parent and its children are one document. Writing the parent first leaves a
+	# committed record that is already wrong, and every later path that "just adds the
+	# child" is reading a document that has moved underneath it.
+	#
+	# `service_room` and `joined_at` are deliberately empty: this booking is Pending Room,
+	# so there is no kennel yet, and reserving one is not the animal arriving in it. The
+	# room-assignment path stamps the room and check-in stamps the arrival - both of them
+	# loops over `active_occupants`, which is exactly why the row has to exist by then.
+	_append_reservation_occupants(boarding, [pet], None, resolved_type, None)
 	boarding.insert(ignore_permissions=True)
 	# The type and where it came from are recorded on the record itself: when a stay is
 	# later queried at the travel or medical rate, the trail says whether a person picked
@@ -1152,8 +1179,16 @@ def check_in_boarding(boarding_id, deposit=None):
 	# Every active occupant, not the nominal pet: that is the distinction nezoko slipped
 	# through. Refused as a whole; one dead animal stops the check-in rather than the other
 	# six arriving and the dead one being quietly skipped.
-	for occupant in active_occupants(boarding):
-		assert_pet_not_deceased(cstr(occupant.pet).strip(), action=_("be checked in"))
+	#
+	# Read through `boarding_pets`, which answers from the occupant rows when there are any
+	# and from the legacy `pet` scalar when there are none. Iterating `active_occupants`
+	# directly made this gate NO-OP on a booking with no rows: the loop had nothing to walk,
+	# so no animal was checked at all and a dead pet would have been admitted in silence.
+	# `_start_visit_boarding_atomic` produced exactly those bookings until the fix above,
+	# and the room-assignment path already reads both shapes for this same reason. A gate
+	# that fails open on an empty list is worse than no gate, because it reads as enforced.
+	for pet_name in boarding_pets(boarding):
+		assert_pet_not_deceased(pet_name, action=_("be checked in"))
 
 	with _service_room_lock(boarding.service_room):
 		existing = get_active_boarding_for_room(boarding.service_room, exclude_name=boarding.name)
@@ -1810,6 +1845,7 @@ def create_order(
 	frequency=None,
 	duration_days=None,
 	scheduled_datetime=None,
+	provider=None,
 ):
 	"""Raise a single lab / imaging / care-service order for a checked-in boarding.
 
@@ -1820,6 +1856,14 @@ def create_order(
 
 	``pet`` is REQUIRED and names the animal the order is for. A stay holds one pet today,
 	so it can only be that pet - but see _resolve_order_pet for why it is not defaulted.
+
+	``provider`` names WHO PERFORMS the work, as a Healthcare Practitioner docname. It is
+	optional and absence stays valid; see _coerce_provider for why it is never defaulted to
+	the caller. It lands on the billable row for every kind, and additionally on the order
+	document itself wherever that document has somewhere to put it - which today is
+	PetCareService only. Lab and Imaging carry a `doctor`, not a `provider`, so a boarding
+	lab or imaging order records its assignee on the billing row alone; that is the row the
+	orders panel reads, so the assignment is visible either way.
 	"""
 	_require_boarding_write_access()
 
@@ -1846,6 +1890,9 @@ def create_order(
 	# Parsed once, here, so the order document and the billable row cannot end up holding
 	# different moments for the same order.
 	scheduled = _coerce_scheduled_datetime(scheduled_datetime)
+	# Resolved BEFORE anything is written, so an unresolvable practitioner refuses the call
+	# instead of leaving a created Lab behind and failing on the boarding save.
+	order_provider = _coerce_provider(provider)
 	care_service = care_service_id or template_id
 
 	boarding = frappe.get_doc("Pet Boarding", boarding_name)
@@ -1866,6 +1913,7 @@ def create_order(
 			frequency=frequency,
 			duration_days=duration_days,
 			scheduled_datetime=scheduled,
+			provider=order_provider,
 		)
 
 	order_doctype = ORDER_KIND_DOCTYPE[kind]
@@ -1885,11 +1933,11 @@ def create_order(
 
 	order = _create_boarding_order_doc(
 		boarding, kind, pet=order_pet, care_service=care_service, item_code=item_code, priority=priority, note=note,
-		scheduled_datetime=scheduled,
+		scheduled_datetime=scheduled, provider=order_provider,
 	)
 	_append_boarding_order_billable(
 		boarding, kind, order, care_service=care_service, item_code=item_code, note=note,
-		scheduled_datetime=scheduled,
+		scheduled_datetime=scheduled, provider=order_provider,
 	)
 	_log_boarding_event(
 		"BOARDING_ORDER_CREATED",
@@ -2687,6 +2735,7 @@ def _create_boarding_medication_order(
 	frequency: str | None = None,
 	duration_days=None,
 	scheduled_datetime=None,
+	provider=None,
 ) -> dict:
 	require_doctype_permission("Medication", "read")
 	medication_name = cstr(medication).strip()
@@ -2792,6 +2841,11 @@ def _create_boarding_medication_order(
 	# anchor, and it is the only one of the four that a worklist can sort on.
 	if scheduled_datetime:
 		_set_child_value_if_field(row, "scheduled_datetime", _coerce_scheduled_datetime(scheduled_datetime))
+	# WHO gives it. The frontend does not offer an assignee on medication today and is not
+	# asked to; this stores one anyway if a caller sends it, because the row has the field
+	# and dropping a value the caller supplied is the exact defect this change closes.
+	if provider:
+		_set_child_value_if_field(row, "provider", provider)
 
 	boarding.run_method("_apply_billable_item_amounts")
 	boarding.run_method("_compute_totals")
@@ -2811,7 +2865,7 @@ def _create_boarding_medication_order(
 	return _boarding_medication_order_response(boarding, row)
 
 
-def _create_boarding_order_doc(boarding, kind, *, pet, care_service, item_code, priority, note, scheduled_datetime=None):
+def _create_boarding_order_doc(boarding, kind, *, pet, care_service, item_code, priority, note, scheduled_datetime=None, provider=None):
 	order_id = _boarding_order_id(boarding, kind, care_service, pet)
 	if kind == "service":
 		template = frappe.db.get_value(
@@ -2853,6 +2907,11 @@ def _create_boarding_order_doc(boarding, kind, *, pet, care_service, item_code, 
 	# nowdate()` to be added beside the ones already on `due_date`.
 	if scheduled_datetime:
 		_set_child_value_if_field(doc, "scheduled_datetime", scheduled_datetime)
+	# Same rule, same reason: written only when one was given, and only where the document
+	# has the field. Lab and Imaging do not - they carry a `doctor` instead - so for those
+	# kinds the assignment lives on the billable row alone.
+	if provider:
+		_set_child_value_if_field(doc, "provider", provider)
 	doc.insert(ignore_permissions=True)
 	doc.add_comment(
 		"Comment", _("Created from Pet Boarding {0} by {1}.").format(boarding.name, frappe.session.user)
@@ -2860,7 +2919,7 @@ def _create_boarding_order_doc(boarding, kind, *, pet, care_service, item_code, 
 	return doc
 
 
-def _append_boarding_order_billable(boarding, kind, order, *, care_service, item_code, note, scheduled_datetime=None):
+def _append_boarding_order_billable(boarding, kind, order, *, care_service, item_code, note, scheduled_datetime=None, provider=None):
 	resolved_item, rate, item_name = _resolve_order_billing(order, care_service, item_code)
 	row = boarding.append(
 		"billable_items",
@@ -2885,6 +2944,12 @@ def _append_boarding_order_billable(boarding, kind, order, *, care_service, item
 	# it does not touch qty, rate or amount, and never reaches the invoice.
 	if scheduled_datetime:
 		_set_child_value_if_field(row, "scheduled_datetime", scheduled_datetime)
+	# The assignment rides on the billing row for the same reason the schedule does: it is
+	# the row the caller reads back, and for kinds whose order document has no provider
+	# field it is the only place the assignment can live. Recorded only - who does the work
+	# does not change what is charged, so it never touches qty, rate or amount.
+	if provider:
+		_set_child_value_if_field(row, "provider", provider)
 	boarding.run_method("_apply_billable_item_amounts")
 	boarding.run_method("_compute_totals")
 	boarding.save()
@@ -3760,6 +3825,11 @@ def _serialize_billable_item(row) -> dict:
 		"stock_entry": row.get("stock_entry"),
 		# Echoed under the same name the client sends, so nothing has to be inferred.
 		"scheduled_datetime": row.get("scheduled_datetime"),
+		# Read back from the stored row, never from the request, so an assignment that
+		# failed to store reads as unassigned rather than as the name still in the form.
+		# `provider_name` rides along so the orders panel does not need a second lookup.
+		"provider": row.get("provider"),
+		"provider_name": row.get("provider_name"),
 	}
 
 
@@ -3945,6 +4015,51 @@ def _coerce_scheduled_datetime(value):
 			_("Scheduled Datetime must be a valid date and time. Got {0}.").format(frappe.bold(raw))
 		)
 	return parsed
+
+
+def _coerce_provider(value):
+	"""A Healthcare Practitioner docname, or None. NEVER a default.
+
+	The canonical identifier is the Healthcare Practitioner NAME (`HCP-#####`), because
+	that is what `PetCareService.provider` and `Pet Procedure.provider` are Links to and
+	what every existing row on both holds. A User email is accepted as a convenience and
+	resolved through `user_id`, so a client that has only the login of the person still
+	gets the assignment stored rather than an error - but it is resolved, not stored, and
+	what comes back is always the docname.
+
+	Absence stays valid and is the ordinary case: an unassigned order means "whoever is
+	free". Nothing here falls back to `frappe.session.user` - a defaulted assignee is
+	indistinguishable from a real one, and the desk would lose the ability to see what
+	still needs assigning. Same rule as `scheduled_datetime`, for the same reason.
+
+	Anything present but unresolvable throws rather than being dropped. An assignment that
+	silently vanished is the whole defect this parameter exists to close: the operator
+	picked a name, the dialog accepted it, and the record never held it.
+	"""
+	if value is None:
+		return None
+	raw = cstr(value).strip()
+	if not raw:
+		return None
+	if frappe.db.exists("Healthcare Practitioner", raw):
+		return raw
+	# Only ever consulted as a fallback, and only when it identifies exactly one
+	# practitioner. Two practitioners sharing a login is a data fault, and guessing which
+	# of them was meant would store an assignment nobody made.
+	matches = frappe.get_all(
+		"Healthcare Practitioner", filters={"user_id": raw}, pluck="name", limit=2
+	)
+	if len(matches) == 1:
+		return matches[0]
+	if len(matches) > 1:
+		frappe.throw(
+			_("{0} matches more than one Healthcare Practitioner. Send the practitioner ID instead.").format(
+				frappe.bold(raw)
+			)
+		)
+	frappe.throw(
+		_("Provider {0} is not a Healthcare Practitioner.").format(frappe.bold(raw))
+	)
 
 
 def _coerce_duration_days(value) -> int:

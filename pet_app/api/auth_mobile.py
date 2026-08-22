@@ -804,9 +804,18 @@ def get_guardian_profile(guardian_id):
             total_spent  = orders_data[0].get("total") or 0.0
 
         # All addresses
-        addr_rows = frappe.db.sql("""
+        # Guarded on meta, not assumed: between a code deploy and bench migrate the
+        # Custom Field does not exist yet, and naming a missing column here would 500
+        # the whole guardian summary. NULL keeps the response shape stable either way.
+        notes_col = (
+            "a.custom_notes AS notes"
+            if frappe.get_meta("Address").has_field("custom_notes")
+            else "NULL AS notes"
+        )
+        addr_rows = frappe.db.sql(f"""
             SELECT a.name, a.address_title, a.address_type,
                    a.address_line1, a.address_line2,
+                   {notes_col},
                    a.city, a.country, a.is_primary_address
             FROM `tabAddress` a
             INNER JOIN `tabDynamic Link` dl

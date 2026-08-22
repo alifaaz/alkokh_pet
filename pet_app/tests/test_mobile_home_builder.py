@@ -6,15 +6,46 @@ from frappe.tests.utils import FrappeTestCase
 from pet_app.api.mobile import catalog, home_builder
 
 
+# Doctypes this suite creates rows in, directly or through the builder it exercises.
+BUILDER_DOCTYPES = ("Mobile Home Publication", "Mobile Home Layout", "Mobile Home Filter")
+
+
 class TestMobileHomeBuilder(FrappeTestCase):
+	"""Home builder tests. Nothing here may outlive the class, in either direction.
+
+	This suite used to clear `Mobile Home Filter`, `Mobile Home Layout` and
+	`Mobile Home Publication` outright and then `frappe.db.commit()`, and it ran that in
+	setUp AND tearDown. Pointed at a working site it deleted the owner's three configured
+	filter chips permanently, nulled `mobile_home_filter` on every product in the catalogue,
+	and left every Product it created behind. The commit is what made it permanent:
+	`IntegrationTestCase` registers its rollback with `addClassCleanup`, so without a commit
+	every write here is undone when the class finishes.
+
+	So there are two rules, and the second is the one that was missing:
+
+	  1. Never commit. `SHOW_TRANSACTION_COMMIT_WARNINGS` below makes a reintroduced commit
+	     announce itself instead of silently re-arming the same bug.
+	  2. Delete only what this suite created. `setUp` records the rows that already existed;
+	     `tearDown` removes the difference and nothing else, so a row that was on the site
+	     before the run is never a candidate for deletion in the first place.
+	"""
+
+	SHOW_TRANSACTION_COMMIT_WARNINGS = True
+
 	def setUp(self):
 		super().setUp()
 		frappe.set_user("Administrator")
-		self._clear_builder_state()
+		self._preexisting = self._snapshot_builder_state()
+		self._created_products = []
+		# Isolation, not cleanup: several tests assert an EXACT filter list, and two create
+		# rows named "cat"/"dog" that would collide with live chips of the same name. This
+		# empties the tables for the duration of the transaction only - the rows come back
+		# at class rollback because nothing here commits.
+		self._isolate_builder_state()
 
 	def tearDown(self):
 		frappe.set_user("Administrator")
-		self._clear_builder_state()
+		self._remove_created_state()
 		super().tearDown()
 
 	def test_get_builder_creates_revision_zero_layout(self):
@@ -243,6 +274,9 @@ class TestMobileHomeBuilder(FrappeTestCase):
 			doc.mobile_home_filter = mobile_home_filter
 		doc.flags.ignore_permissions = True
 		doc.insert(ignore_permissions=True)
+		# Tracked so tearDown can remove it. Untracked, these leaked: 14 fixture products
+		# with names like "Stale Revision Food f492674b71" were left in a live catalogue.
+		self._created_products.append(doc.name)
 		return doc
 
 	def _publish(self, saved):
@@ -261,17 +295,48 @@ class TestMobileHomeBuilder(FrappeTestCase):
 				return [product["id"] for product in block["data"]["products"]]
 		return []
 
-	def _clear_builder_state(self):
-		if frappe.db.exists("DocType", "Product"):
-			try:
-				if frappe.get_meta("Product").has_field("mobile_home_filter"):
-					frappe.db.sql("update `tabProduct` set mobile_home_filter = null")
-			except Exception:
-				pass
-		if frappe.db.exists("DocType", "Mobile Home Filter"):
-			frappe.db.delete("Mobile Home Filter")
-		if frappe.db.exists("DocType", "Mobile Home Layout"):
-			frappe.db.delete("Mobile Home Layout")
-		if frappe.db.exists("DocType", "Mobile Home Publication"):
-			frappe.db.delete("Mobile Home Publication")
-		frappe.db.commit()
+	def _snapshot_builder_state(self) -> dict[str, set[str]]:
+		"""The rows that existed before this test. Everything else is ours to remove."""
+		snapshot = {}
+		for doctype in BUILDER_DOCTYPES:
+			if frappe.db.exists("DocType", doctype):
+				snapshot[doctype] = set(frappe.get_all(doctype, pluck="name", ignore_permissions=True))
+		return snapshot
+
+	def _isolate_builder_state(self):
+		"""Empty the builder tables for this transaction. Deliberately NOT committed.
+
+		Publication before Layout before Filter: a publication points at a layout, and the
+		legacy import path points a product at a filter, so removing them in the other order
+		trips link validation on a site that has real data.
+		"""
+		for doctype in BUILDER_DOCTYPES:
+			if frappe.db.exists("DocType", doctype):
+				frappe.db.delete(doctype)
+		# NOT `update tabProduct set mobile_home_filter = null` - that rewrote every product
+		# in the catalogue to clean up after the handful this suite creates. The products it
+		# creates are tracked and deleted instead, and no other product is touched.
+
+	def _remove_created_state(self):
+		"""Remove what this test created, and only that.
+
+		The difference against the setUp snapshot covers rows the builder created on its own
+		- `get_builder` writes a revision-zero Layout, and the legacy import seeds Filter
+		records - which a list of explicitly-created fixtures would miss.
+		"""
+		for product in reversed(self._created_products):
+			if frappe.db.exists("Product", product):
+				frappe.delete_doc("Product", product, force=True, ignore_permissions=True, delete_permanently=True)
+		self._created_products = []
+
+		for doctype in BUILDER_DOCTYPES:
+			if not frappe.db.exists("DocType", doctype):
+				continue
+			before = self._preexisting.get(doctype, set())
+			created = [
+				name
+				for name in frappe.get_all(doctype, pluck="name", ignore_permissions=True)
+				if name not in before
+			]
+			if created:
+				frappe.db.delete(doctype, {"name": ("in", created)})

@@ -295,7 +295,6 @@ def _medical_payload(record_type: str, row) -> dict:
 		"notes": row.get("notes"),
 		"created_at": cstr(row.get("creation") or ""),
 		"modified": cstr(row.get("modified") or ""),
-		"raw": dict(row),
 	}
 	for field in config["fields"]:
 		if field in row:
@@ -392,7 +391,6 @@ def _pet_payload(row) -> dict:
 		"images": images,
 		"is_deceased": bool(cint(row.get("is_deceased"))),
 		"death_date": cstr(row.get("death_date") or ""),
-		"raw": dict(row),
 	}
 
 
