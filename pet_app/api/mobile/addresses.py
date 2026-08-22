@@ -4,7 +4,7 @@ import functools
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, flt
 
 from pet_app.api.mobile.response import error, ok
 from pet_app.utils.guardian_customer import get_guardian_by_user, get_or_create_customer_from_guardian
@@ -127,12 +127,14 @@ def _address_payload(doc) -> dict:
 		"pincode": doc.get("pincode"),
 		"phone": doc.get("phone"),
 		"email_id": doc.get("email_id"),
+		"notes": doc.get("custom_notes"),
+		"latitude": _coordinate_value(doc, "latitude"),
+		"longitude": _coordinate_value(doc, "longitude"),
 		"is_default": bool(cint(doc.get("is_shipping_address")) or cint(doc.get("is_primary_address"))),
 		"is_shipping_address": bool(cint(doc.get("is_shipping_address"))),
 		"is_primary_address": bool(cint(doc.get("is_primary_address"))),
 		"is_disabled": bool(cint(doc.get("disabled"))) if _address_has_field("disabled") else False,
 		"display": doc.get_display() if hasattr(doc, "get_display") else cstr(doc.get("address_line1")),
-		"raw": doc.as_dict(),
 	}
 
 
@@ -150,12 +152,18 @@ def _validated_address_fields(kwargs, require_required=False, apply_defaults=Fal
 		"pincode",
 		"phone",
 		"email_id",
+		"custom_notes",
 	):
 		if fieldname in kwargs and kwargs.get(fieldname) is not None and _address_has_field(fieldname):
 			fields[fieldname] = cstr(kwargs.get(fieldname)).strip() or None
 
 	if "title" in kwargs and kwargs.get("title") is not None and _address_has_field("address_title"):
 		fields["address_title"] = cstr(kwargs.get("title")).strip() or None
+
+	if "notes" in kwargs and kwargs.get("notes") is not None and _address_has_field("custom_notes"):
+		fields["custom_notes"] = cstr(kwargs.get("notes")).strip() or None
+
+	fields.update(_validated_coordinates(kwargs))
 
 	if apply_defaults:
 		fields["address_title"] = fields.get("address_title") or _("Delivery Address")
@@ -167,6 +175,75 @@ def _validated_address_fields(kwargs, require_required=False, apply_defaults=Fal
 			raise MobileAddressError(ADDRESS_REQUEST_INVALID, _("Address line 1 is required."))
 		if not fields.get("city"):
 			raise MobileAddressError(ADDRESS_REQUEST_INVALID, _("City is required."))
+	return fields
+
+
+COORDINATE_FIELDS = {"latitude": "custom_latitude", "longitude": "custom_longitude"}
+COORDINATE_BOUNDS = {"latitude": 90.0, "longitude": 180.0}
+
+
+def _coordinate_value(doc, key: str):
+	"""None rather than 0.0 when no pin is set.
+
+	Frappe's Float column is NOT NULL DEFAULT 0, so an address that has never been
+	pinned reads back as 0.0 - a valid-looking coordinate in the Gulf of Guinea. The
+	pair is written together and cleared together, so (0, 0) can only mean "unset"
+	here, and reporting it as null keeps the client from drawing a marker at sea.
+	"""
+	fieldname = COORDINATE_FIELDS[key]
+	if not _address_has_field(fieldname):
+		return None
+	lat = flt(doc.get("custom_latitude"))
+	lng = flt(doc.get("custom_longitude"))
+	if not lat and not lng:
+		return None
+	return flt(doc.get(fieldname))
+
+
+def _validated_coordinates(kwargs) -> dict:
+	"""Latitude and longitude, validated as a pair.
+
+	A lone coordinate is not a partial pin, it is a broken one, so sending one without
+	the other is refused rather than half-applied. Sending neither leaves whatever is
+	stored alone, which is what makes a partial update of some other field safe. Sending
+	both empty clears the pin.
+	"""
+	present = {key: kwargs.get(key) for key in COORDINATE_FIELDS if key in kwargs}
+	if not present:
+		return {}
+	if not all(_address_has_field(fieldname) for fieldname in COORDINATE_FIELDS.values()):
+		return {}
+
+	if len(present) != len(COORDINATE_FIELDS):
+		raise MobileAddressError(
+			ADDRESS_REQUEST_INVALID, _("Latitude and longitude must be sent together.")
+		)
+
+	blank = {key: cstr(value).strip() == "" for key, value in present.items()}
+	if all(blank.values()):
+		return {fieldname: None for fieldname in COORDINATE_FIELDS.values()}
+	if any(blank.values()):
+		raise MobileAddressError(
+			ADDRESS_REQUEST_INVALID,
+			_("Latitude and longitude must be cleared together."),
+		)
+
+	fields = {}
+	for key, value in present.items():
+		bound = COORDINATE_BOUNDS[key]
+		try:
+			number = float(cstr(value).strip())
+		except (TypeError, ValueError):
+			raise MobileAddressError(
+				ADDRESS_REQUEST_INVALID,
+				_("{0} must be a number between {1} and {2}.").format(key.title(), -bound, bound),
+			) from None
+		if number != number or number in (float("inf"), float("-inf")) or abs(number) > bound:
+			raise MobileAddressError(
+				ADDRESS_REQUEST_INVALID,
+				_("{0} must be a number between {1} and {2}.").format(key.title(), -bound, bound),
+			)
+		fields[COORDINATE_FIELDS[key]] = number
 	return fields
 
 

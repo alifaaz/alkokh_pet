@@ -17,12 +17,15 @@ class _FakeMeta:
 class _FakeSalesOrder:
 	doctype = "Sales Order"
 
-	def __init__(self, fields):
+	def __init__(self, fields, values=None):
 		self.meta = _FakeMeta(fields)
-		self.values = {}
+		self.values = dict(values or {})
 
 	def set(self, fieldname, value):
 		self.values[fieldname] = value
+
+	def get(self, fieldname, default=None):
+		return self.values.get(fieldname, default)
 
 
 class TestMobileOrderHelpers(TestCase):
@@ -53,6 +56,28 @@ class TestMobileOrderHelpers(TestCase):
 		self.assertEqual(result["longitude_field"], "custom_delivery_lng")
 		self.assertEqual(doc.values["custom_delivery_lat"], 33.3152)
 		self.assertEqual(doc.values["custom_delivery_lng"], 44.3661)
+
+	def test_address_pin_is_not_copied_over_an_order_that_has_one(self):
+		"""The per-delivery pin wins. Both branches here are reached before any DB read,
+		which is why they can be asserted without a site."""
+		doc = _FakeSalesOrder(
+			["custom_delivery_latitude", "custom_delivery_longitude"],
+			{
+				"shipping_address_name": "ADDRESS-0001",
+				"custom_delivery_latitude": 33.999999,
+				"custom_delivery_longitude": 44.999999,
+			},
+		)
+
+		self.assertIsNone(order_api._copy_address_coordinates_to_order(doc))
+		self.assertEqual(doc.values["custom_delivery_latitude"], 33.999999)
+		self.assertEqual(doc.values["custom_delivery_longitude"], 44.999999)
+
+	def test_address_pin_is_not_copied_without_a_shipping_address(self):
+		doc = _FakeSalesOrder(["custom_delivery_latitude", "custom_delivery_longitude"])
+
+		self.assertIsNone(order_api._copy_address_coordinates_to_order(doc))
+		self.assertEqual(doc.values, {})
 
 	def test_order_summary_reads_sales_order_coordinate_aliases(self):
 		row = {
