@@ -121,7 +121,7 @@ def _address_payload(doc) -> dict:
 		"address_line1": doc.get("address_line1"),
 		"address_line2": doc.get("address_line2"),
 		"city": doc.get("city"),
-		"county": doc.get("county"),
+		"area": doc.get("county"),
 		"state": doc.get("state"),
 		"country": doc.get("country"),
 		"pincode": doc.get("pincode"),
@@ -146,7 +146,6 @@ def _validated_address_fields(kwargs, require_required=False, apply_defaults=Fal
 		"address_line1",
 		"address_line2",
 		"city",
-		"county",
 		"state",
 		"country",
 		"pincode",
@@ -162,6 +161,28 @@ def _validated_address_fields(kwargs, require_required=False, apply_defaults=Fal
 
 	if "notes" in kwargs and kwargs.get("notes") is not None and _address_has_field("custom_notes"):
 		fields["custom_notes"] = cstr(kwargs.get("notes")).strip() or None
+
+	# The neighbourhood - Karrada, Mansour. "area" on the wire, `county` in the column,
+	# the same split as notes/custom_notes. The column keeps ERPNext's name because
+	# renaming it would move data for a word no client sees; the API key does not,
+	# because "county" is a UK/US division that means nothing in Iraq.
+	if "area" in kwargs and kwargs.get("area") is not None and _address_has_field("county"):
+		fields["county"] = cstr(kwargs.get("area")).strip() or None
+
+	# `county` is refused outright rather than accepted as an alias or ignored.
+	#
+	# Ignoring it is the tempting option and the wrong one: unrecognised keys are dropped
+	# without complaint here, so an old build would send the neighbourhood, receive
+	# ok: true, and lose it - the guardian sees a saved address and the driver cannot find
+	# the door. A 400 naming the replacement turns that into a failure someone can act on
+	# the first time they run an old build against this backend.
+	#
+	# Presence is the test, not truthiness. `county: ""` and `county: null` are still an
+	# old build and still need to hear about it.
+	if "county" in kwargs:
+		raise MobileAddressError(
+			ADDRESS_REQUEST_INVALID, _("'county' is no longer accepted. Send 'area' instead.")
+		)
 
 	fields.update(_validated_coordinates(kwargs))
 
