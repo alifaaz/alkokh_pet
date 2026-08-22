@@ -530,14 +530,95 @@ scheduler_events = {
 # },
 fixtures = [
     # Custom Fields
+    #
+    # Selected by NAME, not by doctype. The doctype filter this replaced exported every
+    # Custom Field any app had put on those doctypes, so an ERPNext test run that created
+    # a UAE company - which triggers erpnext.regional.united_arab_emirates.setup - left
+    # eighteen UAE VAT fields behind, and the next export made them this app's to install
+    # on every site. See pet_app.patches.remove_uae_vat_custom_fields.
+    #
+    # A name allow-list is the only reliable discriminator here. `module` is not: only a
+    # handful of these were created by a patch that passed one, and 83 of the original 91
+    # carried a null module - including Sales Order-custom_order_status, which nothing in
+    # code creates and which the whole mobile order status machine reads. Filtering on
+    # module would have deleted mobile ordering from every fresh install.
+    #
+    # Adding a field means adding its name here. tests/test_fixture_allowlist.py fails if
+    # a pet_app patch creates a Custom Field that is missing from this list, so the
+    # omission surfaces in CI rather than on someone's fresh site.
     {
         "dt": "Custom Field",
-        "filters": [["dt", "in", [
-            "Address", "Appointment", "Communication", "Contact", "Coupon Code",
-            "Driver", "Email Account", "File", "GoCardless Mandate", "Item",
-            "Item Group", "Payment Entry",
-            "POS Profile", "Print Settings", "Sales Invoice", "Sales Order",
-            "Stock Entry", "UTM Campaign", "Web Form",
+        "filters": [["name", "in", [
+            "Address-is_your_company_address",
+            "Address-tax_category",
+            "Appointment-branch",
+            "Appointment-custom_appointment_type",
+            "Appointment-custom_cancelled_due_to_death",
+            "Appointment-custom_care_plan_item",
+            "Appointment-custom_client_request_id",
+            "Appointment-custom_converted_at",
+            "Appointment-custom_converted_target",
+            "Appointment-custom_customer",
+            "Appointment-custom_death_record",
+            "Appointment-custom_doctor",
+            "Appointment-custom_duration_minutes",
+            "Appointment-custom_follow_up_of_visit_id",
+            "Appointment-custom_guardian",
+            "Appointment-custom_idempotency_key",
+            "Appointment-custom_last_synced_at",
+            "Appointment-custom_linked_service_id",
+            "Appointment-custom_linked_visit_id",
+            "Appointment-custom_pet",
+            "Appointment-custom_room",
+            "Communication-company",
+            "Contact-is_billing_contact",
+            "Coupon Code-custom_max_uses_per_customer",
+            "Driver-custom_cash_account",
+            "Driver-custom_email",
+            "Driver-custom_username",
+            "Email Account-company",
+            "File-custom_is_default",
+            "File-custom_sha1_hash",
+            "Item Group-arabic_name",
+            "Item-custom_store_published",
+            "POS Profile-branch",
+            "POS Profile-cashier",
+            "POS Profile-custom_cash_account",
+            "POS Profile-department",
+            "POS Profile-location",
+            "Payment Entry-branch",
+            "Payment Entry-cashier",
+            "Payment Entry-department",
+            "Payment Entry-location",
+            "Print Settings-compact_item_print",
+            "Print Settings-print_taxes_with_zero_amount",
+            "Print Settings-print_uom_after_quantity",
+            "Sales Invoice-branch",
+            "Sales Invoice-cashier",
+            "Sales Invoice-department",
+            "Sales Invoice-location",
+            "Sales Order-branch",
+            "Sales Order-cashier",
+            "Sales Order-custom_column_break_or8b9",
+            "Sales Order-custom_custom_fields",
+            "Sales Order-custom_delivery_fee",
+            "Sales Order-custom_delivery_latitude",
+            "Sales Order-custom_delivery_longitude",
+            "Sales Order-custom_discount_breakdown",
+            "Sales Order-custom_driver",
+            "Sales Order-custom_order_status",
+            "Sales Order-custom_payment_method",
+            "Sales Order-custom_payment_status",
+            "Sales Order-department",
+            "Sales Order-location",
+            "Sales Order-workflow_state",
+            "Stock Entry-branch",
+            "Stock Entry-cashier",
+            "Stock Entry-custom_sales_order",
+            "Stock Entry-department",
+            "Stock Entry-location",
+            "UTM Campaign-crm_campaign",
+            "Web Form-accept_payment",
         ]]],
     },
 

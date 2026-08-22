@@ -88,3 +88,22 @@ pet_app.patches.boarding_room_stay_occupant_keys
 # Two "when" values converge on scheduled_datetime. Deliberately partial on due_date:
 # only the 31 rows that differ from their creation date carry a decision worth moving.
 pet_app.patches.converge_scheduled_datetime
+pet_app.patches.address_delivery_notes
+# start_visit_boarding never wrote an occupant row; six bookings reached Checked In or
+# Cancelled without one, three of them holding a kennel the hub drew as Available. The
+# code fix is in _start_visit_boarding_atomic; this gives the six already on the site
+# their row. No pet is guessed - an unreconstructable booking is skipped and logged.
+pet_app.patches.boarding_visit_occupant_repair
+# Address.county is relabelled "Area" - "county" means nothing in Iraq, and what the
+# field holds is the neighbourhood. Label only; the fieldname stays on the wire.
+pet_app.patches.address_county_area_label
+# The delivery map pin had no home on the Address, so the app kept it on the phone and
+# lost it on reinstall. Float at precision 6, written and cleared as a pair.
+pet_app.patches.address_delivery_coordinates
+# The Sales Order pair inherits the site float precision of 2 - about 1.1 km. A human
+# opening the order in Desk and saving posts the rounded value back.
+pet_app.patches.sales_order_coordinate_precision
+# Eighteen UAE VAT custom fields that an ERPNext test run left behind and a doctype-scoped
+# export made this app's to install. Runs after the fixture entries were removed and
+# hooks.py switched to a name allow-list, or sync_fixtures would just put them back.
+pet_app.patches.remove_uae_vat_custom_fields
