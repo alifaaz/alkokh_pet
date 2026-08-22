@@ -273,6 +273,150 @@ class TestBoardingOrders(FrappeTestCase):
 
 	# ------------------------------------------------------------------ helpers
 
+	# ------------------------------------------------------------------ provider
+
+	def test_create_order_stores_provider_on_service_and_billable_row(self):
+		"""The reported defect: the operator picks an assignee and the record keeps it."""
+		boarding = self._make_checked_in_boarding()
+		care_service = self._make_care_service("Service")
+		practitioner = self._make_doctor()
+
+		res = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="service",
+			pet=boarding.pet,
+			template_id=care_service.name,
+			provider=practitioner.name,
+		)
+
+		self.assertTrue(res["ok"], res)
+		data = res["data"]
+		# On the order document, because PetCareService has somewhere to put it.
+		service = frappe.get_doc("PetCareService", data["order_id"])
+		self.assertEqual(service.provider, practitioner.name)
+		# And echoed on the billable row, which is the only proof the client gets.
+		rows = [r for r in data["billable_items"] if r["linked_name"] == service.name]
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["provider"], practitioner.name)
+		self.assertEqual(rows[0]["provider_name"], practitioner.practitioner_name)
+
+	def test_create_order_without_provider_leaves_it_unset(self):
+		"""Absence stays valid and must never become the calling user.
+
+		A defaulted assignee is indistinguishable from a real one, and the desk would lose
+		the ability to see what still needs assigning.
+		"""
+		boarding = self._make_checked_in_boarding()
+		care_service = self._make_care_service("Service")
+
+		res = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="service",
+			pet=boarding.pet,
+			template_id=care_service.name,
+		)
+
+		self.assertTrue(res["ok"], res)
+		data = res["data"]
+		service = frappe.get_doc("PetCareService", data["order_id"])
+		self.assertFalse(service.provider)
+		rows = [r for r in data["billable_items"] if r["linked_name"] == service.name]
+		self.assertFalse(rows[0]["provider"])
+		self.assertFalse(rows[0]["provider_name"])
+
+	def test_create_order_accepts_user_email_and_resolves_to_practitioner(self):
+		boarding = self._make_checked_in_boarding()
+		care_service = self._make_care_service("Service")
+		practitioner = self._make_doctor()
+		user = self._make_user()
+		practitioner.db_set("user_id", user, update_modified=False)
+
+		res = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="service",
+			pet=boarding.pet,
+			template_id=care_service.name,
+			provider=user,
+		)
+
+		self.assertTrue(res["ok"], res)
+		# Resolved, not stored: what comes back is always the docname.
+		service = frappe.get_doc("PetCareService", res["data"]["order_id"])
+		self.assertEqual(service.provider, practitioner.name)
+
+	def test_create_order_refuses_unknown_provider_and_creates_nothing(self):
+		"""A bad assignee refuses the call rather than being dropped.
+
+		Resolution happens before the first write, so a refusal cannot leave an order
+		document behind and fail on the boarding save.
+		"""
+		boarding = self._make_checked_in_boarding()
+		care_service = self._make_care_service("Lab")
+		before_labs = frappe.db.count("Lab")
+		before_rows = len(frappe.get_doc("Pet Boarding", boarding.name).billable_items or [])
+
+		res = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="lab",
+			pet=boarding.pet,
+			template_id=care_service.name,
+			provider="HCP-DOES-NOT-EXIST",
+		)
+
+		self.assertFalse(res["ok"], res)
+		self.assertIn("Healthcare Practitioner", res["errors"][0]["message"])
+		self.assertEqual(frappe.db.count("Lab"), before_labs)
+		self.assertEqual(len(frappe.get_doc("Pet Boarding", boarding.name).billable_items or []), before_rows)
+
+	def test_create_lab_order_records_provider_on_the_billable_row(self):
+		"""Lab has a `doctor`, not a `provider`, so the row is where the assignment lives."""
+		boarding = self._make_checked_in_boarding()
+		care_service = self._make_care_service("Lab")
+		practitioner = self._make_doctor()
+
+		res = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="lab",
+			pet=boarding.pet,
+			template_id=care_service.name,
+			provider=practitioner.name,
+		)
+
+		self.assertTrue(res["ok"], res)
+		data = res["data"]
+		rows = [r for r in data["billable_items"] if r["linked_name"] == data["order_id"]]
+		self.assertEqual(rows[0]["provider"], practitioner.name)
+		self.assertEqual(rows[0]["provider_name"], practitioner.practitioner_name)
+
+	def test_provider_does_not_change_what_is_charged(self):
+		boarding = self._make_checked_in_boarding()
+		care_service = self._make_care_service("Service")
+		practitioner = self._make_doctor()
+
+		unassigned = boarding_api.create_order(
+			boarding_id=boarding.name, kind="service", pet=boarding.pet, template_id=care_service.name
+		)
+		assigned = boarding_api.create_order(
+			boarding_id=boarding.name,
+			kind="service",
+			pet=boarding.pet,
+			template_id=self._make_care_service("Service").name,
+			provider=practitioner.name,
+		)
+
+		def _row(res):
+			return next(r for r in res["data"]["billable_items"] if r["linked_name"] == res["data"]["order_id"])
+
+		self.assertEqual(_row(unassigned)["rate"], _row(assigned)["rate"])
+		self.assertEqual(_row(unassigned)["amount"], _row(assigned)["amount"])
+
+	def _make_user(self):
+		email = f"provider-{frappe.generate_hash(length=8)}@example.com"
+		frappe.get_doc(
+			{"doctype": "User", "email": email, "first_name": "Provider", "send_welcome_email": 0}
+		).insert(ignore_permissions=True)
+		return email
+
 	def _make_checked_in_boarding(self, record_status="Checked In"):
 		guardian, pet = self._make_guardian_pet()
 		customer = get_or_create_customer_from_guardian(guardian.name)
