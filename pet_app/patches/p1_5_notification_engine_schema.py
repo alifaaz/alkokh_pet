@@ -29,6 +29,9 @@ def ensure_doctype(doctype_name: str, spec: dict):
 		if spec.get("issingle") and not doc.issingle:
 			doc.issingle = 1
 			changed = True
+		if spec.get("istable") and not doc.istable:
+			doc.istable = 1
+			changed = True
 		existing = {row.fieldname: row for row in doc.fields}
 		for field in spec.get("fields", []):
 			if field["fieldname"] not in existing:
@@ -50,12 +53,14 @@ def ensure_doctype(doctype_name: str, spec: dict):
 			"module": MODULE,
 			"custom": 1,
 			"issingle": 1 if spec.get("issingle") else 0,
+			# Child tables carry no permissions of their own - they inherit the parent's.
+			"istable": 1 if spec.get("istable") else 0,
 			"autoname": spec.get("autoname", "hash"),
 			"title_field": spec.get("title_field"),
 			"track_changes": spec.get("track_changes", 1),
 			"allow_rename": spec.get("allow_rename", 1),
 			"fields": [field_doc(field) for field in spec.get("fields", [])],
-			"permissions": permissions(spec.get("roles")),
+			"permissions": [] if spec.get("istable") else permissions(spec.get("roles")),
 			"sort_field": spec.get("sort_field", "modified"),
 			"sort_order": spec.get("sort_order", "DESC"),
 		}

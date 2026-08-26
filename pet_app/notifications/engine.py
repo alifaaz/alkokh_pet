@@ -27,6 +27,10 @@ from pet_app.utils.api_response import api_error, api_success
 
 TERMINAL_STATUSES = {"Sent", "Delivered", "Read", "Cancelled", "Skipped"}
 
+# Which side a queued template send came from. Our vocabulary, not Meta's.
+TEMPLATE_SOURCE_LOCAL = "local"
+TEMPLATE_SOURCE_META = "meta"
+
 
 def queue_notification(
 	event_key,
@@ -53,6 +57,8 @@ def queue_notification(
 	push_body=None,
 	push_url=None,
 	push_data=None,
+	template_source=None,
+	meta_template=None,
 ):
 	try:
 		if getattr(frappe.flags, "pet_app_whatsapp_simulation", False):
@@ -63,10 +69,43 @@ def queue_notification(
 		_ensure_schema()
 		settings = get_settings()
 		context = coerce_context(context)
+
+		# Template addressing, in strict precedence order:
+		#
+		#   1. meta_template   - an explicitly addressed mirror row
+		#   2. template_key    - an explicitly named local template
+		#   3. the send-target registry, keyed by event_key
+		#   4. the LOCAL event_key fallback inside resolve_template (engine.py:392)
+		#
+		# 3 and 4 both key off event_key and mean different things. It is a column on
+		# the local template doctype AND the registry's key, and the two now share one
+		# argument name. The registry sits above the local lookup deliberately: a local
+		# row that later acquires a colliding event_key must not quietly outrank a
+		# registered event and change which template an operator's button sends.
+		# _registry_send_target returns None for anything explicitly addressed, so 1 and
+		# 2 keep winning and no existing caller changes.
+		registry_target = (
+			_registry_send_target(event_key, template_key, meta_template, source_name)
+			if channel == "WhatsApp"
+			else None
+		)
+		if registry_target:
+			template_source = TEMPLATE_SOURCE_META
+			meta_template = registry_target.meta_template
+			# The registry supplies the source doctype - it is read from the mirror row,
+			# which is what the slot map was validated against. The caller supplies only
+			# the record name. Resolved before the context is built, or a caller sending
+			# a source_name without a source_doctype would get no context at all.
+			source_doctype = registry_target.source_doctype
+
 		if source_doctype and source_name:
 			context = build_document_context(source_doctype, source_name, context)
 
-		template = resolve_template(event_key=event_key, template_key=template_key, channel=channel)
+		# A mirror-direct send names a Pet App WhatsApp Meta Template and has no local
+		# template at all - not an unbound one, none. Everything below that would have
+		# come from the local row is taken from the mirror row instead.
+		meta_row = _resolve_meta_template_row(template_source, meta_template) if channel == "WhatsApp" else None
+		template = None if meta_row else resolve_template(event_key=event_key, template_key=template_key, channel=channel)
 		account = resolve_whatsapp_account(template=template, settings=settings) if channel == "WhatsApp" else None
 		phone = normalize_phone(
 			recipient_phone(recipient_type, recipient_name, to_phone),
@@ -101,7 +140,7 @@ def queue_notification(
 			if existing:
 				return api_success({"queue": queue_payload(frappe.get_doc("Pet App Notification Queue", existing))}, meta={"duplicate": True})
 
-		category = template.category if template else "Utility"
+		category = _queue_category(template, meta_row)
 		if category == "Marketing" and not cint(settings.get("allow_marketing_messages")):
 			return api_error(_("Marketing messages are disabled."), code="MARKETING_DISABLED")
 		assert_consent_allowed(
@@ -119,7 +158,7 @@ def queue_notification(
 			scheduled_at = _next_quiet_hours_end(settings)
 
 		masked_context = mask_sensitive_context(context) if cint(settings.get("mask_sensitive_values")) else context
-		rendered_preview = render_preview(template, context, mask_sensitive=bool(cint(settings.get("mask_sensitive_values")))) if template else ""
+		rendered_preview = render_preview(template, context, mask_sensitive=bool(cint(settings.get("mask_sensitive_values")))) if template else _meta_body_preview(meta_row)
 		status = "Queued" if _channel_enabled(channel, settings) else "Skipped"
 		doc = frappe.get_doc(
 			{
@@ -132,9 +171,11 @@ def queue_notification(
 				"recipient_name": recipient_name,
 				"to_phone": phone,
 				"to_email": email,
-				"template_key": template.template_key if template else template_key,
-				"template_name": template.template_name if template else None,
-				"language": template.language if template else settings.get("default_language"),
+				"template_key": None if meta_row else (template.template_key if template else template_key),
+				"template_name": meta_row.template_name if meta_row else (template.template_name if template else None),
+				"language": meta_row.language if meta_row else (template.language if template else settings.get("default_language")),
+				"template_source": TEMPLATE_SOURCE_META if meta_row else TEMPLATE_SOURCE_LOCAL,
+				"meta_template": meta_row.name if meta_row else None,
 				"context_json": json.dumps(masked_context, default=str),
 				"rendered_preview": rendered_preview,
 				"source_doctype": source_doctype,
@@ -149,7 +190,7 @@ def queue_notification(
 				"message_type": message_type,
 				"interactive_json": json.dumps(interactive, default=str) if interactive else None,
 				"media_file": media_file or (template.get("media_file") if template else None),
-				"delivery_mode": template.get("delivery_mode") if template else None,
+				"delivery_mode": "Meta Template" if meta_row else (template.get("delivery_mode") if template else None),
 				"push_user": push_user,
 				"push_title": push_title,
 				"push_body": push_body,
@@ -270,9 +311,18 @@ def process_notification_queue(queue_name):
 		doc.processing_at = now_datetime()
 		doc.save(ignore_permissions=True)
 
-		template = resolve_template(event_key=doc.event_key, template_key=doc.template_key, channel=doc.channel)
+		# A mirror-direct row has no local template to resolve, and resolve_template
+		# would throw "Notification template was not found." before the dispatch
+		# branch in _send_queue_message was ever reached. Branch around it rather
+		# than making the local path tolerate a missing template: the local path
+		# below is byte-identical to what it was.
+		if doc.get("meta_template"):
+			template = None
+			channel = _channel_for_account(doc)
+		else:
+			template = resolve_template(event_key=doc.event_key, template_key=doc.template_key, channel=doc.channel)
+			channel = _channel_for(doc, template)
 		context = _queue_context(doc)
-		channel = _channel_for(doc, template)
 		response, sent_type, action_delivery_stage = _send_queue_message(doc, template, context, channel)
 		if response is None:
 			return api_success({"queue": queue_payload(doc)}, meta={"waiting_for_session": True})
@@ -406,12 +456,21 @@ def queue_payload(doc) -> dict:
 		"provider": doc.provider,
 		"provider_account": doc.provider_account,
 		"provider_message_id": doc.provider_message_id,
+		# The reason a failed row failed. _mark_failed always writes both underlying
+		# fields, but neither was ever exposed here, so a failure reached the composer
+		# as status "Failed" with nothing to show. Named error_code / error_message
+		# because that is what the frontend reads; the doctype fields keep their own
+		# provider_* names.
+		"error_code": doc.get("provider_error_code"),
+		"error_message": doc.get("provider_error_message"),
 		"retry_count": doc.retry_count,
 		"idempotency_key": doc.idempotency_key,
 		"conversation": doc.get("conversation"),
 		"action_request": doc.get("action_request"),
 		"message_type": doc.get("message_type"),
 		"delivery_mode": doc.get("delivery_mode"),
+		"template_source": doc.get("template_source"),
+		"meta_template": doc.get("meta_template"),
 		"push_user": doc.get("push_user"),
 		"push_title": doc.get("push_title"),
 		"push_body": doc.get("push_body"),
@@ -427,8 +486,19 @@ def _mark_failed(queue_name, exc):
 		doc.failed_at = now_datetime()
 		doc.provider_error_code = getattr(exc, "exc_type", None) or exc.__class__.__name__
 		doc.provider_error_message = cstr(exc)
-		doc.retry_count = cint(doc.retry_count) + 1
-		doc.next_retry_at = now_datetime() + timedelta(minutes=cint(settings.get("retry_after_minutes") or 5))
+		if _is_structural_failure(exc):
+			# A pre-flight refusal: the template has no approved Meta binding. No Graph
+			# call was made and no later attempt can succeed without someone changing
+			# the binding, so a retry would only re-refuse on a timer. Park the row at
+			# max_retries, which is where retry_failed_notifications' `retry_count <
+			# max_retries` filter stops selecting it, and leave next_retry_at unset.
+			# (Unset alone is not enough: the sweeper only skips a row whose
+			# next_retry_at is in the future, so a null would be retried immediately.)
+			doc.retry_count = max(cint(doc.retry_count), cint(settings.get("max_retries") or 3))
+			doc.next_retry_at = None
+		else:
+			doc.retry_count = cint(doc.retry_count) + 1
+			doc.next_retry_at = now_datetime() + timedelta(minutes=cint(settings.get("retry_after_minutes") or 5))
 		doc.save(ignore_permissions=True)
 		if doc.channel == "WhatsApp":
 			from pet_app.notifications.inbox import record_failed_outbound_message
@@ -448,6 +518,134 @@ def _mark_failed(queue_name, exc):
 		return _error_response(exc)
 
 
+def _registry_send_target(event_key, template_key, meta_template, source_name):
+	"""The registered send target for an event, or None if the event does not apply.
+
+	Returns None - leaving every existing caller untouched - when the send is already
+	addressed explicitly, or when event_key is not a registered event. manual_whatsapp_reply
+	is not registered, so it falls straight through to the behaviour it has today.
+
+	Refuses, rather than returning None, when a registered event arrives without a
+	source record: the event resolves to a template whose slots are filled from a
+	document, and with no document there is nothing to fill them from. Refusing here
+	means it happens at queue time, before a row exists and long before Graph.
+	"""
+	from pet_app.notifications.send_targets import SEND_TARGETS, SendTargetError, resolve_send_target
+
+	if cstr(meta_template).strip() or cstr(template_key).strip():
+		return None
+	event = cstr(event_key).strip()
+	if event not in SEND_TARGETS:
+		return None
+
+	target = resolve_send_target(event)
+	if not cstr(source_name).strip():
+		raise SendTargetError(
+			_(
+				"Event {0} sends template {1}, whose message is filled from a {2} record. "
+				"Send it with the {2} it is about - source_name is required."
+			).format(target.event, target.template_name, target.source_doctype or _("source")),
+			code="SEND_TARGET_SOURCE_NAME_REQUIRED",
+			details={
+				"event": target.event,
+				"template_name": target.template_name,
+				"meta_template": target.meta_template,
+				"source_doctype": target.source_doctype,
+			},
+		)
+	return target
+
+
+def _resolve_meta_template_row(template_source, meta_template):
+	"""The mirror row a caller asked to send, or None for the ordinary local path.
+
+	Either naming the source explicitly or just passing a meta_template selects the
+	mirror; asking for the mirror source without naming a row is an error rather
+	than a silent fall back to the local path.
+	"""
+	wants_meta = cstr(template_source).strip().lower() == TEMPLATE_SOURCE_META or bool(meta_template)
+	if not wants_meta:
+		return None
+
+	from pet_app.notifications.meta_templates import MIRROR_DOCTYPE, MetaTemplateNotSendable
+
+	# Refuse before doing anything if the columns are not there yet. Frappe silently
+	# drops unknown fieldnames on insert, so without this the queue row would lose
+	# its meta_template, miss the dispatch branch, and fall through to a free-form
+	# text send carrying the template's raw {{1}} body - a real message, to a real
+	# number, in any open window.
+	if not frappe.get_meta("Pet App Notification Queue").has_field("meta_template"):
+		raise MetaTemplateNotSendable(
+			_("Sending a Meta template directly needs a schema update. Run bench migrate first."),
+			code="META_TEMPLATE_SCHEMA_MISSING",
+		)
+
+	name = cstr(meta_template).strip()
+	if not name:
+		raise MetaTemplateNotSendable(
+			_("A Meta template must be selected when sending from the Meta template list."),
+			code="META_TEMPLATE_NOT_SELECTED",
+		)
+	row = frappe.db.get_value(
+		MIRROR_DOCTYPE, name, ["name", "template_name", "language", "category", "components_json"], as_dict=True
+	)
+	if not row:
+		raise MetaTemplateNotSendable(
+			_("Meta template {0} is not in the local mirror. Run a sync from the Meta Templates tab.").format(name),
+			code="META_TEMPLATE_NOT_IN_MIRROR",
+		)
+	# status / missing_on_meta are checked at send time, in the same place the local
+	# path checks them, so a template approved between queueing and sending is not
+	# refused for a state it has since left.
+	return row
+
+
+def _queue_category(template, meta_row=None):
+	"""The category the consent and marketing gates should see.
+
+	A mirror row carries Meta's vocabulary (UTILITY), while those gates are written
+	against the local one (Utility), so it is translated back through the category
+	map rather than compared raw - otherwise a MARKETING template would slip past
+	allow_marketing_messages simply because the casing differs.
+	"""
+	if meta_row:
+		from pet_app.notifications.meta_templates import local_category_for
+
+		return local_category_for(meta_row.get("category")) or "Utility"
+	return template.category if template else "Utility"
+
+
+def _meta_body_preview(meta_row):
+	"""The mirror template's BODY text, for the queue preview and the inbox bubble.
+
+	Taken verbatim, not rendered: Meta's text contains {{1}}-style placeholders that
+	are not Jinja, and running them through the renderer would strip them.
+	"""
+	if not meta_row:
+		return ""
+	try:
+		components = json.loads(meta_row.get("components_json") or "[]")
+	except (TypeError, ValueError):
+		return ""
+	for component in components:
+		if cstr(component.get("type")).upper() == "BODY":
+			return cstr(component.get("text"))
+	return ""
+
+
+def _is_structural_failure(exc) -> bool:
+	"""True for a refusal that no retry can turn into a success.
+
+	The Meta-binding pre-flight check, and a send-target registry refusal: an
+	unmapped template does not become mapped, and an unregistered event does not
+	become registered, by trying again five minutes later.
+	"""
+	from pet_app.notifications.meta_templates import MetaTemplateNotSendable
+	from pet_app.notifications.send_targets import SendTargetError
+
+	return isinstance(exc, (MetaTemplateNotSendable, SendTargetError))
+
+
 def _channel_for(queue_doc, template=None):
 	if queue_doc.channel == "Push":
 		return OneSignalPushChannel(settings=get_settings())
@@ -457,6 +655,54 @@ def _channel_for(queue_doc, template=None):
 	if account.provider == "Meta Cloud API":
 		return WhatsAppMetaChannel(account=account, settings=get_settings())
 	return DummyChannel(account=account, settings=get_settings())
+
+
+def _channel_for_account(queue_doc):
+	"""Channel for a mirror-direct row, from the queue row's own account snapshot.
+
+	Deliberately not _channel_for with a null template. That one derives the account
+	from the local template and falls back to the settings default, which happens to
+	be right here only because this site has exactly one account - with two, the
+	fallback could send from an account the composer never chose. The queue row
+	recorded what was resolved when the send was composed, and that is the only
+	answer this function will accept.
+
+	The mirror row's own provider_account is deliberately not consulted either: it
+	records where the template lives, not what the send resolved to.
+	"""
+	from pet_app.notifications.meta_templates import MetaTemplateNotSendable
+
+	account_name = cstr(queue_doc.get("provider_account")).strip()
+	if not account_name:
+		raise MetaTemplateNotSendable(
+			_(
+				"This send has no WhatsApp account recorded on it, so there is nothing to "
+				"send it from. Re-send it from the composer."
+			),
+			code="META_TEMPLATE_NO_ACCOUNT",
+			details={"queue": queue_doc.name},
+		)
+	if not frappe.db.exists("Pet App WhatsApp Account", account_name):
+		raise MetaTemplateNotSendable(
+			_("WhatsApp account {0} no longer exists, so this send cannot be delivered.").format(account_name),
+			code="META_TEMPLATE_ACCOUNT_MISSING",
+			details={"queue": queue_doc.name, "provider_account": account_name},
+		)
+
+	account = frappe.get_doc("Pet App WhatsApp Account", account_name)
+	if account.provider != "Meta Cloud API":
+		# The mirror only ever describes templates on a Meta Cloud API WABA, and no
+		# other channel implements send_meta_template. Refusing here beats an
+		# AttributeError, which would be retried three times as a transient fault.
+		raise MetaTemplateNotSendable(
+			_(
+				"WhatsApp account {0} uses provider {1}, which cannot send Meta templates "
+				"directly. Send from a Meta Cloud API account."
+			).format(account_name, account.provider),
+			code="META_TEMPLATE_PROVIDER_UNSUPPORTED",
+			details={"queue": queue_doc.name, "provider": cstr(account.provider)},
+		)
+	return WhatsAppMetaChannel(account=account, settings=get_settings())
 
 
 def _send_queue_message(doc, template, context, channel):
@@ -476,6 +722,20 @@ def _send_queue_message(doc, template, context, channel):
 			),
 			"Push",
 			"Complete",
+		)
+
+	# Mirror-direct: the queue row names a Meta template, so there is no local row to
+	# consult and no delivery_mode to interpret. Sent straight from the mirror, with
+	# the same pre-flight gate applied inside build_meta_template_payload. Placed
+	# ahead of the delivery_mode fork so that fork is reached only by local sends and
+	# keeps behaving exactly as it did.
+	if doc.get("meta_template"):
+		return (
+			channel.send_meta_template(
+				to_phone=doc.to_phone, meta_template=doc.meta_template, context=context, queue=doc
+			),
+			"Text",
+			"Interactive Sent",
 		)
 
 	delivery_mode = cstr(doc.get("delivery_mode") or (template.get("delivery_mode") if template else None) or "Meta Template")

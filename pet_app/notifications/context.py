@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 
 import frappe
@@ -35,6 +36,16 @@ VARIABLE_FIELDS = {
 		"custom_guardian", "custom_customer", "custom_doctor", "custom_room", "custom_duration_minutes",
 	),
 	"clinic": ("business_name", "phone_number", "display_phone_number", "branch"),
+	# Pet Boarding. room_name and room_arabic_name are not Pet Boarding columns - they
+	# are fetched from the linked Service Room, because service_room holds a docname
+	# and Service Room is autonamed field:room_code, so the raw value is a code like
+	# "A4". A code is not a room name and must never reach a customer's message.
+	#
+	# deposit and branch are deliberately absent. See _safe_values for what is fetched.
+	"boarding": (
+		"name", "pet_name", "guardian_name", "service_room", "room_name", "room_arabic_name",
+		"check_in", "check_out", "expected_check_out", "status",
+	),
 }
 
 SOURCE_NAMESPACES = {
@@ -44,6 +55,7 @@ SOURCE_NAMESPACES = {
 	"Pet Death Record": "death_record",
 	"PetCareService": "pet_service",
 	"Appointment": "appointment",
+	"Pet Boarding": "boarding",
 }
 
 
@@ -198,15 +210,84 @@ def _merge_extra_context(context: dict, extra: dict) -> None:
 			context[key] = value
 
 
+# Fixed output, deliberately not the site's date_format. What a customer sees must not
+# change because somebody edited System Settings; these three are the contract.
+DATE_OUTPUT_FORMAT = "%d-%m-%Y"
+DATETIME_OUTPUT_FORMAT = "%d-%m-%Y %H:%M"
+TIME_OUTPUT_FORMAT = "%H:%M"
+
+
+def format_variable_value(value):
+	"""Render a temporal value for a message; leave everything else exactly as it is.
+
+	This is the one place a date becomes text for the whole variable stack. Without it
+	a Datetime reached a customer as ``2026-08-24 10:45:29.132858`` - the raw repr,
+	microseconds and all - because _safe_values handed back the object and whatever
+	stringified it downstream just called cstr().
+
+	``datetime`` is tested before ``date`` because datetime *subclasses* date: the
+	other order silently formats every timestamp as a bare day and drops the time.
+
+	None and "" are returned untouched. A missing date must stay missing - turning it
+	into 01-01-1970, or any other invented value, would defeat the unresolved-slot
+	refusal that exists to stop a hole reaching a customer.
+
+	Strings are returned untouched and are never parsed. A value that merely looks like
+	a date is not necessarily one, and re-reading it would be guessing.
+	"""
+	if isinstance(value, datetime.datetime):
+		return value.strftime(DATETIME_OUTPUT_FORMAT)
+	if isinstance(value, datetime.date):
+		return value.strftime(DATE_OUTPUT_FORMAT)
+	if isinstance(value, datetime.time):
+		return value.strftime(TIME_OUTPUT_FORMAT)
+	if isinstance(value, datetime.timedelta):
+		# MariaDB hands a TIME column back as a timedelta, not a time, so a Time field
+		# would otherwise render as "1 day, 9:00:00". No allowlisted variable is a Time
+		# field today; this is here so that adding one is not a silent regression.
+		total_minutes = int(value.total_seconds()) // 60
+		return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+	return value
+
+
 def _safe_values(doc, namespace: str) -> dict:
-	values = {fieldname: doc.get(fieldname) for fieldname in VARIABLE_FIELDS[namespace]}
+	# Formatted here, at the single point every allowlisted value enters the context:
+	# the slot-map resolver, the explicit-parameter builder, the preview renderer and
+	# the Jinja body_preview path all read this dict, and formatting at any one of them
+	# would leave the others raw.
+	values = {
+		fieldname: format_variable_value(doc.get(fieldname)) for fieldname in VARIABLE_FIELDS[namespace]
+	}
 	# Friendly display name so templates that reach for `.name` (the record id,
 	# e.g. GUARDIAN-00001 / PET-00001) still render a human-readable value.
 	if namespace == "guardian":
 		values["display_name"] = doc.get("full_name") or doc.name
 	elif namespace == "pet":
 		values["display_name"] = doc.get("pet_name") or doc.name
+	elif namespace == "boarding":
+		values.update(_room_values(doc.get("service_room")))
 	return values
+
+
+def _room_values(service_room) -> dict:
+	"""Human-readable names for the linked Service Room.
+
+	``service_room`` holds a docname, and Service Room is autonamed
+	``field:room_code``, so that value is a code - "A4", "B1". Both names are fetched
+	so a template can pick the one matching its language; boarding_checkinn is Arabic
+	and wants arabic_name, an English template wants room_name.
+
+	A room that cannot be resolved yields blanks rather than the code. Emitting the
+	code would be emitting a docname into a customer's message, which is the thing
+	this fetch exists to prevent - and a blank lets the slot's fallback (or its
+	refusal) decide, which is a decision an operator made deliberately.
+	"""
+	if not service_room:
+		return {"room_name": "", "room_arabic_name": ""}
+	row = frappe.db.get_value("Service Room", service_room, ["room_name", "arabic_name"], as_dict=True)
+	if not row:
+		return {"room_name": "", "room_arabic_name": ""}
+	return {"room_name": cstr(row.room_name), "room_arabic_name": cstr(row.arabic_name)}
 
 
 def _related_guardian_and_pet(doc) -> tuple[str | None, str | None]:

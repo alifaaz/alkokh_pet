@@ -23,6 +23,12 @@ INSTALL_SCHEMA_PATCHES = (
 	"pet_app.patches.p1_9_push_subscription_status.execute",
 	"pet_app.patches.p1_10_push_frontend_base_url.execute",
 	"pet_app.patches.p1_11_push_subscription_app_id.execute",
+	"pet_app.patches.p1_12_meta_template_mirror.execute",
+	"pet_app.patches.p1_13_manual_meta_template_send.execute",
+	"pet_app.patches.p1_14_meta_template_slot_map.execute",
+	"pet_app.patches.p1_15_meta_template_slot_map_stale.execute",
+	"pet_app.patches.p1_16_action_rule_meta_template.execute",
+	"pet_app.patches.p1_17_meta_template_source_doctype.execute",
 )
 
 

@@ -366,13 +366,73 @@ class TestNotificationEngine(FrappeTestCase):
 		self.assertEqual(meta.get_field("verify_token").fieldtype, "Password")
 		self.assertGreaterEqual(meta.get_field("verify_token").length, 512)
 
-	def test_meta_template_without_variables_omits_empty_components(self):
-		channel = WhatsAppMetaChannel(account=frappe._dict(default_language="en"))
-		template = frappe._dict(template_name="hello_world", language="en_US", components_json=None)
+	def test_declared_template_without_variables_emits_no_parameters(self):
+		"""A template declaring no placeholders sends no components.
 
-		payload = channel.build_template_payload(to_phone="9647716940612", template=template)
+		Was test_meta_template_without_variables_omits_empty_components, which built the
+		payload through the channel with a bare frappe._dict. That fixture has no mirror
+		binding, so it now dies at the Phase 2 identity gate before any parameter code
+		runs - the assertion could no longer reach what it was testing. The intent is
+		unchanged; it is asserted against the declared shape directly, where it lives.
+		"""
+		from pet_app.notifications.renderer import build_declared_parameters
 
-		self.assertNotIn("components", payload["template"])
+		components = build_declared_parameters(
+			components=[{"type": "BODY", "text": "Hello there."}],
+			parameter_format="POSITIONAL",
+			context={},
+		)
+
+		self.assertEqual(components, [])
+
+	def test_declared_positional_parameters_are_unnamed_and_in_declared_order(self):
+		from pet_app.notifications.renderer import build_declared_parameters
+
+		components = build_declared_parameters(
+			components=[{"type": "BODY", "text": "Hi {{1}}, room {{2}}."}],
+			parameter_format="POSITIONAL",
+			context={"parameters": ["Ali", "K3"]},
+		)
+
+		self.assertEqual(
+			components,
+			[{"type": "body", "parameters": [{"type": "text", "text": "Ali"}, {"type": "text", "text": "K3"}]}],
+		)
+
+	def test_declared_parameter_count_must_match_exactly(self):
+		from pet_app.notifications.meta_templates import MetaTemplateNotSendable
+		from pet_app.notifications.renderer import build_declared_parameters
+
+		body = [{"type": "BODY", "text": "Hi {{1}}, room {{2}}."}]
+		for supplied in ([], ["Ali"], ["Ali", "K3", "extra"]):
+			with self.subTest(supplied=supplied), self.assertRaises(MetaTemplateNotSendable) as raised:
+				build_declared_parameters(
+					components=body, parameter_format="POSITIONAL", context={"parameters": supplied}
+				)
+			self.assertEqual(raised.exception.exc_type, "META_TEMPLATE_PARAM_COUNT")
+
+	def test_declared_parameters_refuse_non_scalar_values(self):
+		from pet_app.notifications.meta_templates import MetaTemplateNotSendable
+		from pet_app.notifications.renderer import build_declared_parameters
+
+		body = [{"type": "BODY", "text": "Hi {{1}}."}]
+		for value in ({"full_name": "Ali"}, ["Ali"], None, True):
+			with self.subTest(value=value), self.assertRaises(MetaTemplateNotSendable) as raised:
+				build_declared_parameters(
+					components=body, parameter_format="POSITIONAL", context={"parameters": [value]}
+				)
+			self.assertEqual(raised.exception.exc_type, "META_TEMPLATE_PARAM_INVALID")
+
+	def test_absent_parameter_format_is_treated_as_positional(self):
+		from pet_app.notifications.renderer import build_declared_parameters
+
+		components = build_declared_parameters(
+			components=[{"type": "BODY", "text": "Hi {{1}}."}],
+			parameter_format=None,
+			context={"parameters": ["Ali"]},
+		)
+
+		self.assertEqual(components[0]["parameters"], [{"type": "text", "text": "Ali"}])
 
 	def test_meta_api_error_preserves_safe_provider_code(self):
 		response = Mock(ok=False, status_code=400)

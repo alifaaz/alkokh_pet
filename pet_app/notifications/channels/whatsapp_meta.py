@@ -7,7 +7,7 @@ import requests
 from frappe.utils.password import get_decrypted_password
 
 from pet_app.notifications.channels.base import BaseNotificationChannel
-from pet_app.notifications.renderer import template_components
+from pet_app.notifications.renderer import build_declared_parameters
 
 
 class WhatsAppMetaAPIError(frappe.ValidationError):
@@ -26,6 +26,26 @@ class WhatsAppMetaChannel(BaseNotificationChannel):
 		response = self._post_json("messages", payload)
 		message_id = ((response or {}).get("messages") or [{}])[0].get("id")
 		return {"provider_message_id": message_id, "status": "sent", "payload": payload, "response": response}
+
+	def send_meta_template(self, *, to_phone: str, meta_template, context: dict | None = None, queue=None):
+		"""Send a mirror row directly, with no local template behind it.
+
+		Separate from send_template rather than a flag on it: that one resolves its
+		identity through a local template's binding, this one is handed a mirror row.
+		Both end at the same _send_payload, so dry-run, posting and error parsing are
+		shared and the local path is untouched.
+		"""
+		payload = self.build_meta_template_payload(
+			to_phone=to_phone, meta_template=meta_template, context=context or {}
+		)
+		return self._send_payload(payload, queue)
+
+	def build_meta_template_payload(self, *, to_phone: str, meta_template, context: dict | None = None) -> dict:
+		from pet_app.notifications.meta_templates import resolve_meta_send_identity
+
+		# Raises MetaTemplateNotSendable before any Graph call when the row is not
+		# APPROVED or no longer exists on Meta - the same gate the local path uses.
+		return self._template_payload(to_phone, resolve_meta_send_identity(meta_template), context)
 
 	def send_text(self, *, to_phone: str, message: str, queue=None):
 		payload = {"messaging_product": "whatsapp", "to": to_phone, "type": "text", "text": {"body": message}}
@@ -92,19 +112,18 @@ class WhatsAppMetaChannel(BaseNotificationChannel):
 		return result
 
 	def build_template_payload(self, *, to_phone: str, template, context: dict | None = None) -> dict:
-		components = template_components(template, context or {}, mask_sensitive=False)
-		template_payload = {
-			"name": template.template_name,
-			"language": {"code": template.language or self.account.default_language or "en"},
-		}
-		if any(component.get("parameters") for component in components):
-			template_payload["components"] = components
-		return {
-			"messaging_product": "whatsapp",
-			"to": to_phone,
-			"type": "template",
-			"template": template_payload,
-		}
+		# Identity AND declared parameter shape come from the bound mirror row, never
+		# from the local template. The local fields are unvalidated free text and have
+		# drifted - a row reading language "Arabic" produced language.code "Arabic" and
+		# Meta answered #132001. resolve_send_identity raises before any Graph call
+		# when there is no approved binding; it has no fallback to the local values.
+		from pet_app.notifications.meta_templates import resolve_send_identity
+
+		return self._template_payload(to_phone, resolve_send_identity(template), context)
+
+	def _template_payload(self, to_phone, target, context) -> dict:
+		"""Both send paths' template payload. Delegates; see build_template_message."""
+		return build_template_message(to_phone, target, context)
 
 	def _send_payload(self, payload, queue=None):
 		if self.settings and self.settings.get("dry_run"):
@@ -175,6 +194,46 @@ class WhatsAppMetaChannel(BaseNotificationChannel):
 				"trace_id": error.get("fbtrace_id"),
 			},
 		)
+
+
+def build_template_message(to_phone, target, context) -> dict:
+	"""The outgoing template message, from a MetaSendTarget and a context.
+
+	Module-level and pure: it reads nothing off an account or a settings object, makes
+	no request, and touches no document beyond what the target and context already
+	carry. That is what lets the designer's dry simulation call it directly instead of
+	constructing a channel whose sibling methods send.
+
+	One derivation of the shape for one Meta API. The local path used to read the local
+	row's components_json and auto-derive named parameters from context keys; it now
+	reads the same declared components from the mirror that the mirror-direct path
+	reads. That also retires the components_json = "[]" trap, where a truthy
+	empty-string column silently suppressed every parameter.
+	"""
+	from pet_app.notifications.meta_templates import apply_slot_map_to_context
+
+	# Explicitly supplied parameters win and are used verbatim; only when the caller
+	# supplied none does the template's stored slot map resolve them. Both paths end at
+	# the same builder, so both are validated identically.
+	context = apply_slot_map_to_context(target, context or {})
+	components = build_declared_parameters(
+		components=target.components,
+		parameter_format=target.parameter_format,
+		context=context,
+		template_label=target.label,
+	)
+	template_payload = {
+		"name": target.template_name,
+		"language": {"code": target.language},
+	}
+	if components:
+		template_payload["components"] = components
+	return {
+		"messaging_product": "whatsapp",
+		"to": to_phone,
+		"type": "template",
+		"template": template_payload,
+	}
 
 
 def media_mime_type(file_name):

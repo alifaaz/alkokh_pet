@@ -143,14 +143,70 @@ def conditions_match(rule, doc) -> bool:
 	return matched
 
 
+def rule_uses_meta_template(rule) -> bool:
+	"""Whether this rule addresses a Meta template rather than a local one.
+
+	Same discriminator the composer uses: an explicit template_source of "meta", or a
+	meta_template being named at all. Absent means local, which is what every existing
+	rule is, so their behaviour is unchanged.
+	"""
+	source = cstr(rule.get("template_source")).strip().lower()
+	return source == "meta" or bool(cstr(rule.get("meta_template")).strip())
+
+
+def rule_template_addressing(rule) -> dict:
+	"""The template kwargs to hand queue_notification, from either source.
+
+	One vocabulary: a rule and a manual send are indistinguishable by the time they
+	reach the engine.
+	"""
+	if not rule_uses_meta_template(rule):
+		return {"template_key": rule.template_key}
+
+	meta_template = cstr(rule.get("meta_template")).strip()
+	if not meta_template:
+		# Explicit error, never a silent fall back to local. A rule that says "meta"
+		# and names nothing is misconfigured, and sending the local template instead
+		# would send a different message than the one somebody chose.
+		frappe.throw(
+			_("Rule {0} is set to send a Meta template but none is selected.").format(rule.name),
+			title=_("Rule is not configured"),
+		)
+	return {"template_source": "meta", "meta_template": meta_template}
+
+
+def _rule_account(rule):
+	"""The WhatsApp account a rule sends from.
+
+	A mirror-addressed rule has no local template to resolve an account through, and
+	must not fall through to the settings default silently - that would send from an
+	account nobody chose. The mirror row records which account's WABA holds the
+	template, so that is the answer.
+	"""
+	if not rule_uses_meta_template(rule):
+		return engine.resolve_whatsapp_account(
+			template=engine.resolve_template(template_key=rule.template_key), settings=engine.get_settings()
+		)
+
+	meta_template = rule_template_addressing(rule)["meta_template"]
+	account_name = frappe.db.get_value(
+		"Pet App WhatsApp Meta Template", meta_template, "provider_account"
+	)
+	if not account_name:
+		frappe.throw(
+			_("Meta template {0} has no WhatsApp account recorded on it. Run a sync from the Meta Templates tab.").format(
+				meta_template
+			)
+		)
+	return frappe.get_doc("Pet App WhatsApp Account", account_name)
+
+
 def create_action_request(rule, source_doc, *, recipient=None, context=None, process_now=False):
 	validate_action_rule(rule)
 	recipient_name, phone = _resolve_recipient(rule, source_doc, recipient)
 	if not phone:
 		frappe.throw(_("Could not resolve a WhatsApp recipient for {0}.").format(source_doc.name))
-	account = engine.resolve_whatsapp_account(
-		template=engine.resolve_template(template_key=rule.template_key), settings=engine.get_settings()
-	)
+	account = _rule_account(rule)
 	conversation = get_or_create_conversation(phone, account)
 	key = _request_key(rule, source_doc, conversation.normalized_phone)
 	existing = frappe.db.get_value("Pet App WhatsApp Action Request", {"idempotency_key": key}, "name")
@@ -207,7 +263,7 @@ def create_action_request(rule, source_doc, *, recipient=None, context=None, pro
 		context=message_context,
 		source_doctype=source_doc.doctype,
 		source_name=source_doc.name,
-		template_key=rule.template_key,
+		**rule_template_addressing(rule),
 		channel="WhatsApp",
 		idempotency_key=f"action-message:{key}",
 		conversation=conversation.name,
@@ -249,7 +305,7 @@ def send_interactive_for_request(request):
 		context=context,
 		source_doctype=request.source_doctype,
 		source_name=request.source_name,
-		template_key=rule.template_key,
+		**rule_template_addressing(rule),
 		idempotency_key=f"action-interactive:{request.name}",
 		conversation=request.conversation,
 		action_request=request.name,
