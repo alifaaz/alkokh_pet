@@ -50,6 +50,10 @@ RULE_FIELDS = (
 	"recipient_type",
 	"recipient_field",
 	"template_key",
+	# Both must be here or canonical_rule and coerce_rule_payload drop them, and a
+	# rule would forget its Meta template every time the designer saved it.
+	"template_source",
+	"meta_template",
 	"response_type",
 	"expiry_hours",
 	"duplicate_policy",
@@ -114,6 +118,56 @@ SOURCE_REGISTRY = {
 			"custom_duration_minutes": _field(_VALUE_OPERATORS),
 			"custom_linked_visit_id": _field(_LINK_OPERATORS),
 			"custom_linked_service_id": _field(_LINK_OPERATORS),
+		},
+	},
+	"Pet Boarding": {
+		"label": "Pet boarding",
+		"description": "A boarding stay",
+		# Check-in is not creation. On every booking sampled, check_in is stamped
+		# between 17 seconds and 24 hours after the row is inserted, so a check-in
+		# message is an On Update rule conditioned on record_status changing to
+		# "Checked In" - not an After Insert one. After Insert is kept for rules that
+		# genuinely mean "a booking was made".
+		"trigger_events": ("After Insert", "On Update", "Manual"),
+		# "Update Allowed Field" is deliberately absent. Nothing on a boarding record
+		# should be writable from a guardian's WhatsApp reply - not the room, not the
+		# lifecycle, not the billing - so no field here carries update_values either.
+		"executors": ("Create Rating", "Create Staff Task", "Record Acknowledgement", "Record Intent", "Require Staff Review"),
+		"fields": {
+			# Recipient paths. Same mechanism every other source uses: the registered
+			# field holds a link, and resolve_rule_recipient feeds it to
+			# context.recipient_phone.
+			"guardian": _field(_LINK_OPERATORS, recipient_types=("Guardian",), description="The stay's guardian"),
+			"customer": _field(_LINK_OPERATORS, recipient_types=("Customer",)),
+			# Lifecycle. record_status is the real one - status is a coarse
+			# Open/Closed/Cancelled flag and does not distinguish a reservation from a
+			# pet that has actually arrived.
+			"record_status": _field(
+				_SELECT_OPERATORS,
+				values=("Pending Room", "Reserved", "Checked In", "Checked Out"),
+				description="Where the stay is in its lifecycle",
+			),
+			"status": _field(_SELECT_OPERATORS, values=("Open", "Closed", "Cancelled")),
+			"boarding_type": _field(_SELECT_OPERATORS, values=("Travel", "Treatment")),
+			# Outcome and the death flag are guards, not triggers: a rule that messages
+			# a guardian must be able to say "and the pet did not die here".
+			"boarding_outcome": _field(_SELECT_OPERATORS, values=("", "Completed", "Death", "Transferred", "Cancelled", "Other")),
+			"death_during_boarding": _field(_VALUE_OPERATORS, values=(0, 1)),
+			"pet": _field(_LINK_OPERATORS),
+			"practitioner": _field(_LINK_OPERATORS),
+			"visit": _field(_LINK_OPERATORS),
+			"service_room": _field(_LINK_OPERATORS),
+			"branch": _field(_LINK_OPERATORS),
+			"check_in": _field(_VALUE_OPERATORS),
+			"check_out": _field(_VALUE_OPERATORS),
+			"expected_check_out": _field(_VALUE_OPERATORS),
+			# Billing, for conditions only. None of these is exposed as a message
+			# variable - VARIABLE_FIELDS deliberately excludes deposit - but a rule may
+			# legitimately test them, and a condition never reaches a customer.
+			"billing_status": _field(_SELECT_OPERATORS, values=("Unbilled", "Invoiced")),
+			"deposit": _field(_VALUE_OPERATORS),
+			"total_cost": _field(_VALUE_OPERATORS),
+			"balance": _field(_VALUE_OPERATORS),
 		},
 	},
 	"PetCareService": {
@@ -654,9 +708,8 @@ def _simulate_rule(rule, source_name):
 	recipient = resolve_rule_recipient(normalized, doc)
 	if not recipient["phone"]:
 		warnings.append(_("The selected recipient has no WhatsApp phone number."))
-	template = _get_template(normalized["template_key"])
 	context = build_document_context(source_doctype, source_name)
-	rendered = render_preview(template, context, mask_sensitive=False)
+	rendered, delivery_mode, would_send = _simulate_message(normalized, context, warnings)
 	return {
 		"matched": bool(matched),
 		"source_name": source_name,
@@ -666,7 +719,11 @@ def _simulate_rule(rule, source_name):
 			"phone": _display_phone(recipient["phone"]),
 		},
 		"rendered_message": rendered,
-		"delivery_mode": template.delivery_mode,
+		# False when the send would be refused before reaching Meta. Deliberately NOT
+		# expressed as ok:false on the envelope - the simulation succeeded; it is the
+		# send that would not. The reason is in warnings, carrying the real code.
+		"would_send": would_send,
+		"delivery_mode": delivery_mode,
 		"interaction": {
 			"type": normalized["response_type"],
 			"options": deepcopy(normalized["response_config"].get("options") or []),
@@ -674,6 +731,114 @@ def _simulate_rule(rule, source_name):
 		"executor_preview": _executor_preview(normalized, source_name),
 		"warnings": warnings,
 	}
+
+
+META_DELIVERY_MODE = "Meta Template"
+
+
+def _refusal_warning(exc) -> str:
+    """A caught refusal, as a warning that names the real code and slot.
+
+    A bare "could not resolve" is the false-pass failure mode this project keeps
+    hitting, so the code an operator would see on a real send is carried verbatim.
+    """
+    details = getattr(exc, "details", None) or {}
+    code = cstr(getattr(exc, "exc_type", "")) or "META_TEMPLATE_NOT_SENDABLE"
+    slot = details.get("slot")
+    where = _("Slot {0}: ").format(slot) if slot else ""
+    return f"[{code}] {where}{cstr(exc)}"
+
+
+def _simulate_message(normalized, context, warnings):
+    """(rendered_message, delivery_mode, would_send) for either template source.
+
+    MetaTemplateNotSendable is caught **here only**. This is the dry-simulation path:
+    its whole purpose is to show an operator the problem, so a refusal becomes a loud
+    warning plus would_send=False rather than an exception that hides the rest of the
+    result. Every real send path still treats the same refusal as a refusal.
+    """
+    from pet_app.notifications.channels.whatsapp_meta import build_template_message
+    from pet_app.notifications.meta_templates import (
+        MetaTemplateNotSendable,
+        resolve_meta_send_identity,
+        resolve_send_identity,
+    )
+    if _uses_meta_template(normalized):
+        try:
+            target = resolve_meta_send_identity(cstr(normalized.get("meta_template")).strip())
+        except MetaTemplateNotSendable as exc:
+            warnings.append(_refusal_warning(exc))
+            return "", META_DELIVERY_MODE, False
+        rendered, would_send = _preview_meta_message(target, context, warnings)
+        return rendered, META_DELIVERY_MODE, would_send
+
+    # Local rules keep their existing preview, rendered from the local body_preview.
+    template = _get_template(normalized["template_key"])
+    rendered = render_preview(template, context, mask_sensitive=False)
+    would_send = True
+    try:
+        # The local path still resolves its identity through the bound mirror row, so a
+        # rule whose template is unbound or unapproved refuses at send. A would_send
+        # that ignored that would be a lie in exactly the direction that hurts.
+        target = resolve_send_identity(template)
+    except MetaTemplateNotSendable as exc:
+        warnings.append(_refusal_warning(exc))
+        return rendered, cstr(template.delivery_mode), False
+    try:
+        build_template_message("<simulated>", target, dict(context))
+    except MetaTemplateNotSendable as exc:
+        warnings.append(_refusal_warning(exc))
+        would_send = False
+    return rendered, cstr(template.delivery_mode), would_send
+
+
+def _preview_meta_message(target, context, warnings):
+    """Preview text for a Meta-addressed rule, and whether the send would go."""
+    from pet_app.notifications.channels.whatsapp_meta import build_template_message
+    from pet_app.notifications.meta_templates import MetaTemplateNotSendable
+    from pet_app.notifications.renderer import preview_declared_message
+
+    try:
+        payload = build_template_message("<simulated>", target, dict(context))
+    except MetaTemplateNotSendable as exc:
+        # A per-slot refusal is reported by the per-slot pass below, which finds every
+        # failing slot rather than just the first one the builder tripped on. Only a
+        # whole-template refusal (a stale map, an unsupported shape) is reported here,
+        # or the same slot would be warned about twice.
+        if not (getattr(exc, "details", None) or {}).get("slot"):
+            warnings.append(_refusal_warning(exc))
+        return preview_declared_message(target.components, _best_effort_values(target, context, warnings)), False
+
+    emitted = (payload.get("template") or {}).get("components") or []
+    values = [
+        cstr(parameter.get("text"))
+        for component in emitted
+        for parameter in component.get("parameters") or []
+    ]
+    return preview_declared_message(target.components, values), True
+
+
+def _best_effort_values(target, context, warnings):
+    """Resolve each slot on its own so the ones that work still show.
+
+    Uses resolve_slots itself, one slot at a time, rather than a second lenient
+    resolver - the rules for what resolves must not be able to differ between preview
+    and send. A slot that refuses keeps its literal {{n}} in the preview, so nobody can
+    look at the output and mistake a hole for a value.
+    """
+    from pet_app.notifications.meta_templates import MetaTemplateNotSendable, resolve_slots, stored_slot_map
+
+    values = []
+    for row in stored_slot_map(target.meta_template_id):
+        slot = {"slot": cint(row.get("slot")), "variable_key": cstr(row.get("variable_key")), "fallback": cstr(row.get("fallback"))}
+        try:
+            values.extend(
+                resolve_slots([slot], context, label=target.label, meta_template_id=target.meta_template_id)
+            )
+        except MetaTemplateNotSendable as exc:
+            warnings.append(_refusal_warning(exc))
+            values.append("{{%d}}" % slot["slot"])
+    return values
 
 
 @contextmanager
@@ -764,7 +929,88 @@ def _validate_recipient(rule, source_config, issues):
 		_issue(issues, "send", "recipient_field", "RECIPIENT_PATH_NOT_ALLOWED", _("Recipient type and field are not an eligible registered path."))
 
 
+def _uses_meta_template(rule) -> bool:
+	return cstr(rule.get("template_source")).strip().lower() == "meta" or bool(
+		cstr(rule.get("meta_template")).strip()
+	)
+
+
+def _validate_meta_template(rule, issues):
+	"""Validate a Meta-addressed rule against the mirror row it names.
+
+	Whether the mirror row is *bound* to a local template is irrelevant here - that
+	binding exists for the local send path. What matters is that Meta will accept the
+	send: the template must be APPROVED, and if it carries a slot map that map must
+	still match the number of variables the template declares. Both are things that
+	would otherwise pass validation and refuse at send time, in front of an operator.
+	"""
+	from pet_app.notifications.meta_templates import (
+		MIRROR_DOCTYPE,
+		SENDABLE_STATUS,
+		_target_from_row,
+		_TARGET_FIELDS,
+		stored_slot_map,
+	)
+	from pet_app.notifications.renderer import declared_parameter_count
+
+	meta_template = cstr(rule.get("meta_template")).strip()
+	if not meta_template:
+		_issue(issues, "message", "meta_template", "VALUE_REQUIRED", _("Meta template is required."))
+		return
+
+	row = frappe.db.get_value(MIRROR_DOCTYPE, meta_template, list(_TARGET_FIELDS), as_dict=True)
+	if not row:
+		_issue(
+			issues, "message", "meta_template", "TEMPLATE_NOT_COMPATIBLE",
+			_("Meta template was not found. Run a sync from the Meta Templates tab."),
+		)
+		return
+
+	if cint(row.missing_on_meta):
+		_issue(
+			issues, "message", "meta_template", "TEMPLATE_NOT_COMPATIBLE",
+			_("Meta template {0} no longer exists on Meta.").format(row.template_name),
+		)
+		return
+
+	if cstr(row.status) != SENDABLE_STATUS:
+		_issue(
+			issues, "message", "meta_template", "TEMPLATE_NOT_COMPATIBLE",
+			_("Meta template {0} is in status {1} and can only be sent once Meta reports it as {2}.").format(
+				row.template_name, cstr(row.status) or _("(none)"), SENDABLE_STATUS
+			),
+		)
+		return
+
+	target = _target_from_row(row)
+	try:
+		declared = declared_parameter_count(target.components)
+	except Exception as exc:
+		_issue(issues, "message", "meta_template", "TEMPLATE_NOT_COMPATIBLE", cstr(exc))
+		return
+
+	mapped = len(stored_slot_map(meta_template))
+	if mapped and mapped != declared:
+		_issue(
+			issues, "message", "meta_template", "TEMPLATE_NOT_COMPATIBLE",
+			_("Meta template {0} has {1} variable(s) but its saved variable map has {2}.").format(
+				row.template_name, declared, mapped
+			),
+		)
+	elif declared and not mapped:
+		_issue(
+			issues, "message", "meta_template", "TEMPLATE_NOT_COMPATIBLE",
+			_(
+				"Meta template {0} has {1} variable(s) and no saved variable map, so a rule "
+				"cannot fill them. Map its variables first."
+			).format(row.template_name, declared),
+		)
+
+
 def _validate_template(rule, issues):
+	if _uses_meta_template(rule):
+		_validate_meta_template(rule, issues)
+		return
 	if not rule["template_key"]:
 		_issue(issues, "message", "template_key", "VALUE_REQUIRED", _("Message template is required."))
 		return
@@ -890,7 +1136,15 @@ def summarize_rule(rule):
 	source_label = source.get("label") or cstr(rule.get("source_doctype") or "source record")
 	event = cstr(rule.get("trigger_event") or "an event occurs").lower()
 	recipient = cstr(rule.get("recipient_type") or "recipient")
-	template = cstr(rule.get("template_key") or "a message")
+	if _uses_meta_template(rule):
+		meta_template = cstr(rule.get("meta_template")).strip()
+		template = (
+			cstr(frappe.db.get_value("Pet App WhatsApp Meta Template", meta_template, "template_name"))
+			or meta_template
+			or "a Meta template"
+		)
+	else:
+		template = cstr(rule.get("template_key") or "a message")
 	executor = cstr(rule.get("executor") or "the configured action")
 	return _("When {0} reaches {1}, send {2} to its {3} and run {4} after a valid reply.").format(
 		source_label, event, template, recipient, executor

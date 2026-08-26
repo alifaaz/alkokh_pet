@@ -107,3 +107,31 @@ pet_app.patches.sales_order_coordinate_precision
 # export made this app's to install. Runs after the fixture entries were removed and
 # hooks.py switched to a name allow-list, or sync_fixtures would just put them back.
 pet_app.patches.remove_uae_vat_custom_fields
+# Meta's message templates get their own mirror doctype rather than meta_* fields on
+# Pet App WhatsApp Template: Meta owns approval state, we own the event binding, and
+# merging the two makes a never-submitted template indistinguishable from an approved
+# one. status/category are Data, not Select - Meta extends those lists, we do not.
+pet_app.patches.p1_12_meta_template_mirror
+# Two columns so a queue row can name a Pet App WhatsApp Meta Template directly. The
+# composer could only reach local templates, and after the binding gate twelve of the
+# thirteen refuse; the mirror holds fifteen approved ones with correct locale codes.
+pet_app.patches.p1_13_manual_meta_template_send
+# Each {{n}} slot on a Meta template gets a stored meaning, in a child table on the
+# mirror row. Keyed by the mirror docname (Meta's template id), never by
+# local_template or binding_state - upsert_mirror_row recomputes both every sync.
+pet_app.patches.p1_14_meta_template_slot_map
+# A slot map that no longer matches its template after a sync. Set during the sync
+# that causes the drift so it shows in a list view, rather than surfacing later as a
+# refused send. The map is never cleared - a count change may be a typo fix.
+pet_app.patches.p1_15_meta_template_slot_map_stale
+# Action rules can name a Meta template directly, using the composer's own two fields
+# so there is one addressing vocabulary. template_key becomes conditionally mandatory
+# rather than always mandatory. Pet App Notification Rule is deliberately excluded: it
+# has zero rows and no dispatch code, and adding the fields would advertise a
+# capability that does not exist.
+pet_app.patches.p1_16_action_rule_meta_template
+# A Meta template can declare which record its variables come from, so the slot-map
+# editor offers the namespaces that can actually be populated for it instead of all
+# 94. Data, not Select: the source list lives in SOURCE_NAMESPACES and grows by code
+# change, and a copy baked into a patch would go stale.
+pet_app.patches.p1_17_meta_template_source_doctype

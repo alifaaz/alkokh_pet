@@ -14,6 +14,7 @@ from pet_app.notifications import engine
 from pet_app.notifications import actions as whatsapp_actions
 from pet_app.notifications import designer as whatsapp_designer
 from pet_app.notifications import inbox as whatsapp_inbox
+from pet_app.notifications import meta_templates as whatsapp_meta_templates
 from pet_app.notifications.context import list_template_variables
 from pet_app.notifications.scheduler import enqueue_due_reminders as _enqueue_due_reminders
 from pet_app.utils.api_response import api_error, api_success
@@ -146,9 +147,18 @@ def queue_notification(data=None, **kwargs):
 @frappe.whitelist(methods=["POST"])
 @standardize_response
 def send_manual_notification(data=None, **kwargs):
+	"""Send now, from either template source.
+
+	The default path is unchanged: pass ``template_key`` and everything resolves
+	from that local Pet App WhatsApp Template. Passing ``template_source: "meta"``
+	with a ``meta_template`` (a Pet App WhatsApp Meta Template name) sends that
+	mirror row directly - no local row, no binding required.
+	"""
 	try:
 		require_doctype_permission("Pet App Notification Queue", "create")
 		payload = _payload(data, kwargs)
+		if payload.get("meta_template"):
+			require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "read")
 		process_now = payload.pop("process_now", 1)
 		payload["manual"] = True
 		result = engine.queue_notification(**payload)
@@ -595,13 +605,33 @@ def send_actionable_whatsapp_message(
 		require_doctype_permission("Pet App WhatsApp Action Request", "create")
 		require_doctype_permission(source_doctype, "read")
 		filters = {"enabled": 1, "source_doctype": source_doctype}
+		action_rule = cstr(action_rule).strip()
+		template_key = cstr(template_key).strip()
 		if action_rule:
 			filters["name"] = action_rule
 		elif template_key:
+			# Guarded against emptiness on purpose: a rule that addresses a Meta template
+			# has a blank template_key, and an unguarded filter would match it by
+			# accident and send a template nobody asked for.
 			filters["template_key"] = template_key
 		name = frappe.db.get_value("Pet App WhatsApp Action Rule", filters, "name", order_by="modified desc")
 		if not name:
-			frappe.throw(_("No active WhatsApp action rule matches this request."))
+			if action_rule:
+				frappe.throw(
+					_("WhatsApp action rule {0} was not found, is disabled, or is not for {1}.").format(
+						action_rule, source_doctype
+					)
+				)
+			if template_key:
+				frappe.throw(
+					_(
+						"No enabled WhatsApp action rule for {0} uses template {1}. Rules that send a "
+						"Meta template cannot be found this way - pass action_rule instead."
+					).format(source_doctype, template_key)
+				)
+			frappe.throw(
+				_("Specify action_rule, or template_key for a rule that uses a local template.")
+			)
 		rule = frappe.get_doc("Pet App WhatsApp Action Rule", name)
 		source = frappe.get_doc(source_doctype, source_name)
 		request = whatsapp_actions.create_action_request(
@@ -764,5 +794,154 @@ def download_whatsapp_media(message=None):
 			frappe.throw(_("This message has no downloaded attachment."))
 		file_doc = frappe.get_doc("File", doc.file)
 		return api_success({"file": {"name": file_doc.name, "file_name": file_doc.file_name, "file_url": file_doc.file_url, "is_private": file_doc.is_private}})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+# ---------------------------------------------------------------------------
+# Meta template management
+#
+# These six sit on the rich error path: _error_response passes
+# details=getattr(exc, "details", None), so Meta's code, error_subcode, type,
+# fbtrace_id and http_status reach the caller intact. They must not be routed
+# through the queue's _mark_failed, which flattens all of that to a string.
+#
+# Only sync and the three write methods call Graph. list/get read the mirror
+# doctype, so the templates tab keeps working when Meta is unreachable.
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def list_meta_templates(status=None, language=None, limit=None, after=None):
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "read")
+		return api_success(whatsapp_meta_templates.list_mirror_templates(status, language, limit, after))
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_meta_template(meta_template_id=None, name=None):
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "read")
+		return api_success(whatsapp_meta_templates.get_mirror_template(meta_template_id or name))
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def create_meta_template(name=None, language=None, category=None, components=None, data=None, **kwargs):
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "create")
+		payload = _payload(data, kwargs)
+		return api_success(
+			whatsapp_meta_templates.create_meta_template(
+				name=name if name is not None else payload.get("name"),
+				language=language if language is not None else payload.get("language"),
+				category=category if category is not None else payload.get("category"),
+				components=components if components is not None else payload.get("components"),
+				account=payload.get("account"),
+			)
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def edit_meta_template(meta_template_id=None, components=None, data=None, **kwargs):
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "write")
+		payload = _payload(data, kwargs)
+		return api_success(
+			whatsapp_meta_templates.edit_meta_template(
+				meta_template_id=meta_template_id if meta_template_id is not None else payload.get("meta_template_id"),
+				components=components if components is not None else payload.get("components"),
+				account=payload.get("account"),
+			)
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_meta_template(name=None, data=None, **kwargs):
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "delete")
+		payload = _payload(data, kwargs)
+		return api_success(
+			whatsapp_meta_templates.delete_meta_template(
+				name=name if name is not None else payload.get("name"),
+				account=payload.get("account"),
+			)
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def sync_meta_templates(account=None, data=None, **kwargs):
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "write")
+		payload = _payload(data, kwargs)
+		counts = whatsapp_meta_templates.sync_meta_templates(account or payload.get("account"))
+		return api_success(
+			{"synced": counts["synced"], "last_synced_at": now_datetime()},
+			meta=counts,
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_meta_template_slot_map(meta_template=None, name=None, source_doctype=None):
+	"""The stored meaning of each {{n}} slot on a Meta template.
+
+	Returns the map plus the count the template actually declares, so an editor can
+	show "4 variables in this message, 4 mapped" without a second call, and the
+	allowlisted variables it may choose from.
+	"""
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "read")
+		target = meta_template or name
+		# Omitted reads the stored source; passing one previews that source's variables
+		# without writing anything. An empty string is a legal preview of "no source".
+		source = (
+			whatsapp_meta_templates._UNSET if source_doctype is None else source_doctype
+		)
+		return api_success(whatsapp_meta_templates.slot_map_payload(target, source))
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def save_meta_template_slot_map(meta_template=None, slots=None, source_doctype=None, data=None, **kwargs):
+	"""Replace a Meta template's slot map.
+
+	Validated against the template before it is stored: slots contiguous from 1, no
+	duplicates, count equal to the declared variable count, and every variable_key on
+	the allowlist. A map that disagrees with the template would otherwise surface as a
+	refused send to a customer.
+	"""
+	try:
+		require_doctype_permission(whatsapp_meta_templates.MIRROR_DOCTYPE, "write")
+		payload = _payload(data, kwargs)
+		target = meta_template if meta_template is not None else payload.get("meta_template")
+		rows = slots if slots is not None else payload.get("slots")
+		if isinstance(rows, str):
+			rows = json.loads(rows)
+		# Absent means "leave the stored source alone"; an empty string clears it. The
+		# two are kept distinguishable so a caller that does not know about sources
+		# cannot silently erase one.
+		if source_doctype is not None:
+			source = source_doctype
+		elif "source_doctype" in payload:
+			source = payload.get("source_doctype")
+		else:
+			source = whatsapp_meta_templates._UNSET
+		whatsapp_meta_templates.save_slot_map(target, rows or [], source)
+		# Projected through the same function the read endpoint uses, so the caller can
+		# re-render straight from this response without a second request and without a
+		# branch on which endpoint produced it.
+		return api_success(whatsapp_meta_templates.slot_map_payload(target))
 	except Exception as exc:
 		return _error_response(exc)

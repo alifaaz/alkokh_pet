@@ -478,3 +478,102 @@ deleted five permission DocTypes built that way.
 Tests: `pet_app/tests/test_branch_scope.py`. Several assert that history, diagnostics and
 billing stay **global**, so a future change that scopes them fails with a message naming
 the decision.
+
+## Meta Template Mirror (2026-08-23)
+
+Meta's message templates are mirrored into their own doctype rather than bolted onto the
+local one. Built in four phases: schema, Graph client and six endpoints, webhook route,
+docs. `docs/whatsapp-frontend.md` holds the frontend contract.
+
+Two doctypes, both created by `pet_app/patches/p1_12_meta_template_mirror.py`:
+
+- `Pet App WhatsApp Meta Template` — autonamed `field:meta_template_id`, so Meta's own ID is
+  the docname and a re-sync is a stable upsert.
+- `Pet App WhatsApp Meta Category Map` — local category to Meta category, as data.
+
+### Why a mirror and not `meta_*` fields on `Pet App WhatsApp Template`
+
+The two objects have different owners and different lifecycles. Meta owns approval state,
+rejection reason and component structure; this app owns the event binding, the delivery mode
+and the body preview. Merged, a sync job writes into rows a human is editing, and a template
+Meta has never seen is indistinguishable from an approved one.
+
+`Pet App WhatsApp Template` was not modified. The mirror points at it through
+`local_template`; it does not point back.
+
+### `status`, `category` and `language` are `Data`. Do not make them `Select`.
+
+Meta extends those vocabularies on its own schedule. A `Select` is a hardcoded list living in
+a patch: a value outside it throws on save or is silently dropped, and the mirror stops
+reflecting reality until somebody ships a patch. Nothing validates, maps, or re-cases these
+values — whatever Meta sent is stored. A webhook carrying `SOME_FUTURE_STATE_2031` lands
+unchanged; that is a tested property, not an aspiration.
+
+`raw_json` carries the same guarantee at the object level. The live WABA already returns
+three keys with no column — `disable_ios_autofill`, `is_primary_device_delivery_only`,
+`parameter_format` — and all three survive every sync. Adopting one later is a read, not a
+migration plus a backfill.
+
+Category translation is a lookup, never an `if` chain and never a dict literal. `Service`
+seeds blank because Meta has no Service category, and submitting in it throws naming the row
+to fill. Resolution accepts either side of the mapping, but both answers come out of the
+table.
+
+### Configuration comes from the account row
+
+WABA ID from `whatsapp_business_account_id`, API version from `graph_api_version` — the site
+runs `v25.0`, not the `v20.0` default, which is exactly why no version literal may appear in
+code. Template management additionally needs the `whatsapp_business_management` token
+permission; `whatsapp_business_messaging` alone reaches the messaging edge but not this one,
+so a token can work for sending and still fail here. `MetaTemplatePermissionError` detects
+that case and names the fix.
+
+### Binding is exact, and the collation fights you
+
+Mirror rows bind to local templates by exact `(template_name, language)`. One match binds,
+none is `unbound`, several is `ambiguous` and binds neither. No fuzzy matching, no
+slugifying, no normalisation.
+
+The database collation is case-insensitive, so a plain `frappe.get_all` filter *is* a fuzzy
+match — it will bind `Feedback` to `feedback`. Candidates are therefore re-checked
+byte-for-byte in Python before one is accepted. `resolve_binding` and `apply_status_update`
+both do this; keep it if you touch either.
+
+A high `unbound` count is normal. A local row with `language = "Arabic"` never binds, because
+Meta's locale code is `ar`.
+
+### Webhook
+
+`_extract_events` now reads `change.get("field")`. `message_template_status_update` becomes a
+`template_status` event instead of falling into the `raw` catch-all, where it was stored and
+dropped. It writes `status`, `rejected_reason` and `last_synced_at` on the matched row.
+
+No matching row is not an error: nothing is created and nothing throws, because a template
+can be approved before this site has synced it, and a row invented from a status payload
+would have no components and no `raw_json`. The reason goes to `processing_error` on the
+stored `Pet App WhatsApp Webhook Event` row — a field that existed since `p1_5` and was
+written by nothing until now. Unhandled webhook fields leave a note there too.
+
+`reason: "NONE"` is stored verbatim, so an approved row reads `NONE` after a webhook and
+blank after a sync. That is deliberate: normalising it is the value-list logic this design
+avoids. It is solved on the frontend.
+
+**The WABA must be subscribed to `message_template_status_update` in the Meta App dashboard
+under WhatsApp → Configuration → Webhook fields.** Nothing in this repo can declare, verify
+or repair that subscription, and if it is off, approvals arrive nowhere with no error
+anywhere. `sync_meta_templates` is the fallback path.
+
+### Deliberately not done
+
+- Nothing validates that a template is `APPROVED` before sending. `engine.py` was not
+  touched; a local template whose name Meta has never seen still fails at send time.
+- `_response_json` in `notifications/meta_templates.py` is a deliberate copy of the one in
+  `channels/whatsapp_meta.py`, not a shared helper. The send path and the template path stay
+  uncoupled; do not collapse them.
+- Template-status webhook events are not deduplicated — they carry no message ID, and
+  `provider_message_id` was not overloaded with a template ID. Re-delivery rewrites the same
+  values and adds a log row.
+
+Tests: none added. Verification was done against the live site by running each path inside a
+transaction and rolling back — including a 102-payload replay of stored webhook events
+through the new `_extract_events`, which produced zero classification changes.
