@@ -8,6 +8,9 @@ from frappe.model.document import Document
 from frappe.utils import cint, cstr, now_datetime
 
 from pet_app.utils.rating_entities import (
+	CUSTOMER_RATING,
+	DEFAULT_RATING_TYPE,
+	RATING_TYPES,
 	compute_sentiment,
 	resolve_performer,
 	resolve_performer_name,
@@ -21,6 +24,7 @@ class Rating(Document):
 	def validate(self):
 		self._normalize_defaults()
 		self._validate_reference()
+		self._validate_rating_type()
 		self._validate_overall_rating()
 		questionnaire = self._validate_questionnaire()
 		self._validate_answers(questionnaire)
@@ -82,11 +86,46 @@ class Rating(Document):
 		self.reference_name = cstr(self.reference_name).strip()
 		self.questionnaire = cstr(self.questionnaire).strip()
 		self.notes = cstr(self.notes).strip()
+		self.rating_type = cstr(self.rating_type).strip()
+		self.rated_by_guardian = cstr(self.rated_by_guardian).strip()
 
 		if not self.rated_by:
 			self.rated_by = frappe.session.user
 		if not self.rated_at:
 			self.rated_at = now_datetime()
+
+	def _validate_rating_type(self):
+		"""Every stored row carries a type, and the type is declared, not deduced.
+
+		The two customer writers - the WhatsApp rating executor and the mobile
+		storefront - stamp CUSTOMER explicitly. Anything else reaching this controller
+		is the staff Desk/REST path, which is Internal by definition, so an unset value
+		resolves there instead of throwing. That is not inference after the fact: it is
+		the one remaining writer, named, and it is the only reason the live staff rating
+		UI keeps working without a frontend change.
+
+		A DocType field default would not do this job. Frappe applies defaults in
+		new_doc() and in the Desk form, not in frappe.get_doc({...}).insert() - which is
+		exactly what /api/resource/Rating goes through, and how all 1,468 PetCareService
+		ratings on this site were written. A default would cover the Desk form, miss
+		REST, and read as protection that is not there. The rule lives here instead, so
+		there is one place to change it and no path around it.
+		"""
+		if not self.rating_type:
+			self.rating_type = DEFAULT_RATING_TYPE
+		if self.rating_type not in RATING_TYPES:
+			frappe.throw(
+				_("Rating Type must be one of: {0}.").format(", ".join(RATING_TYPES))
+			)
+
+		# The guardian reference and the type are the same fact stated twice. Let them
+		# disagree and every reader that trusts the type is reading a lie - a guardian's
+		# score inside a practitioner's average, or an internal audit note on the public
+		# storefront.
+		if self.rated_by_guardian and self.rating_type != CUSTOMER_RATING:
+			frappe.throw(
+				_("A rating that names a Guardian must be a {0} rating.").format(CUSTOMER_RATING)
+			)
 
 	def _validate_reference(self):
 		if not self.reference_doctype:
@@ -178,22 +217,42 @@ class Rating(Document):
 			frappe.throw(_("Required rating answers are missing: {0}").format(", ".join(labels)))
 
 	def _validate_duplicate_rating(self):
+		"""One rating per rater, per reference, per questionnaire, per type.
+
+		Two additions to the original tuple, both load-bearing.
+
+		The type joins it, so a guardian's Customer rating and a supervisor's Internal
+		rating of the same service are two separate rows that cannot collide. Without
+		that, adding the type column would have been worse than not adding it: readers
+		would filter on a field whose value the last writer happened to win.
+
+		The guardian joins it because a Customer rating's ``rated_by`` is not an
+		identity. Almost no Guardian on this site has a linked User, so every one of
+		them collapses onto whichever fallback user the writer picked - which is how
+		three ratings from three different guardians all came to read
+		``rated_by = Administrator``. Matching on both columns keeps the old behaviour
+		exactly for staff rows, where ``rated_by_guardian`` is always empty.
+		"""
 		existing = frappe.db.sql(
 			"""
 			select name
 			from `tabRating`
-			where rated_by = %s
+			where ifnull(rated_by, '') = %s
+				and ifnull(rated_by_guardian, '') = %s
 				and reference_doctype = %s
 				and reference_name = %s
 				and ifnull(questionnaire, '') = %s
+				and ifnull(rating_type, '') = %s
 				and name != %s
 			limit 1
 			""",
 			(
-				self.rated_by,
+				self.rated_by or "",
+				self.rated_by_guardian or "",
 				self.reference_doctype,
 				self.reference_name,
 				self.questionnaire or "",
+				self.rating_type or "",
 				self.name or "",
 			),
 		)

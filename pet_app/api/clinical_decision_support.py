@@ -56,9 +56,29 @@ def _medication_alerts(visit):
 
 
 def _vaccination_alerts(visit):
-	if not frappe.db.exists("DocType", "Pet Vaccination Record"):
+	if not frappe.db.exists("DocType", "Preventive Care Record"):
 		return []
-	overdue = frappe.db.exists("Pet Vaccination Record", {"pet": visit.animal_patient, "next_due_date": ["<", getdate(nowdate())], "reminder_status": ["!=", "Cancelled"]})
+	# The `is set` guard is here for robustness, not because this call is broken: measured,
+	# `frappe.db.exists` does NOT match a NULL date against `<`, while `frappe.get_all` and
+	# `frappe.get_list` DO (they render the comparison through `ifnull(...)`, turning NULL into
+	# a very old date). That difference is undocumented, so relying on it would make this
+	# correct by accident - and it would break silently the day this is rewritten as a
+	# get_all. A dose with no next due date has no recurrence and cannot be overdue.
+	overdue = frappe.get_all(
+		"Preventive Care Record",
+		filters=[
+			["pet", "=", visit.animal_patient],
+			["kind", "=", "Vaccination"],
+			["next_due_date", "is", "set"],
+			["next_due_date", "<", getdate(nowdate())],
+			["reminder_status", "!=", "Cancelled"],
+			# A cancelled dose was never given, so it cannot be overdue for a next one.
+			# The doctype this replaces had no status and so could not make the distinction.
+			["status", "!=", "Cancelled"],
+		],
+		limit=1,
+		ignore_permissions=True,
+	)
 	return [{"alert_type": "Vaccination Overdue", "severity": "Info", "message": "Vaccination is overdue."}] if overdue else []
 
 

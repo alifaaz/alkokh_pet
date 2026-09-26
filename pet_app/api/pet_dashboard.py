@@ -59,9 +59,12 @@ PET_LINK_FIELDS = {
 	"Pet Medical Profile": "pet",
 	"Appointment": "custom_pet",
 	"Pet Care Episode": "pet",
-	"Pet Vaccination Record": "pet",
-	"Pet Deworming Record": "pet",
+	"Preventive Care Record": "pet",
 }
+
+PREVENTIVE_DOCTYPE = "Preventive Care Record"
+# The single screen that replaces the two dead links this module used to emit.
+PREVENTIVE_ROUTE = "/healthcare/preventive-care"
 
 # Billable doctypes carrying a sales_invoice link, mapped to the care category
 # the frontend understands.
@@ -445,12 +448,17 @@ def _preventive(pet: str) -> dict:
 	next_due: date | None = None
 	total = compliant = 0
 
-	for doctype, icon_key in (("Pet Vaccination Record", "vaccine_name"), ("Pet Deworming Record", "medication_name")):
+	# One doctype, iterated by kind so vaccination and deworming standing stay separate -
+	# a pet up to date on worming and overdue on rabies is not "half compliant", it is
+	# overdue, and collapsing the two would hide that.
+	for kind in ("Vaccination", "Deworming"):
+		doctype, icon_key = PREVENTIVE_DOCTYPE, "medication_name"
 		if not _exists(doctype):
 			continue
 		rows = frappe.get_all(
 			doctype,
-			filters={"pet": pet},
+			# A cancelled dose was never given, so it sets no standing and owes no next dose.
+			filters={"pet": pet, "kind": kind, "status": ["!=", "Cancelled"]},
 			fields=["name", icon_key, "administered_on", "next_due_date"],
 			order_by="next_due_date asc",
 			ignore_permissions=True,
@@ -1282,15 +1290,30 @@ def _preventive_lapse_insight(pet: str) -> list[dict]:
 	evidence: list[dict] = []
 	labels: list[str] = []
 
+	# ONE ROUTE, AND IT IS A LIVE ONE. This emitted /healthcare/vaccinations and
+	# /healthcare/deworming, neither of which exists in the shipped SPA - the route table has
+	# labs, radiology, services and clinical-master-data and nothing preventive. Both links
+	# were dead. One doctype now means one screen, and this is the route the frontend builds.
 	for doctype, name_field, route in (
-		("Pet Vaccination Record", "vaccine_name", "/healthcare/vaccinations"),
-		("Pet Deworming Record", "medication_name", "/healthcare/deworming"),
+		(PREVENTIVE_DOCTYPE, "medication_name", PREVENTIVE_ROUTE),
 	):
 		if not _exists(doctype):
 			continue
 		rows = frappe.get_all(
 			doctype,
-			filters={"pet": pet, "next_due_date": ["<", today]},
+			# `["next_due_date", "is", "set"]` IS LOAD-BEARING. Frappe's query builder renders
+			# a comparison on a Date field through `ifnull(...)`, so a NULL date becomes a very
+			# old one and matches `< today`. Without this, every dose with no next due date -
+			# which is most of them, and means "no recurrence" - was reported as overdue, and
+			# this insight fired on pets that owe nothing. Raw SQL does not behave this way;
+			# `frappe.get_all` does. A list of triples, not a dict, because two conditions on
+			# one field cannot both live in a dict.
+			filters=[
+				["pet", "=", pet],
+				["next_due_date", "is", "set"],
+				["next_due_date", "<", today],
+				["status", "!=", "Cancelled"],
+			],
 			fields=["name", name_field, "next_due_date", "administered_on"],
 			order_by="next_due_date asc",
 			ignore_permissions=True,

@@ -13,7 +13,9 @@ from pet_app.api.accounting.cashier import (
 	_get_default_company,
 	_get_settings_doc,
 	_is_cash_mode,
+	_set_if_field,
 	_validate_account,
+	resolve_session_cashier_till,
 )
 from pet_app.api.permissions import (
 	get_user_roles,
@@ -34,7 +36,7 @@ from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPI
 from pet_app.utils.case_assignment import DIRECT_ASSIGN_ROLES, visit_practitioner
 from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.utils.guardian_customer import get_guardian_record, get_or_create_customer_from_guardian
-from pet_app.utils.invoice_reuse import get_or_create_open_invoice
+from pet_app.utils.invoice_reuse import get_or_create_open_invoice, GUARDIAN_FIELD_CANDIDATES
 from pet_app.utils.boarding_occupancy import (
 	ACTIVE_OCCUPANT_STATUS,
 	OCCUPANT_DOCTYPE,
@@ -60,11 +62,11 @@ from pet_app.utils.boarding_occupancy import (
 	room_locks,
 )
 from pet_app.utils.boarding_pricing import resolve_boarding_rate
+from pet_app.utils.boarding_discount import parse_discount, discount_payload, apply_accommodation_discount
+from pet_app.utils.invoice_source import append_marker, find_billed_invoice
 from pet_app.utils.mortality import assert_pet_not_deceased
 from pet_app.utils.medication_stock import (
-	assert_row_can_record_stock,
-	is_opted_in,
-	issue_for_dispense,
+	medication_invoice_context,
 	receive_for_return,
 	returnable_stock_qty,
 )
@@ -74,20 +76,15 @@ from pet_app.utils.price_list import get_veterinary_selling_price_list
 ROOM_STAY_SERVICE_PREFIX = "boarding_room_stay"
 LOCK_TIMEOUT_SECONDS = 15
 BOARDING_TYPES = ("Travel", "Treatment")
+# No key, or the pre-per-pet booking-level key. See _find_occupant_room_stay_row.
+LEGACY_ROOM_STAY_KEYS = frozenset(
+	{""} | {f"{ROOM_STAY_SERVICE_PREFIX}:{kind.lower()}" for kind in BOARDING_TYPES}
+)
 BILLABLE_ITEM_STATUSES = ("Draft", "Billable", "Billed", "Cancelled", "Included")
 # Charges that are real but deliberately not invoiced. Kept separate from Cancelled: a
 # cancelled charge did not happen, an included one did and its row is the dispensing record.
 NON_INVOICED_STATUSES = ("Cancelled", "Included")
-# Charges whose GOODS never leave the shelf. Only Cancelled - and this is the whole
-# point of the distinction. Included and Cancelled sat in one tuple, and because the
-# invoice was the only thing that had ever moved stock, "not invoiced" silently meant
-# "never issued". A medical boarding rate absorbs the CHARGE, not the goods: the
-# medication is given to the animal either way and the vial has to come off the shelf
-# either way, or the clinic's inventory says it still owns a drug it injected. Stock now
-# moves at dispense, which consults this tuple and not NON_INVOICED_STATUSES, so an
-# Included row issues stock exactly like a Billable one and simply never reaches an
-# invoice line.
-NON_ISSUED_STATUSES = ("Cancelled",)
+# Included medication has no invoice line; recording it does not deduct stock.
 BILLABLE_ITEM_TYPES = ("Room Stay", "Service", "Medication", "Lab", "Imaging", "Procedure", "Product", "Other")
 MEDICATION_PLAN_TYPES = {"Medication", "Injection"}
 DISPENSE_STATUSES = ("Prescribed", "Pending Dispense", "Dispensed", "Partially Dispensed", "Cancelled", "Returned")
@@ -175,6 +172,22 @@ def _require_boarding_invoice_access():
 	require_doctype_permission("Sales Invoice", "create")
 
 
+def _first_note(*values) -> str | None:
+	"""First non-blank note among the spellings a client may send. None when all are blank.
+
+	The desk sends one note under several keys because the endpoint signature was not
+	readable from the client side, and Frappe drops the ones this function does not name
+	from `form_dict` before the body runs - which is exactly how the note used to be lost
+	while `deposit` in the same request saved fine. Returning None for an all-blank set
+	lets the caller leave an existing note alone rather than blanking it.
+	"""
+	for value in values:
+		text = cstr(value).strip()
+		if text:
+			return text
+	return None
+
+
 def _log_boarding_event(event: str, **context):
 	frappe.logger("pet_app.boarding").info({"event": event, **context})
 
@@ -194,6 +207,38 @@ def list_boarding_units(search=None, occupancy=None, date=None):
 			data.append(row)
 
 	return {"data": data, "total": len(data)}
+
+
+@frappe.whitelist()
+@standardize_response
+def get_boarding_defaults():
+	"""Booking policy for the client: how many pets fit on one booking, and the default type.
+
+	Exists because a booking policy should not inherit a settings doctype's permissions.
+	The client had exactly one source for `max_pets_per_booking` - a raw
+	`frappe.client.get("Pet Boarding Settings")` - which runs check_permission("read").
+	Administrator short-circuits has_permission and always passes; every other account
+	needs an explicit read row on that Single. Three roles had been granted one ad hoc and
+	front-desk staff held none of them, so the read 403'd, the client fell back to its safe
+	floor of 1, and at 1 the pet picker is DESIGNED to behave as single-select. Multi-pet
+	booking therefore vanished silently instead of erroring, and `default_boarding_type`
+	went blank in the same breath because it came from the same failed request.
+
+	Gated on boarding read access like every other endpoint in this module - deliberately
+	NOT on Pet Boarding Settings, which is the permission that fails. The values come from
+	the same helpers the write path already enforces with, so what the client offers and
+	what the backend accepts cannot drift: `_assert_reservation_capacity` refuses an
+	over-capacity reservation rather than truncating it, so a client guessing higher than
+	the setting would offer a selection the reservation then rejects.
+	"""
+	_require_boarding_read_access()
+
+	return {
+		"max_pets_per_booking": get_max_pets_per_booking(),
+		"default_boarding_type": _normalize_boarding_type(None),
+		"boarding_types": list(BOARDING_TYPES),
+		"boarding_category": frappe.db.get_single_value("Pet Boarding Settings", "boarding_category"),
+	}
 
 
 @frappe.whitelist()
@@ -320,7 +365,8 @@ def list_boarding_records(
 			pb.billing_status,
 			pb.sales_invoice,
 			pb.note,
-			pb.boarding_note,
+			pb.check_in_note,
+			pb.check_out_note,
 			pb.boarded_by,
 				pb.cancelled_by,
 				pb.cancellation_note,
@@ -498,7 +544,13 @@ def _start_visit_boarding_atomic(visit_name: str, boarding_note: str, expected_c
 			"workflow_state": PENDING_ROOM_STATUS,
 			"reserved_at": now_datetime(),
 			"expected_check_out": getdate(expected_check_out) if expected_check_out else None,
-			"boarding_note": boarding_note,
+			# Reservation-time text, so it belongs on `note` and nowhere else. It used to be
+			# written to `boarding_note` as well, byte-for-byte identical - and once that field
+			# was renamed to `check_in_note` the duplicate key stopped being a valid column and
+			# was silently dropped by get_valid_dict(). Deliberately NOT redirected to
+			# `check_in_note`: this is what the operator typed when the stay was BOOKED, and
+			# filing it under "Check In Notes" would attribute it to an arrival that has not
+			# happened yet.
 			"note": boarding_note,
 			"boarded_by": frappe.session.user,
 			"billing_status": "Unbilled",
@@ -616,7 +668,7 @@ def active_boarding_for_visit(visit_name: str):
 			"boarding_type",
 			"service_room",
 			"expected_check_out",
-			"boarding_note",
+			"note",
 			"boarded_by",
 			"visit",
 			"cancelled_by",
@@ -649,7 +701,7 @@ def checked_in_boarding_for_visit(visit_name: str):
 			"boarding_type",
 			"service_room",
 			"expected_check_out",
-			"boarding_note",
+			"note",
 			"boarded_by",
 			"visit",
 			"creation",
@@ -675,7 +727,12 @@ def visit_boarding_payload(visit_doc) -> dict | None:
 		"service_room": row.service_room,
 		"service_room_name": service_room_name,
 		"expected_check_out": row.expected_check_out,
-		"boarding_note": row.boarding_note,
+		"note": row.note,
+		# Deprecated alias. `boarding_note` was always written byte-for-byte identical to
+		# `note` by _start_visit_boarding_atomic, so every existing reader sees exactly what
+		# it saw before; the field itself is gone (renamed to check_in_note, which holds a
+		# different thing - the arrival note). Drop once clients read `note`.
+		"boarding_note": row.note,
 		"boarded_by": row.boarded_by,
 		"boarded_by_name": boarded_by_name,
 		"created_at": row.creation,
@@ -1150,18 +1207,85 @@ def _reserve_existing_pending_boarding(boarding_name: str, room_id: str, *, chec
 	}
 
 
+def _resolve_requested_check_in(value):
+	"""The arrival moment the desk stated, or None to let the caller stamp its own clock.
+
+	An animal is routinely handed over at the door and entered an hour or a day later, so
+	the desk can state when custody actually began. `value` is the `Pet Boarding.check_in`
+	fieldname, `YYYY-MM-DD`, and is ABSENT for an ordinary same-day admission rather than
+	sent as today's date - the field is date-only, so "today" would arrive as midnight and
+	bill up to a day that had not happened yet. None/blank therefore means "use now", which
+	is the pre-existing behaviour and is deliberately left alone.
+
+	A date BEFORE the booking was created is accepted: a record entered late is the normal
+	case, not an error. Only a future date and a date that will not parse are refused.
+
+	Refused - never clamped. A date silently corrected to today is the same failure as a
+	date silently dropped: the desk reads back what it typed and the invoice says something
+	else. Frappe already drops undeclared kwargs in exactly that silence, which is the bug
+	this kwarg exists to close, so it must not be re-created here as a "helpful" correction.
+
+	A date-only value anchors at MIDNIGHT of that date. Nights are 24h from arrival rounded
+	up (see boarding_occupancy.stay_duration), so a backdated stay can read one night longer
+	than the true arrival hour would have given. That is the intended direction: the animal
+	was in the building that day and the day is billed.
+	"""
+	if value is None:
+		return None
+	raw = cstr(value).strip()
+	if not raw:
+		return None
+
+	# get_datetime returns None for a string it recognises as empty/zero and RAISES from
+	# dateutil for anything else it cannot read - both are the same refusal here.
+	try:
+		moment = get_datetime(raw)
+	except (ValueError, TypeError, OverflowError):
+		moment = None
+	if not moment:
+		frappe.throw(
+			_("Check-in date {0} is not a valid date. Expected YYYY-MM-DD.").format(frappe.bold(raw))
+		)
+
+	if moment > now_datetime():
+		frappe.throw(
+			_("Check-in date {0} is in the future. A stay cannot start before the animal arrives.").format(
+				frappe.bold(raw)
+			)
+		)
+
+	return moment
+
+
 @frappe.whitelist()
 @standardize_response
-def check_in_boarding(boarding_id, deposit=None):
+def check_in_boarding(boarding_id, deposit=None, check_in_note=None, notes=None, check_in=None):
 	"""Check a reserved stay in, optionally taking a deposit (عربون) at the counter.
 
 	`deposit` is optional. Absent, blank or zero means no deposit and no Payment Entry -
 	byte-for-byte the behaviour before it existed. A positive amount is written to
 	Pet Boarding.deposit and _create_boarding_deposit_payment_entry raises the advance.
+
+	`check_in_note` is the canonical key; `notes` is the spelling the shipped desk build
+	sends and is accepted so both clients work. Neither was declared before, so Frappe
+	filtered the note out of `form_dict` and the counter's text was discarded while the
+	deposit in the same request persisted - the whole of the reported bug.
+
+	`check_in` is optional and backdates the stay: `YYYY-MM-DD`, anchored at midnight of
+	that date, sent only when the desk stated an arrival other than now. It is written to
+	`Pet Boarding.check_in`, so `stay_days` and every occupant's billed nights derive from
+	it by the same path they derive from a server-stamped arrival, and it is echoed on the
+	response so a client need not read the record back to confirm the write landed. See
+	_resolve_requested_check_in for what is refused.
 	"""
 	_require_boarding_write_access()
 	if not boarding_id:
 		frappe.throw(_("Pet Boarding is required."))
+
+	# Parsed before the record is loaded and before the room lock is taken: a refused date
+	# must leave the stay exactly as it found it, and there is no reason to hold a kennel
+	# lock for a request that cannot succeed.
+	requested_check_in = _resolve_requested_check_in(check_in)
 
 	boarding = frappe.get_doc("Pet Boarding", boarding_id)
 	boarding.check_permission("write")
@@ -1204,8 +1328,12 @@ def check_in_boarding(boarding_id, deposit=None):
 		boarding.record_status = "Checked In"
 		boarding.status = "Open"
 		boarding.workflow_state = "Checked In"
-		boarding.check_in = now_datetime()
-		# Every animal that has not already been given an arrival time arrives NOW.
+		# The desk's stated arrival when it sent one, this server's clock otherwise. The
+		# stated date is NOT a display nicety: `stay_days` is recomputed from this field in
+		# PetBoarding.validate below, and the occupant loop under it seeds `joined_at` from
+		# the same value, so a backdated stay bills the days the animal was actually here.
+		boarding.check_in = requested_check_in or now_datetime()
+		# Every animal that has not already been given an arrival time arrives THEN.
 		#
 		# Nothing stamped this before: a booking reserved without an explicit `checkIn`
 		# kept `joined_at` empty through check-in and forever after, so `occupant_nights`
@@ -1239,6 +1367,13 @@ def check_in_boarding(boarding_id, deposit=None):
 		# a deposit already set on the record (from Desk) keeps working as before.
 		if deposit is not None and cstr(deposit).strip() != "":
 			boarding.deposit = _validate_deposit_amount(boarding, deposit)
+		# Blanks only skipped, never written: a check-in that supplies no note leaves whatever
+		# is already on the record intact rather than clearing it. Set before the save below,
+		# so the note lands in the same transaction as the status change and the Payment Entry
+		# - the three either all persist or none do.
+		arrival_note = _first_note(check_in_note, notes)
+		if arrival_note:
+			boarding.check_in_note = arrival_note
 		deposit_payment_entry = _create_boarding_deposit_payment_entry(boarding)
 		if deposit_payment_entry:
 			boarding.deposit_payment_entry = deposit_payment_entry.name
@@ -1252,6 +1387,11 @@ def check_in_boarding(boarding_id, deposit=None):
 		"room_id": boarding.service_room,
 		"record_status": boarding.record_status,
 		"occupancy": "Occupied",
+		# Echoed at the top level as well as inside `boarding`, because a client that cannot
+		# see the applied arrival on the response has to read the record back to know whether
+		# a backdated date survived - the field the stay is BILLED on is the wrong one to
+		# leave a client guessing about.
+		"check_in": boarding.check_in,
 		"boarding": _serialize_boarding_doc(boarding),
 		"deposit": flt(boarding.get("deposit")),
 		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
@@ -1260,16 +1400,193 @@ def check_in_boarding(boarding_id, deposit=None):
 
 @frappe.whitelist()
 @standardize_response
-def check_out_boarding(boarding_id):
+def record_boarding_payment(boarding_id=None, amount=None, note=None, boarding=None, data=None, **kwargs):
+	"""Take a payment from the guardian part-way through a stay.
+
+	Until this existed there was exactly one way for boarding money to enter the system -
+	`check_in_boarding(deposit=...)`, which happens once - so a guardian paying in
+	instalments could not be recorded at all. The desk did it with hand-made Payment
+	Entries instead, which carried no link to the stay, so check-out never saw them: the
+	stay was invoiced in full, the till asked for the full amount again, and the money
+	already taken sat on the customer as credit nobody could see. Four such payments are on
+	the production site right now.
+
+	Money in is money in. This writes the same Payment Entry the deposit path writes -
+	same drawer, same stamps, same `reference_no` link - and moves `Pet Boarding.deposit`,
+	which is the running total of everything paid against the stay and what `balance` is
+	computed from.
+
+	Allowed while the stay is open. A checked-out stay is refused: its invoice already
+	exists, and money against an existing invoice belongs at the till, where it settles
+	that invoice instead of becoming another unallocated advance.
+	"""
+	payload = _coerce_payload(data, kwargs)
+	boarding_id = cstr(
+		payload.get("boarding") or payload.get("boarding_id") or boarding_id or boarding
+	).strip()
+	amount = payload.get("amount") if payload.get("amount") is not None else amount
+	note = _first_note(payload.get("note"), note)
+
 	_require_boarding_invoice_access()
 	if not boarding_id:
 		frappe.throw(_("Pet Boarding is required."))
 
-	boarding = frappe.get_doc("Pet Boarding", boarding_id)
+	amount = flt(amount)
+	if amount <= 0:
+		frappe.throw(_("A payment amount greater than zero is required."))
+
+	doc = frappe.get_doc("Pet Boarding", boarding_id)
+	doc.check_permission("write")
+
+	if doc.record_status == "Cancelled":
+		frappe.throw(_("Cancelled boarding records cannot take a payment."))
+
+	doc.customer = doc.customer or get_or_create_customer_from_guardian(doc.guardian)
+
+	# Before check-out there is no invoice, so the money is an advance on the customer and
+	# check-out allocates it. After check-out the invoice exists and is posted, so the money
+	# is applied straight to it - which is not a nicety: an unreferenced Payment Entry
+	# against a posted invoice leaves the invoice outstanding AND the customer in credit for
+	# the same money, which is exactly the state eleven customers are in on production.
+	invoice = cstr(doc.sales_invoice).strip()
+	settled_invoice = None
+	if invoice:
+		inv = frappe.db.get_value(
+			"Sales Invoice", invoice,
+			["name", "docstatus", "grand_total", "outstanding_amount"], as_dict=True,
+		)
+		if not inv or cint(inv.docstatus) != 1:
+			frappe.throw(
+				_("Sales Invoice {0} is not submitted, so a payment cannot be applied to it.")
+				.format(frappe.bold(invoice))
+			)
+		if flt(inv.outstanding_amount) <= 0:
+			frappe.throw(
+				_("Sales Invoice {0} is already settled in full.").format(frappe.bold(invoice))
+			)
+		if amount - flt(inv.outstanding_amount) > 0.5:
+			frappe.throw(
+				_("Only {0} is outstanding on Sales Invoice {1}. Do not collect more than the bill.")
+				.format(
+					frappe.format_value(inv.outstanding_amount, {"fieldtype": "Currency"}),
+					frappe.bold(invoice),
+				)
+			)
+		settled_invoice = inv
+
+	pe = _new_boarding_payment_entry(
+		doc,
+		amount,
+		remarks=BOARDING_PAYMENT_REMARK.format(doc.name),
+		invoice=settled_invoice,
+	)
+	if not pe:
+		frappe.throw(_("The payment could not be recorded."))
+
+	if note:
+		pe.add_comment("Comment", cstr(note).strip())
+	pe.add_comment(
+		"Comment",
+		_("Boarding payment captured for Pet Boarding {0} by {1}.").format(
+			doc.name, frappe.session.user
+		),
+	)
+
+	# `deposit` is the running total paid, which is what `_compute_totals` subtracts to get
+	# `balance`. Recomputed from the Payment Entries rather than incremented, so a cancelled
+	# payment corrects it on the next write instead of leaving the figure overstated.
+	total_paid = boarding_total_paid(doc.name, doc.customer)
+	if doc.docstatus == 0:
+		doc.deposit = total_paid
+		if not doc.get("deposit_payment_entry"):
+			doc.deposit_payment_entry = pe.name
+		doc.save()
+	else:
+		# A checked-out stay is submitted. These two are the only fields that move, they are
+		# both money-tracking rather than accounting entries, and db_set is how a submitted
+		# document is allowed to carry them.
+		doc.db_set("deposit", total_paid, update_modified=False)
+		doc.db_set("balance", flt(doc.total_cost) - total_paid, update_modified=False)
+		if not doc.get("deposit_payment_entry"):
+			doc.db_set("deposit_payment_entry", pe.name, update_modified=False)
+		doc.reload()
+
+	doc.add_comment(
+		"Comment",
+		_("Payment of {0} recorded on Payment Entry {1} by {2}.").format(
+			frappe.format_value(amount, {"fieldtype": "Currency"}), pe.name, frappe.session.user
+		),
+	)
+	_log_boarding_event(
+		"BOARDING_PAYMENT_RECORDED",
+		boarding=doc.name,
+		payment_entry=pe.name,
+		amount=amount,
+		total_paid=flt(doc.deposit),
+		user=frappe.session.user,
+	)
+
+	return {
+		"success": True,
+		"boarding_id": doc.name,
+		"payment_entry": pe.name,
+		"amount": flt(amount),
+		"account": pe.paid_to,
+		"pos_profile": pe.get("custom_pos_profile"),
+		"total_paid": flt(doc.deposit),
+		"total_cost": flt(doc.total_cost),
+		"balance": flt(doc.balance),
+		"sales_invoice": settled_invoice.name if settled_invoice else None,
+		"invoice_outstanding": (
+			flt(frappe.db.get_value("Sales Invoice", settled_invoice.name, "outstanding_amount"))
+			if settled_invoice else 0.0
+		),
+		"payments": boarding_payment_entries(doc.name, doc.customer),
+		"boarding": _serialize_boarding_doc(doc),
+	}
+
+
+@frappe.whitelist()
+@standardize_response
+def check_out_boarding(boarding_id, check_out_note=None, checkout_note=None, checkout_notes=None, discount=None):
+	"""Atomically invoice and close a stay; repeat calls return the saved outcome."""
+	_require_boarding_invoice_access()
+	if not boarding_id:
+		frappe.throw(_("Pet Boarding is required."))
+	requested = parse_discount(discount)
+	if requested is not None and not _boarding_discount_available():
+		frappe.throw(_("Accommodation discounts are not available yet. Please contact an administrator."))
+	savepoint = "boarding_checkout_" + frappe.generate_hash(length=10)
+	frappe.db.savepoint(savepoint)
+	try:
+		# The advisory lock coordinates occupant operations; FOR UPDATE below holds
+		# the booking lock until transaction commit, including after this function returns.
+		with boarding_lock(boarding_id):
+			result = _check_out_boarding(boarding_id, check_out_note, checkout_note, checkout_notes, requested)
+	except frappe.QueryDeadlockError:
+		# MariaDB snapshot conflicts/deadlocks already abort the whole transaction,
+		# destroying its savepoints. Preserve the retryable error for the caller.
+		frappe.db.rollback()
+		raise
+	except Exception:
+		frappe.db.rollback(save_point=savepoint)
+		raise
+	else:
+		frappe.db.release_savepoint(savepoint)
+		return result
+
+
+def _check_out_boarding(boarding_id, check_out_note, checkout_note, checkout_notes, discount):
+	boarding = frappe.get_doc("Pet Boarding", boarding_id, for_update=True)
 	boarding.check_permission("write")
 
-	if boarding.record_status == "Checked Out" or boarding.sales_invoice:
-		frappe.throw(_("Pet Boarding {0} is already checked out.").format(frappe.bold(boarding.name)))
+	if boarding.record_status == "Checked Out":
+		if discount is not None and discount != discount_payload(boarding)["discount"]:
+			frappe.throw(_("This booking is already checked out with a different discount. The submitted invoice cannot be changed here."))
+		invoice = frappe.get_doc("Sales Invoice", boarding.sales_invoice) if boarding.sales_invoice else None
+		return _checkout_result(boarding, invoice)
+	if boarding.sales_invoice or find_billed_invoice("Pet Boarding", boarding.name):
+		frappe.throw(_("This booking already has an invoice. Please review it before checkout."))
 	if boarding.record_status == "Cancelled":
 		frappe.throw(_("Cancelled boarding records cannot be checked out."))
 	if boarding.record_status != "Checked In":
@@ -1277,7 +1594,7 @@ def check_out_boarding(boarding_id):
 	if boarding.docstatus != 0:
 		frappe.throw(_("Only open Pet Boarding records can be checked out."))
 
-	with _service_room_lock(boarding.service_room):
+	with room_locks(boarding.service_room, *(row.get("service_room") for row in active_occupants(boarding))):
 		boarding.check_out = now_datetime()
 		boarding.customer = get_or_create_customer_from_guardian(boarding.guardian)
 
@@ -1303,13 +1620,18 @@ def check_out_boarding(boarding_id):
 		guardian_field = None
 
 		if invoice_items and invoice_total > 0:
-			# Appends to the customer's open Draft for this branch when one exists - an
-			# eight-day stay and a same-week clinic visit land on one invoice.
 			result = get_or_create_open_invoice(
 				customer=boarding.customer,
 				items=invoice_items,
 				source_doctype="Pet Boarding",
 				source_name=boarding.name,
+				# One stay, one invoice. Reuse used to append this stay's nights to whatever
+				# draft the customer already had open in this branch, so ACC-SINV-2026-01888
+				# on the production site carries three different stays and no boarding's
+				# `sales_invoice` names a document that is only its own. That also made the
+				# advances below ambiguous: payments taken for THIS stay were allocated
+				# against a total that included somebody else's.
+				force_new=True,
 				# The stay's own stamped branch, written at insert by
 				# utils.branch.stamp_boarding_branch from Pet Boarding Settings. Read from
 				# the record and never re-derived here, so a later change to the setting
@@ -1352,7 +1674,14 @@ def check_out_boarding(boarding_id):
 				),
 			)
 
-		deposit_allocation = _allocate_boarding_deposit(boarding, invoice)
+		if _boarding_discount_available():
+			precision = invoice.precision("grand_total") if invoice else boarding.precision("total_cost")
+			apply_accommodation_discount(boarding, invoice, discount, precision)
+		if invoice and not any(flt(row.net_amount) for row in invoice.items) and not flt(invoice.grand_total):
+			frappe.delete_doc("Sales Invoice", invoice.name, ignore_permissions=True)
+			invoice = None
+		_allocate_boarding_deposit(boarding, invoice)
+		_submit_checkout_invoice(invoice)
 
 		for row in boarding.billable_items or []:
 			# Included must survive check-out. Flipping it to Billed would claim the
@@ -1360,6 +1689,14 @@ def check_out_boarding(boarding_id):
 			# destroy the only record of what that rate actually covered.
 			if row.status not in NON_INVOICED_STATUSES:
 				row.status = "Billed"
+
+		# Overwrite only when one is supplied, same rule as check-in. The death cascade
+		# writes this field too, on its own path, and appends rather than replaces - so a
+		# stay closed by a death record keeps its closure note even if this endpoint later
+		# runs against it.
+		departure_note = _first_note(check_out_note, checkout_note, checkout_notes)
+		if departure_note:
+			boarding.check_out_note = departure_note
 
 		boarding.sales_invoice = invoice.name if invoice else None
 		boarding.billing_status = "Invoiced" if invoice else "Unbilled"
@@ -1389,7 +1726,18 @@ def check_out_boarding(boarding_id):
 		if invoice and boarding.meta.is_submittable and boarding.docstatus == 0:
 			boarding.submit()
 
+	return _checkout_result(boarding, invoice, guardian_field)
+
+
+def _checkout_result(boarding, invoice, guardian_field=None):
+	if invoice and guardian_field is None:
+		guardian_field = next((field for field in GUARDIAN_FIELD_CANDIDATES if invoice.meta.has_field(field)), None)
+	payments = boarding_payment_entries(boarding.name, boarding.get("customer"))
+	payment_names = {row.name for row in payments}
+	allocated = sum(flt(row.allocated_amount) for row in (invoice.get("advances") or [])
+		if row.reference_type == "Payment Entry" and row.reference_name in payment_names) if invoice else 0
 	return {
+		**discount_payload(boarding),
 		"success": True,
 		"boarding_id": boarding.name,
 		"room_id": boarding.service_room,
@@ -1400,15 +1748,23 @@ def check_out_boarding(boarding_id):
 		"customer": boarding.customer,
 		"guardian_reference_field": guardian_field,
 		"total_cost": boarding.total_cost,
-		# An ESTIMATE of what will be due (total_cost - deposit), not a ledger figure. The
-		# invoice is shared under reuse, so its outstanding is the customer's, not this
-		# stay's. The keys below are the ones that are actually true.
+		# Legacy gross estimate; accommodation_total carries the discounted room charge.
+		# The invoice's outstanding_amount is authoritative for the amount still owed.
 		"balance": boarding.balance,
 		"invoice_grand_total": flt(invoice.grand_total) if invoice else 0.0,
 		"deposit": flt(boarding.get("deposit")),
-		"deposit_allocated": flt(deposit_allocation.allocated) if deposit_allocation else 0.0,
+		"deposit_allocated": allocated,
+		# True when the invoice was posted here. It always is now, paid or not.
+		"invoice_submitted": bool(invoice and invoice.docstatus == 1),
+		"invoice_outstanding": flt(invoice.outstanding_amount) if invoice else 0.0,
+		# Check-out is never blocked by an unpaid balance: the animal is going home either
+		# way, and a stay held open for an accounting reason keeps a kennel occupied and the
+		# record wrong. The debt is real and posted; this is what tells the operator so.
+		"warnings": _checkout_warnings(invoice),
+		"total_paid": boarding_total_paid(boarding.name, boarding.get("customer")),
+		"payments": payments,
 		"deposit_unallocated_remainder": (
-			flt(deposit_allocation.unallocated_remainder) if deposit_allocation else 0.0
+			sum(flt(row.unallocated_amount) for row in payments)
 		),
 		"deposit_payment_entry": boarding.get("deposit_payment_entry"),
 		"boarding": _serialize_boarding_doc(boarding),
@@ -1459,89 +1815,137 @@ def _surface_deposit_credit_on_cancel(boarding):
 	return frappe._dict(payment_entry=pe_name, customer=pe.party, unallocated_amount=remaining)
 
 
+def _checkout_warnings(invoice) -> list:
+	"""What the operator must be told at check-out, as structured rows the client can render.
+
+	An outstanding balance is the one that matters. Whoever ends the stay is often not a
+	cashier - `Doctor` is in BOARDING_WRITE_ROLES and the three doctors on this site can all
+	check a stay out - so without this the animal leaves, the invoice posts as a receivable,
+	and nobody at the counter is told there is money to collect.
+
+	`collect_via` names the only door that takes it, because the answer is no longer
+	"settle it at the till": the invoice is submitted and non-POS by then, and
+	`settle_open_invoice` refuses both.
+	"""
+	if not invoice or flt(invoice.outstanding_amount) <= 0:
+		return []
+	return [{
+		"code": "BOARDING_BALANCE_DUE",
+		"severity": "warning",
+		"amount": flt(invoice.outstanding_amount),
+		"sales_invoice": invoice.name,
+		"collect_via": "pet_app.api.healthcare.boarding.record_boarding_payment",
+		"message": _(
+			"{0} is still owed on Sales Invoice {1}. The stay is closed and the charge is "
+			"posted to the guardian's account. A cashier collects it with a boarding payment."
+		).format(
+			frappe.format_value(invoice.outstanding_amount, {"fieldtype": "Currency"}),
+			invoice.name,
+		),
+	}]
+
+
+def _submit_checkout_invoice(invoice) -> bool:
+	"""Submit non-POS so ERPNext reconciles advances; failures roll back checkout."""
+	if not invoice or cint(invoice.docstatus) != 0:
+		return False
+	invoice.flags.from_custom_flow = True
+	invoice.flags.ignore_permissions = True
+	invoice.submit()
+	invoice.reload()
+	return True
+
+
 def _allocate_boarding_deposit(boarding, invoice):
-	"""Put the deposit against the invoice this checkout produced.
+	"""Put every payment taken on this stay against the invoice check-out produced.
 
 	Written to `Sales Invoice.advances`, not to `Payment Entry.references`. That is not a
-	shortcut - it is the only mechanism that works here. The invoice is a DRAFT (invoice
-	reuse keeps one open draft per customer per branch), and ERPNext's
-	reconcile_against_document reconciles against posted vouchers: a draft has no GL and
-	no outstanding to reconcile with. An advance row on the draft is exactly ERPNext's
-	"deposit taken before invoicing" form, and on submit it becomes the Payment Entry
-	Reference, with outstanding computed net of it.
+	shortcut - it is the only mechanism that works here. The invoice may still be a DRAFT,
+	and ERPNext's reconcile_against_document reconciles against posted vouchers: a draft has
+	no GL and no outstanding to reconcile with. An advance row on the draft is exactly
+	ERPNext's "money taken before invoicing" form, and on submit it becomes the Payment
+	Entry Reference, with outstanding computed net of it.
 
-	The invoice is still raised in full - nothing is deducted from the total. The advance
-	records that the customer paid X on the day they paid it, which is the trail the owner
-	asked for.
+	Every payment, not one. This used to read `deposit_payment_entry` alone, so a stay paid
+	in instalments carried only the first one onto the invoice and the rest stayed on the
+	customer as credit forever. `boarding_payment_entries` is the list, keyed off
+	`reference_no`, and it includes the deposit.
 
-	Allocates only what fits. A deposit larger than the bill allocates up to the invoice
-	total and the remainder stays unallocated on the customer, available to the next
-	invoice. Idempotent: a Payment Entry already present on this invoice is left alone.
+	The invoice is still raised in full - nothing is deducted from the total. The advances
+	record that the customer paid X on the day they paid it, which is the trail the owner
+	asked for; what the till then COLLECTS is net of them (`pos.py::_amount_due`).
+
+	Allocates only what fits. Payments beyond the bill allocate up to the invoice total and
+	the remainder stays unallocated on the customer, available to their next invoice.
+	Idempotent: a Payment Entry already present on this invoice is left alone.
 	"""
-	pe_name = cstr(boarding.get("deposit_payment_entry")).strip()
-	if not pe_name or not invoice:
+	if not invoice:
 		return None
 
-	pe = frappe.db.get_value(
-		"Payment Entry", pe_name,
-		["name", "docstatus", "party", "unallocated_amount"], as_dict=True,
-	)
-	if not pe or cint(pe.docstatus) != 1:
-		# Draft or cancelled: nothing to allocate, and re-raising it is not this path's job.
-		return None
-	if cstr(pe.party) != cstr(invoice.customer):
-		# Would be somebody else's money. Refuse quietly rather than misapply it.
-		frappe.log_error(
-			f"Boarding {boarding.name}: deposit {pe_name} belongs to {pe.party}, "
-			f"invoice {invoice.name} is for {invoice.customer}. Not allocated.",
-			"Boarding deposit allocation",
-		)
+	payments = boarding_payment_entries(boarding.name, invoice.customer)
+	if not payments:
 		return None
 
-	available = flt(pe.unallocated_amount)
-	if available <= 0:
+	already_on_invoice = {
+		cstr(row.reference_name)
+		for row in invoice.get("advances") or []
+		if row.reference_type == "Payment Entry"
+	}
+	allocated_total = 0.0
+	available_total = 0.0
+	applied = []
+
+	for pe in payments:
+		available = flt(pe.unallocated_amount)
+		available_total += available
+		if pe.name in already_on_invoice or available <= 0:
+			continue
+
+		already = sum(flt(row.allocated_amount) for row in invoice.get("advances") or [])
+		room = flt(invoice.grand_total) - already
+		if room <= 0:
+			continue
+
+		allocated = min(available, room)
+		invoice.append("advances", {
+			"reference_type": "Payment Entry",
+			"reference_name": pe.name,
+			"advance_amount": available,
+			"allocated_amount": allocated,
+			"remarks": _("Boarding payment for Pet Boarding {0}.").format(boarding.name),
+		})
+		allocated_total += allocated
+		applied.append((pe.name, allocated))
+
+	if not applied:
 		return None
 
-	for row in invoice.get("advances") or []:
-		if row.reference_type == "Payment Entry" and cstr(row.reference_name) == pe_name:
-			return None
-
-	already = sum(flt(row.allocated_amount) for row in invoice.get("advances") or [])
-	room = flt(invoice.grand_total) - already
-	if room <= 0:
-		return None
-
-	allocated = min(available, room)
-	invoice.append("advances", {
-		"reference_type": "Payment Entry",
-		"reference_name": pe_name,
-		"advance_amount": available,
-		"allocated_amount": allocated,
-		"remarks": _("Boarding deposit for Pet Boarding {0}.").format(boarding.name),
-	})
 	invoice.flags.from_custom_flow = True
 	invoice.flags.ignore_permissions = True
 	invoice.save(ignore_permissions=True)
 	invoice.add_comment(
 		"Comment",
-		_("Boarding deposit {0} allocated ({1}) from Pet Boarding {2}.").format(
-			pe_name, frappe.format_value(allocated, {"fieldtype": "Currency"}), boarding.name
+		_("{0} boarding payment(s) totalling {1} allocated from Pet Boarding {2}.").format(
+			len(applied),
+			frappe.format_value(allocated_total, {"fieldtype": "Currency"}),
+			boarding.name,
 		),
 	)
 	_log_boarding_event(
 		"BOARDING_DEPOSIT_ALLOCATED",
 		boarding=boarding.name,
-		payment_entry=pe_name,
 		sales_invoice=invoice.name,
-		available=available,
-		allocated=allocated,
-		remainder=available - allocated,
+		payment_entries=[name for name, _amount in applied],
+		available=available_total,
+		allocated=allocated_total,
+		remainder=available_total - allocated_total,
 	)
 	return frappe._dict(
-		payment_entry=pe_name,
-		available=available,
-		allocated=allocated,
-		unallocated_remainder=flt(available - allocated),
+		payment_entry=applied[0][0],
+		payment_entries=[name for name, _amount in applied],
+		available=available_total,
+		allocated=allocated_total,
+		unallocated_remainder=flt(available_total - allocated_total),
 	)
 
 
@@ -1611,30 +2015,73 @@ def _validate_deposit_amount(boarding, amount: float) -> float:
 	return amount
 
 
-def _create_boarding_deposit_payment_entry(boarding):
-	deposit_amount = flt(boarding.deposit)
-	if deposit_amount <= 0:
-		return None
+BOARDING_PAYMENT_REMARK = "Boarding payment for Pet Boarding {0}."
 
-	existing = boarding.get("deposit_payment_entry")
-	if existing and frappe.db.exists("Payment Entry", existing):
-		existing_doc = frappe.get_doc("Payment Entry", existing)
-		if existing_doc.docstatus != 2:
-			return existing_doc
+
+def boarding_payment_entries(boarding_name: str, customer: str | None = None) -> list:
+	"""Every submitted Payment Entry taken against this stay.
+
+	The link is `Payment Entry.reference_no = <boarding name>`, which is not a new
+	convention - `_create_boarding_deposit_payment_entry` has always stamped it. Deriving
+	the list from the Payment Entries themselves rather than caching it in a child table
+	means it cannot drift: cancel a payment and it leaves this list by itself.
+
+	`customer` narrows it further when known. `reference_no` is a free-text field a human
+	could in principle type a stay id into on an unrelated payment, and party is the cheap
+	way to refuse that.
+	"""
+	boarding_name = cstr(boarding_name).strip()
+	if not boarding_name:
+		return []
+	filters = {"reference_no": boarding_name, "docstatus": 1, "payment_type": "Receive"}
+	if cstr(customer).strip():
+		filters["party"] = cstr(customer).strip()
+	return frappe.get_all(
+		"Payment Entry",
+		filters=filters,
+		fields=[
+			"name", "posting_date", "paid_amount", "unallocated_amount", "paid_to",
+			"mode_of_payment", "owner", "remarks",
+		],
+		order_by="posting_date asc, creation asc",
+		ignore_permissions=True,
+	)
+
+
+def boarding_total_paid(boarding_name: str, customer: str | None = None) -> float:
+	"""What the customer has actually handed over against this stay, to date."""
+	return flt(sum(flt(row.paid_amount) for row in boarding_payment_entries(boarding_name, customer)))
+
+
+def _new_boarding_payment_entry(
+	boarding, amount: float, *, remarks: str, posting_date=None, invoice=None
+):
+	"""One submitted Receive against a stay, booked into the right drawer and stamped.
+
+	Shared by the check-in deposit and by every later payment, so a mid-stay payment lands
+	in exactly the same place and carries exactly the same attribution as the deposit does.
+	There is no second way to take boarding cash.
+	"""
+	amount = flt(amount)
+	if amount <= 0:
+		return None
 
 	customer = boarding.customer or get_or_create_customer_from_guardian(boarding.guardian)
 	if not customer:
-		frappe.throw(_("Customer is required to capture boarding deposit."))
+		frappe.throw(_("Customer is required to capture a boarding payment."))
 
 	company = _get_default_company()
 	if not company:
-		frappe.throw(_("Default company is required to capture boarding deposit."))
+		frappe.throw(_("Default company is required to capture a boarding payment."))
 
 	mode_of_payment = _default_cash_mode_of_payment()
-	paid_to = _resolve_boarding_deposit_account(company, mode_of_payment)
+	# The stay's own branch, so an operator without a POS Profile still books the cash into
+	# the counter that physically took it rather than the general treasury.
+	till = _resolve_boarding_deposit_account(company, mode_of_payment, boarding.get("branch"))
+	paid_to = till.account
 	party_account = get_party_account("Customer", customer, company)
 	_validate_account(party_account, company=company, label="Customer Receivable Account")
-	posting_date = getdate(boarding.check_in or nowdate())
+	posting_date = getdate(posting_date or nowdate())
 
 	pe = frappe.new_doc("Payment Entry")
 	pe.payment_type = "Receive"
@@ -1645,42 +2092,122 @@ def _create_boarding_deposit_payment_entry(boarding):
 	pe.party = customer
 	pe.paid_from = party_account
 	pe.paid_to = paid_to
-	pe.paid_amount = deposit_amount
-	pe.received_amount = deposit_amount
+	pe.paid_amount = amount
+	pe.received_amount = amount
+	# The link every later step reads. See boarding_payment_entries.
 	pe.reference_no = boarding.name
 	pe.reference_date = posting_date
-	pe.remarks = _("Boarding deposit for Pet Boarding {0}.").format(boarding.name)
+	pe.remarks = remarks
+
+	if invoice:
+		# Applied to the bill, not left floating on the customer. Without this row the
+		# Payment Entry is an unallocated advance: the invoice stays outstanding and the
+		# customer shows a credit for the same money, both at once.
+		pe.append("references", {
+			"reference_doctype": "Sales Invoice",
+			"reference_name": invoice.name,
+			"total_amount": flt(invoice.grand_total),
+			"outstanding_amount": flt(invoice.outstanding_amount),
+			"allocated_amount": min(amount, flt(invoice.outstanding_amount)),
+		})
+
+	# Stamped so the money is visible where cash is actually reconciled. The settlement
+	# snapshot itemises Payment Entries by custom_pos_profile, so without these it still
+	# moves expected_cash_on_hand while appearing nowhere in the breakdown - the same blind
+	# spot cashier expenses had. branch comes off the stay, which carries the boarding
+	# facility's own branch from Pet Boarding Settings, never the operator's.
+	_set_if_field(pe, "custom_pos_profile", till.profile)
+	_set_if_field(pe, "custom_cashier_user", frappe.session.user)
+	_set_if_field(pe, "custom_cashier_cash_account", paid_to)
+	_set_if_field(pe, "branch", boarding.get("branch"))
+
 	pe.flags.ignore_permissions = True
 	pe.insert(ignore_permissions=True)
 	pe.submit()
-	pe.add_comment(
-		"Comment",
-		_("Boarding deposit captured for Pet Boarding {0} by {1}.").format(boarding.name, frappe.session.user),
-	)
+	# No "unattributed cash" case to annotate any more: _resolve_boarding_deposit_account
+	# refuses outright when the acting user holds no till, so every row that reaches here
+	# names the drawer AND the person who stood at it.
 	return pe
 
 
-def _resolve_boarding_deposit_account(company: str, mode_of_payment: str | None) -> str:
-	"""Where a deposit's cash lands: one site-wide treasury account.
+def _create_boarding_deposit_payment_entry(boarding):
+	"""The check-in deposit. One per stay, and never re-raised.
 
-	Deliberate and temporary. The app already has the better answer -
-	cashier.resolve_session_cashier_till resolves the acting user's own POS Profile and
-	till, and refuses to guess, which is what the driver cash handover uses. Boarding does
-	NOT use it, because no user on this site holds a POS Profile: wiring deposits to the
-	till would make every check-in throw "has no cashier profile" on the first day.
+	`Pet Boarding.deposit` is the running total of everything paid against the stay, so it
+	must NOT be used as this Payment Entry's amount once a later payment has moved it. The
+	amount here is what is not yet covered by an existing payment - which on a first
+	check-in is the whole deposit, and on any re-entry is zero.
+	"""
+	existing = boarding.get("deposit_payment_entry")
+	if existing and frappe.db.exists("Payment Entry", existing):
+		existing_doc = frappe.get_doc("Payment Entry", existing)
+		if existing_doc.docstatus != 2:
+			return existing_doc
 
-	What it costs, plainly: the deposit records that cash was received, but not WHO
-	received it. There is no till attribution and nothing for a cashier settlement to
-	reconcile against, so a shortfall at the end of a shift cannot be traced to a person.
-	Assigning POS Profiles is the prerequisite for fixing it; once every counter user has
-	one, this should become resolve_session_cashier_till(company).cash_account and the
-	setting below becomes the fallback rather than the rule.
+	already = boarding_total_paid(boarding.name, boarding.get("customer"))
+	amount = flt(boarding.deposit) - flt(already)
+	if amount <= 0:
+		return None
+
+	pe = _new_boarding_payment_entry(
+		boarding,
+		amount,
+		remarks=_("Boarding deposit for Pet Boarding {0}.").format(boarding.name),
+		posting_date=getdate(boarding.check_in or nowdate()),
+	)
+	if pe:
+		pe.add_comment(
+			"Comment",
+			_("Boarding deposit captured for Pet Boarding {0} by {1}.").format(
+				boarding.name, frappe.session.user
+			),
+		)
+	return pe
+
+
+def _resolve_boarding_deposit_account(
+	company: str, mode_of_payment: str | None, branch: str | None = None
+) -> frappe._dict:
+	"""Where boarding cash lands: the till of the person taking it. No fallback.
+
+	**Only a till-holder may receive boarding money** (owner's rule, 2026-09-11). If the
+	acting user holds no POS Profile, the payment is REFUSED - the guardian is sent to a
+	cashier. Nothing is posted.
+
+	This deliberately reverses an earlier, more forgiving design, and the reason is worth
+	keeping. That version fell back to the stay's branch till so an operator without a
+	profile could still take a deposit "into the right drawer". Measured against the real
+	site, that is exactly backwards: three doctors (`Doctor` + `Accounts User`, no POS
+	Profile) can check a stay out and collect its balance, and every dinar they took posted
+	to the HOTEL CASHIER'S drawer. The cash is in the doctor's hand; the ledger says it is
+	in Farah's till. At settlement Farah counts short for money she never touched, and the
+	till she is accountable for was moved by someone who never stood at it.
+
+	Routing cash to a drawer its holder does not control is not a lesser evil than refusing
+	it. `custom_cashier_user` recorded who took it, which made the loss traceable but not
+	preventable - and a settlement that reconciles to a plausible balance in the wrong
+	drawer is the failure mode this whole area keeps producing.
+
+	`branch` is still accepted so callers need not change; it is no longer consulted for
+	cash, because the till already determines the branch.
+
+	Returns the account plus the profile behind it, for stamping the Payment Entry.
 	"""
 	if _is_cash_mode(mode_of_payment):
-		settings = _get_settings_doc()
-		account = settings.get("treasury_cash_account")
-		_validate_account(account, company=company, account_type="Cash", label="Treasury Cash Account")
-		return account
+		try:
+			till = resolve_session_cashier_till(company)
+		except frappe.ValidationError as exc:
+			# Narrow on purpose: this is the documented "no profile for this user/company"
+			# outcome. A genuine fault - a broken account, a database error - must surface
+			# as itself rather than be reported as "you are not a cashier".
+			frappe.throw(
+				_(
+					"{0} holds no cashier till, so boarding money cannot be received. "
+					"Send the guardian to a cashier, or assign this user to a POS Profile. ({1})"
+				).format(frappe.bold(frappe.session.user), exc),
+				title=_("No cashier till"),
+			)
+		return frappe._dict(account=till.cash_account, profile=till.profile)
 
 	if mode_of_payment and not frappe.db.exists("Mode of Payment", mode_of_payment):
 		frappe.throw(_("Mode of Payment {0} does not exist.").format(frappe.bold(mode_of_payment)))
@@ -1691,11 +2218,9 @@ def _resolve_boarding_deposit_account(company: str, mode_of_payment: str | None)
 		"default_account",
 	)
 	_validate_account(account, company=company, label="Mode of Payment Account")
-	return account
+	return frappe._dict(account=account, profile=None)
 
 
-@frappe.whitelist()
-@standardize_response
 def sync_billable_items(boarding_id=None, billable_items=None, name=None, boardingId=None, billableItems=None):
 	_require_boarding_write_access()
 	boarding_name = cstr(boarding_id or boardingId or name).strip()
@@ -2000,31 +2525,14 @@ def dispense_medication(boarding=None, item_id=None, qty=None, note=None, data=N
 	if flt(row.get("dispensed_qty")) + dispense_qty > flt(row.get("qty")):
 		return _boarding_validation_error(_("Dispensed Qty cannot exceed requested Qty."))
 
-	# Status decides billing, not whether the goods move. An Included row - a
-	# medication the medical boarding rate absorbs - is dispensed and issued like
-	# any other; only Cancelled stops the vial leaving the shelf.
-	medication_name = cstr(row.get("linked_name")).strip() if cstr(row.get("linked_doctype")).strip() == "Medication" else ""
-	issued = None
+	# Included medication has no corresponding invoice line. Record the clinical
+	# fact, but explicitly report that the owner's invoice-only policy cannot deduct it.
+	stock_notice = None
 	try:
-		if cstr(row.get("status")).strip() not in NON_ISSUED_STATUSES:
-			if is_opted_in(medication_name):
-				assert_row_can_record_stock(row.meta, medication_name)
-			issued = issue_for_dispense(
-				medication=medication_name,
-				medication_item=row.get("item_code"),
-				# Boarding orders are one dose per row, so `qty` is a dose count in
-				# the same sense as the visit's - the conversion to stock units
-				# happens once, inside issue_for_dispense, never here.
-				dose_count=dispense_qty,
-				dose_option=row.get("dose_option"),
-				row_warehouse=row.get("warehouse"),
-				reference=_("Pet Boarding {0} row {1}").format(boarding_doc.name, row.name),
-				label=medication_name or row.get("item_name") or row.get("item_code"),
-			)
-		if issued:
-			row.warehouse = issued["warehouse"]
-			row.stock_issued_qty = flt(row.get("stock_issued_qty")) + flt(issued["qty"])
-			row.stock_entry = issued["stock_entry"]
+		if row.get("status") == "Included":
+			stock_notice = _("Medication {0} is included in the boarding price and has no invoice stock line. "
+				"Dispensing is recorded, but stock will not be deducted for this row.").format(row.item_code)
+			frappe.msgprint(stock_notice, indicator="orange")
 
 		row.dispensed_qty = flt(row.get("dispensed_qty")) + dispense_qty
 		row.dispensed_by = frappe.session.user
@@ -2035,9 +2543,7 @@ def dispense_medication(boarding=None, item_id=None, qty=None, note=None, data=N
 
 		boarding_doc.save(ignore_permissions=True)
 	except Exception:
-		# standardize_response turns a throw into an error response WITHOUT rolling
-		# back, so a submitted Stock Entry plus a failed save would otherwise commit
-		# the movement and lose its record. The visit path already does this.
+		# This endpoint returns errors as responses; a failed save must roll back.
 		frappe.db.rollback()
 		raise
 
@@ -2050,13 +2556,14 @@ def dispense_medication(boarding=None, item_id=None, qty=None, note=None, data=N
 		boarding=boarding_doc.name,
 		item=row.name,
 		qty=dispense_qty,
-		stock_entry=issued["stock_entry"] if issued else None,
-		stock_qty=issued["qty"] if issued else 0,
+		stock_entry=None,
+		stock_qty=0,
 		user=frappe.session.user,
 	)
 
 	return {
 		"success": True,
+		"stock_notice": stock_notice,
 		"boarding_id": boarding_doc.name,
 		"item": _serialize_billable_item(row),
 		"boarding": _serialize_boarding_doc(boarding_doc),
@@ -3299,8 +3806,8 @@ BOARDING_RECORD_FIELDS = [
 	"name", "service_room", "pet", "guardian", "customer", "boarding_type", "record_status",
 	"status", "workflow_state", "reserved_at", "check_in", "check_out", "stay_days", "stay_hours",
 	"total_cost", "deposit", "deposit_payment_entry", "balance", "billing_status", "sales_invoice",
-	"note", "boarding_note", "boarded_by", "cancelled_by", "cancellation_note", "visit",
-	"expected_check_out", "notes", "docstatus", "modified",
+	"note", "check_in_note", "check_out_note", "boarded_by", "cancelled_by", "cancellation_note",
+	"visit", "expected_check_out", "notes", "docstatus", "modified",
 ]
 
 
@@ -3518,6 +4025,14 @@ def _serialize_room(room, boarding=None, entry: dict | None = None) -> dict:
 	return row
 
 
+def _boarding_discount_available() -> bool:
+	meta = frappe.get_meta("Pet Boarding")
+	return frappe.get_meta("Sales Invoice").has_field("custom_boarding_discount_booking") and all(meta.has_field(field) for field in (
+		"discount_request", "accommodation_subtotal", "accommodation_discount_amount",
+		"accommodation_total", "discount_recorded_at", "discount_recorded_by",
+	))
+
+
 def _serialize_detail(room, boarding=None) -> dict:
 	"""The detail payload: the BOOKING at the top level, the ROOM under `room`.
 
@@ -3532,6 +4047,8 @@ def _serialize_detail(room, boarding=None) -> dict:
 	"""
 	room_card = _serialize_room(room, boarding) if room else {}
 	detail = dict(room_card)
+	detail["capabilities"] = {"boarding_discount_v1": _boarding_discount_available()}
+	detail.update(discount_payload(None))
 	detail["billable_items"] = []
 	detail["permissions"] = _boarding_permissions(boarding)
 
@@ -3622,6 +4139,7 @@ def _is_pending_boarding_medication_billable(row) -> bool:
 
 def _serialize_boarding_doc(boarding) -> dict:
 	return {
+		**discount_payload(boarding),
 		"name": boarding.name,
 		"boarding_id": boarding.name,
 		"service_room": boarding.service_room,
@@ -3650,7 +4168,17 @@ def _serialize_boarding_doc(boarding) -> dict:
 		"billing_status": boarding.billing_status,
 		"sales_invoice": boarding.sales_invoice,
 		"note": boarding.note,
-		"boarding_note": boarding.get("boarding_note"),
+		# The stay's own notes, distinct from the reservation `note` above and from the room's
+		# `notes` below. Emitted under every spelling a client may read: the singular names are
+		# canonical, the plurals are what the shipped build reads. A note that is stored but not
+		# returned reads on screen as lost data, which is the failure this endpoint had.
+		"check_in_note": boarding.get("check_in_note"),
+		"check_in_notes": boarding.get("check_in_note"),
+		"check_out_note": boarding.get("check_out_note"),
+		"checkout_note": boarding.get("check_out_note"),
+		"checkout_notes": boarding.get("check_out_note"),
+		# Deprecated alias, sourced from `note` - see visit_boarding_payload.
+		"boarding_note": boarding.note,
 		"boarded_by": boarding.get("boarded_by"),
 			"cancelled_by": boarding.get("cancelled_by"),
 			"cancellation_note": boarding.get("cancellation_note"),
@@ -3740,7 +4268,39 @@ def _serialize_occupants(boarding) -> list[dict]:
 	if not rows:
 		return []
 	pet_details = _resolve_pet_details(rows)
-	return [_occupant_payload(row, pet_details) for row in rows]
+	payloads = [_occupant_payload(row, pet_details) for row in rows]
+	for payload, row in zip(payloads, rows):
+		payload.update(_occupant_daily_rate(boarding, row))
+	return payloads
+
+
+def _occupant_daily_rate(boarding, occupant) -> dict:
+	"""What one day of this pet's stay bills at - for the check-out estimate to display.
+
+	The client used to look the rate up by boarding type alone, from the deprecated settings
+	items - which are the cat items - so every dog was quoted at the cat rate. This is the
+	server's own answer, per animal: the pet's priced room row first (check-out never
+	reprices it, so it is exactly what will be billed, staff corrections included), else the
+	catalogue. A catalogue gap is `None`, never a throw: the detail read must still open.
+
+	Roster only. The room hub shares `_occupant_payload` and does not pay for this lookup.
+	"""
+	pet = cstr(occupant.get("pet")).strip()
+	for row in boarding.get("billable_items") or []:
+		if (row.item_type == "Room Stay" and cstr(row.get("pet")).strip() == pet
+				and row.status != "Cancelled" and flt(row.rate) > 0):
+			return {"daily_rate": flt(row.rate), "daily_rate_item": row.item_code}
+	boarding_type = cstr(occupant.get("boarding_type")).strip() or boarding.boarding_type
+	if not pet or not boarding_type:
+		return {"daily_rate": None, "daily_rate_item": None}
+	messages_before = len(frappe.local.message_log)
+	try:
+		rate = resolve_boarding_rate(pet, boarding_type)
+	except Exception:
+		# frappe.throw queued a popup; a read that tolerated the gap must not show it.
+		del frappe.local.message_log[messages_before:]
+		return {"daily_rate": None, "daily_rate_item": None}
+	return {"daily_rate": rate.rate, "daily_rate_item": rate.item_code}
 
 
 def _serialize_boarding_record(row) -> dict:
@@ -3778,7 +4338,14 @@ def _serialize_boarding_record(row) -> dict:
 		"billing_status": row.billing_status,
 		"sales_invoice": row.sales_invoice,
 		"note": row.note,
-		"boarding_note": row.get("boarding_note"),
+		# Same key set as _serialize_boarding_doc - the two must not drift, or the same stay
+		# describes its notes differently on the list and on the detail.
+		"check_in_note": row.get("check_in_note"),
+		"check_in_notes": row.get("check_in_note"),
+		"check_out_note": row.get("check_out_note"),
+		"checkout_note": row.get("check_out_note"),
+		"checkout_notes": row.get("check_out_note"),
+		"boarding_note": row.note,
 		"boarded_by": row.get("boarded_by"),
 			"cancelled_by": row.get("cancelled_by"),
 			"cancellation_note": row.get("cancellation_note"),
@@ -4229,8 +4796,12 @@ def _find_occupant_room_stay_row(boarding, pet: str, claimed: set, service_id: s
 	  1. its `linked_service_id` equals this occupant's - an exact identity match, and the
 	     only test that can tell one stay of a pet from another
 	  2. its `pet` column, but ONLY for a pet's first stay, and only for a row that carries
-	     no key of its own. This is the compatibility path for rows written before the key
-	     existed; it is deliberately unavailable to a second stay
+	     no key of its own or only the old booking-level `boarding_room_stay:travel` /
+	     `:treatment` key. This is the compatibility path for rows written before the per-pet
+	     key existed; it is deliberately unavailable to a second stay. Rows written 14-17 Aug
+	     2026 carry BOTH a pet and the booking-level key; before they were accepted here they
+	     matched nothing, check-out skipped them, and 14 stays were invoiced at the 1-night
+	     placeholder
 	  3. a single un-owned legacy row, adopted only when this booking has exactly one
 	     occupant, so an old `boarding_room_stay:travel` row is inherited rather than
 	     duplicated
@@ -4257,7 +4828,7 @@ def _find_occupant_room_stay_row(boarding, pet: str, claimed: set, service_id: s
 			cint(ordinal) <= 1
 			and fallback is None
 			and cstr(row.get("pet")).strip() == pet
-			and not cstr(row.linked_service_id).strip()
+			and cstr(row.linked_service_id).strip().lower() in LEGACY_ROOM_STAY_KEYS
 		):
 			fallback = row
 		if not cstr(row.get("pet")).strip():
@@ -4380,7 +4951,10 @@ def _build_sales_invoice_items(boarding) -> list[dict]:
 				"item_code": row.item_code,
 				"qty": flt(row.qty),
 				"rate": flt(row.rate or 0),
-				"description": row.note or row.item_name,
+				"description": append_marker(row.note or row.item_name, "Pet Billable Item", row.name),
+				**(medication_invoice_context(row, item_code=row.item_code,
+					medication=row.linked_name if row.linked_doctype == "Medication" else None,
+					branch=boarding.get("branch")) if row.item_type == "Medication" else {}),
 			}
 		)
 	return items

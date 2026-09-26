@@ -8,8 +8,25 @@ from datetime import datetime, timedelta
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from pet_app.api import scheduling
+
 
 class TestAppointmentIdentity(IntegrationTestCase):
+    def test_list_appointment_types_uses_custom_field_options(self):
+        result = scheduling.list_appointment_types()
+
+        self.assertTrue(result["ok"])
+        field = frappe.get_meta("Appointment").get_field("custom_appointment_type")
+        expected = [
+            option.strip()
+            for option in (field.options or "").splitlines()
+            if option.strip()
+        ]
+        values = [row["value"] for row in result["data"]["appointment_types"]]
+        self.assertEqual(values, expected)
+        self.assertEqual(result["data"]["appointment_types"][1]["label"], "Follow Up")
+        self.assertEqual(result["data"]["types"], values)
+
     def test_appointment_links_guardian_and_customer_from_phone(self):
         phone = "07123456789"
 

@@ -8,6 +8,7 @@ from pet_app.api.workspace import (
 from pet_app.utils.practitioner import get_practitioner_for_user
 from pet_app.utils.rating_entities import (
     RATABLE_DOCTYPES,
+    RATING_TYPES,
     get_title,
     resolve_entity_name,
     resolve_pet_name,
@@ -30,6 +31,7 @@ def get_ratings(
     reference_doctype=None,
     reference_name=None,
     overall_rating=None,
+    rating_type=None,
     performer_id=None,
     rater_id=None,
     from_date=None,
@@ -45,6 +47,7 @@ def get_ratings(
         filters.append(["reference_name", "=", reference_name])
     if overall_rating not in (None, ""):
         filters.append(["overall_rating", "=", cint(overall_rating)])
+    _apply_rating_type(filters, rating_type)
     if performer_id:
         filters.append(["performer_id", "=", performer_id])
     if rater_id:
@@ -119,10 +122,11 @@ def get_ratings(
 @frappe.whitelist()
 @standardize_response
 def get_ratings_analytics(from_date=None, to_date=None, reference_doctype=None,
-                          performer_id=None, rater_id=None):
+                          rating_type=None, performer_id=None, rater_id=None):
     filters = []
     if reference_doctype:
         filters.append(["reference_doctype", "=", reference_doctype])
+    _apply_rating_type(filters, rating_type)
     if performer_id:
         filters.append(["performer_id", "=", performer_id])
     if rater_id:
@@ -155,7 +159,7 @@ def get_ratings_analytics(from_date=None, to_date=None, reference_doctype=None,
 @frappe.whitelist()
 @standardize_response
 def get_ratings_trend(from_date=None, to_date=None, bucket="month", reference_doctype=None,
-                      performer_id=None, rater_id=None):
+                      rating_type=None, performer_id=None, rater_id=None):
     bucket = (bucket or "month").lower()
     if bucket not in ("day", "week", "month"):
         bucket = "month"
@@ -163,6 +167,7 @@ def get_ratings_trend(from_date=None, to_date=None, bucket="month", reference_do
     filters = []
     if reference_doctype:
         filters.append(["reference_doctype", "=", reference_doctype])
+    _apply_rating_type(filters, rating_type)
     if performer_id:
         filters.append(["performer_id", "=", performer_id])
     if rater_id:
@@ -240,6 +245,25 @@ def _apply_scope(filters, reference_name=None):
 
     filters.append(["rated_by", "=", user])
     return filters, is_manager
+
+
+def _apply_rating_type(filters, rating_type):
+    """Caller-declared type filter for the three staff analytics endpoints.
+
+    These are the one reader whose job is to show both sides - the Ratings & Reviews
+    screen exists to compare internal review activity against what customers said - so
+    the parameter is optional and omitting it means both. That is the declaration, not
+    an oversight: every other reader in the app now pins its type in code, and this is
+    the only place the choice belongs to the caller.
+
+    An unrecognised value is refused rather than ignored. A silent fallback to "both"
+    would hand a caller who asked for Customer a blended number and no way to tell.
+    """
+    if rating_type in (None, ""):
+        return
+    if rating_type not in RATING_TYPES:
+        frappe.throw(_("Rating Type must be one of: {0}.").format(", ".join(RATING_TYPES)))
+    filters.append(["rating_type", "=", rating_type])
 
 
 def _apply_date_range(filters, from_date, to_date):

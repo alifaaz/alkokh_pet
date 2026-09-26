@@ -31,6 +31,13 @@ SCOPED_DOCTYPES = frozenset(
 		# from the linked visit where there is one.
 		"PetCareService",
 		"Pet Procedure",
+		# Preventive Care Record, for the same reason PetCareService is here and Lab is
+		# not: a Lab always hangs off a visit and inherits that visit's branch, but a
+		# vaccination is routinely given straight on a pet's record with no visit at all
+		# (28 of the 29 preventive rows on this site have none). With nothing to inherit
+		# from it needs its own branch, or the row is NULL - and a NULL branch is visible
+		# to every clinic, which is a leak rather than a default.
+		"Preventive Care Record",
 		# An invoice belongs to the clinic that raised it. This scopes the invoice
 		# *list* only -- the customer, the receivable ledger and the outstanding
 		# balance stay global, because one Company means one set of books and a debt
@@ -345,6 +352,40 @@ def assert_can_write_to_branch(branch: str, user: str | None = None) -> None:
 			_("You are not permitted to create records for branch {0}.").format(frappe.bold(branch)),
 			frappe.PermissionError,
 		)
+
+
+def resolve_branch_for_pos(pos_profile: str | None, requested: str | None = None):
+	"""The branch a till's takings belong to, and whether it may be written unchecked.
+
+	Returns ``(branch, authorised)``.
+
+	The POS Profile is the source of truth. A till is physically one counter in one
+	clinic, and the revenue and the stock movement belong to that clinic regardless of
+	which cashier happens to be standing at it -- the same reasoning
+	``pos.settle_open_invoice`` already applies when it refuses to move a clinic draft's
+	branch to the cashier's own.
+
+	``authorised`` is True only for a branch taken from the profile, because that is a
+	site setting rather than request data; it is what lets a cashier restricted to one
+	clinic cover a shift at the other till without ``assert_can_write_to_branch``
+	rejecting the sale. A branch supplied by the CLIENT is never authorised here -- it is
+	returned as-is so ``stamp_branch_on_insert`` checks it, which is the whole point of
+	that check.
+
+	Falls back to the caller's own branch when the profile has none set, so this keeps
+	working before ``POS Profile.branch`` is populated.
+	"""
+	requested = cstr(requested).strip()
+
+	if pos_profile:
+		from_profile = cstr(frappe.db.get_value("POS Profile", pos_profile, "branch")).strip()
+		if from_profile:
+			return from_profile, True
+
+	if requested:
+		return requested, False
+
+	return (get_current_branch() or _sole_branch() or None), False
 
 
 def get_default_branch() -> str | None:

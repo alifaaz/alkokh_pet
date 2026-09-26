@@ -9,6 +9,11 @@ from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
 from pet_app.utils.price_list import get_veterinary_selling_price_list
+from pet_app.utils.item_name_guard import (
+	may_rename_linked_item,
+	previous_master_values,
+	warn_linked_item_rename_skipped,
+)
 
 
 class CareServiceBillingOption(Document):
@@ -74,8 +79,19 @@ class CareServiceBillingOption(Document):
 
 		full_name = f"{self.service_title} - {self.option_label}" if self.option_label else self.service_title
 		if item.item_name != full_name:
-			item.item_name = full_name
-			changed = True
+			previous_values = previous_master_values(self, ("service_title", "option_label"))
+			previous_full_name = None
+			if previous_values:
+				previous_title = previous_values.get("service_title") or ""
+				previous_label = previous_values.get("option_label") or ""
+				previous_full_name = (
+					f"{previous_title} - {previous_label}" if previous_label else previous_title
+				)
+			if may_rename_linked_item(item, previous_full_name):
+				item.item_name = full_name
+				changed = True
+			else:
+				warn_linked_item_rename_skipped(item, self)
 
 		description = build_item_description(self)
 		if description and item.description != description:

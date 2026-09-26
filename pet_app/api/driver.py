@@ -248,16 +248,107 @@ def validate_driver(doc):
     _validate_driver_cash_account(doc)
 
     previous_doc = doc.get_doc_before_save()
-    if previous_doc and previous_doc.user and doc.user and doc.user != previous_doc.user:
-        frappe.throw(_("Driver user is managed automatically and cannot be edited manually"))
-
-    if doc.is_new():
+    previous_user = previous_doc.user if previous_doc else None
+    requested = cstr(doc.user).strip() or None
+    if requested and requested != previous_user:
+        # Linking an existing User (the driver form's "Linked user" picker).
+        _validate_linkable_user(requested, doc.name if not doc.is_new() else None)
+        doc.user = requested
+        doc.flags.previous_driver_user = previous_user
+    elif doc.is_new():
         doc.user = None
-    elif previous_doc and previous_doc.user:
-        doc.user = previous_doc.user
+    elif previous_user:
+        # Blank or unchanged: keep the current link. Only an explicit new user re-links.
+        doc.user = previous_user
 
     if doc.user and not frappe.db.exists("User", doc.user):
         doc.user = None
+
+
+def _validate_linkable_user(user, driver_name=None):
+    from pet_app.utils.driver_orders import fail
+
+    row = frappe.db.get_value("User", user, ["name", "enabled"], as_dict=True)
+    if not row:
+        fail(_("User {0} was not found.").format(user), "DRIVER_USER_INVALID")
+    # The driver's own login may be disabled (it was unlinked); re-linking re-enables it.
+    if not row.enabled and not (driver_name and user == _expected_user_name(driver_name)):
+        fail(_("User {0} is disabled.").format(user), "DRIVER_USER_INVALID")
+    if user in ("Administrator", "Guest") or "System Manager" in frappe.get_roles(user):
+        fail(_("An administrator or System Manager account cannot be a driver login."), "DRIVER_USER_INVALID")
+    other = frappe.db.get_value("Driver", {"user": user, "name": ["!=", driver_name or ""]}, ["name", "full_name"], as_dict=True)
+    if other:
+        fail(_("User {0} is already linked to driver {1} ({2}).").format(user, other.name, other.full_name), "DRIVER_USER_ALREADY_LINKED")
+
+
+def _driver_role_profile():
+    """The Role Profile a driver login holds (Pet App Accounting Settings). On this site a
+    User's roles come from its Role Profiles, so access is granted by profile, not by role."""
+    if not frappe.get_meta("Pet App Accounting Settings").has_field("custom_driver_role_profile"):
+        return None
+    profile = frappe.db.get_single_value("Pet App Accounting Settings", "custom_driver_role_profile")
+    return profile if profile and frappe.db.exists("Role Profile", profile) else None
+
+
+def _grant_driver_access(user_doc):
+    """Add the driver profile (or, unconfigured, the Driver role). True if changed."""
+    profile = _driver_role_profile()
+    if profile:
+        if profile in {r.role_profile for r in user_doc.get("role_profiles") or []}:
+            return False
+        user_doc.append("role_profiles", {"role_profile": profile})
+        return True
+    before = len(user_doc.roles)
+    _ensure_driver_role(user_doc)
+    return len(user_doc.roles) != before
+
+
+def _drop_driver_role(user):
+    """Remove driver access from a login: its driver profile and the Driver role."""
+    if not user or not frappe.db.exists("User", user):
+        return
+    user_doc = frappe.get_doc("User", user)
+    if _revoke_driver_access(user_doc):
+        user_doc.flags.ignore_permissions = True
+        user_doc.save(ignore_permissions=True)
+
+
+def _revoke_driver_access(user_doc):
+    changed = False
+    profile = _driver_role_profile()
+    if profile:
+        kept = [r for r in user_doc.get("role_profiles") or [] if r.role_profile != profile]
+        if len(kept) != len(user_doc.get("role_profiles") or []):
+            user_doc.set("role_profiles", kept)
+            changed = True
+    kept = [r for r in user_doc.roles if r.role != DRIVER_ROLE]
+    if len(kept) != len(user_doc.roles):
+        user_doc.set("roles", kept)
+        changed = True
+    return changed
+
+
+def _is_system_driver_user(doc, user=None):
+    """The login this module created for the driver, as opposed to a linked existing User."""
+    user = user or doc.user
+    return bool(user) and user == _expected_user_name(doc.name)
+
+
+def _release_previous_driver_user(doc):
+    """On re-link, drop the Driver role from the old login unless another driver uses it.
+    A login this module created is also disabled; a linked staff account is left enabled."""
+    previous = doc.flags.get("previous_driver_user")
+    if not previous or previous == doc.user or not frappe.db.exists("User", previous):
+        return
+    if frappe.db.exists("Driver", {"user": previous, "name": ["!=", doc.name]}):
+        return
+    user_doc = frappe.get_doc("User", previous)
+    _revoke_driver_access(user_doc)
+    if _is_system_driver_user(doc, previous):
+        user_doc.enabled = 0
+    user_doc.flags.ignore_permissions = True
+    user_doc.save(ignore_permissions=True)
+    _log_driver_event(doc.name, "user_unlinked", user_id=previous)
 
 
 def sync_driver_user(doc):
@@ -269,6 +360,16 @@ def sync_driver_user(doc):
     _require_driver_role()
 
     system_user_name = _expected_user_name(doc.name)
+    if doc.user and doc.user != system_user_name and frappe.db.exists("User", doc.user):
+        # A linked existing User: add the Driver role and nothing else. Its password,
+        # names, username and enabled flag belong to the person, not to this module.
+        user_doc = frappe.get_doc("User", doc.user)
+        if _grant_driver_access(user_doc):
+            user_doc.flags.ignore_permissions = True
+            user_doc.save(ignore_permissions=True)
+            _log_driver_event(doc.name, "user_linked", user_id=user_doc.name)
+        _release_previous_driver_user(doc)
+        return user_doc, None
     _release_legacy_user_username(doc, system_user_name)
 
     user_doc = frappe.get_doc("User", system_user_name) if frappe.db.exists("User", system_user_name) else None
@@ -286,6 +387,7 @@ def sync_driver_user(doc):
             "enabled": _driver_enabled(doc.status),
             "send_welcome_email": 0,
             "roles": [{"role": DRIVER_ROLE}],
+            "role_profiles": [{"role_profile": _driver_role_profile()}] if _driver_role_profile() else [],
         })
         user_doc.flags.ignore_permissions = True
         user_doc.insert(ignore_permissions=True)
@@ -309,9 +411,7 @@ def sync_driver_user(doc):
             user_doc.set(fieldname, value)
             changed = True
 
-    before_roles = len(user_doc.roles)
-    _ensure_driver_role(user_doc)
-    if len(user_doc.roles) != before_roles:
+    if _grant_driver_access(user_doc):
         changed = True
 
     if changed:
@@ -320,6 +420,7 @@ def sync_driver_user(doc):
         _log_driver_event(doc.name, "user_synced", user_id=user_doc.name)
 
     _set_driver_user_link(doc, user_doc.name)
+    _release_previous_driver_user(doc)
     return user_doc, password_created
 
 
@@ -395,7 +496,7 @@ def _validate_driver_cash_account(doc):
     row = frappe.db.get_value(
         "Account",
         account,
-        ["name", "company", "is_group", "disabled", "account_type"],
+        ["name", "company", "is_group", "disabled", "account_type", "root_type"],
         as_dict=True,
     )
     if not row:
@@ -404,6 +505,11 @@ def _validate_driver_cash_account(doc):
         frappe.throw(_("Cash Account {0} is disabled.").format(frappe.bold(account)))
     if cint(row.is_group):
         frappe.throw(_("Cash Account {0} must be a ledger account, not a group.").format(frappe.bold(account)))
+
+    if row.root_type != "Asset" or row.account_type != "Cash":
+        frappe.throw(_("A driver's Cash Account must be an Asset ledger of type Cash."))
+    if frappe.db.exists("Driver", {"custom_cash_account": account, "name": ["!=", doc.name or ""]}):
+        frappe.throw(_("Each driver must have a distinct Cash Account."))
 
     company = _app_company()
     if company and row.company != company:
@@ -484,6 +590,12 @@ def after_driver_insert(doc, method=None):
     # validate_driver, so by the time we are here it is already set and checked.
     sync_driver_user(doc)
     sync_driver_address(doc, getattr(doc.flags, "driver_address_payload", None))
+    if doc.meta.has_field("custom_warehouse") and frappe.db.get_single_value(
+        "Pet App Accounting Settings", "custom_driver_warehouse_parent"
+    ):
+        from pet_app.utils.driver_orders import provision_driver
+        custody = provision_driver(doc.name, _app_company())
+        doc.custom_warehouse = custody["warehouse"]
     _log_driver_event(doc.name, "provisioned", user_id=doc.user)
 
 
@@ -509,7 +621,10 @@ def create_driver(
     address_line2=None,
     city=None,
     country=DEFAULT_ADDRESS_COUNTRY,
+    user=None,
 ):
+    """`user` links an existing User as the driver's login (Driver role added, password
+    untouched); blank creates a new login as before."""
     _check_permission("create")
     name_parts = cstr(full_name).split()
     address_payload = None
@@ -526,6 +641,7 @@ def create_driver(
         "status": status or ACTIVE_DRIVER_STATUS,
         "license_number": license_number,
         "expiry_date": license_expiry,
+        "user": cstr(user).strip() or None,
     })
 
     if address_line1 or address_line2 or city or (country and country != DEFAULT_ADDRESS_COUNTRY):
@@ -807,7 +923,10 @@ def delete_driver(driver_id):
             doc.status = INACTIVE_DRIVER_STATUS
             doc.flags.ignore_permissions = True
             doc.save(ignore_permissions=True)
-        _disable_driver_user(doc.user)
+        if _is_system_driver_user(doc):
+            _disable_driver_user(doc.user)
+        else:
+            _drop_driver_role(doc.user)
         _log_driver_event(driver_id, "soft_disabled", user_id=doc.user)
         return {
             "driver": driver_id,
@@ -825,7 +944,11 @@ def delete_driver(driver_id):
     # deleting it here would destroy live books to remove one person.
 
     if doc.user and frappe.db.exists("User", doc.user):
-        frappe.delete_doc("User", doc.user, ignore_permissions=True, force=True)
+        if _is_system_driver_user(doc):
+            frappe.delete_doc("User", doc.user, ignore_permissions=True, force=True)
+        else:
+            # A linked existing account belongs to a person; only the driver role goes.
+            _drop_driver_role(doc.user)
 
     frappe.delete_doc("Driver", driver_id, ignore_permissions=True, force=True)
     _log_driver_event(driver_id, "hard_deleted", user_id=doc.user)

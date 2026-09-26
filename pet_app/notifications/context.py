@@ -46,6 +46,24 @@ VARIABLE_FIELDS = {
 		"name", "pet_name", "guardian_name", "service_room", "room_name", "room_arabic_name",
 		"check_in", "check_out", "expected_check_out", "status",
 	),
+	# Lab and Imaging. test_name and test_arabic_name are not columns on either doctype -
+	# they are fetched from the linked CareService template, because care_service holds a
+	# docname and CareService template is autonamed CareService-.#####, so the raw value
+	# is a code like "CareService-00006". A code is not a test name and must never reach a
+	# customer's message. Same shape as room_name above, doctype swapped.
+	#
+	# One record is exactly one test: neither doctype has a child table, so these are a
+	# single name and never a joined list. A visit can carry several Lab rows, but that is
+	# several messages or a different source doctype, not several values here.
+	#
+	# See _care_service_values for what is fetched.
+	"lab": ("test_name", "test_arabic_name"),
+	# body_part is a real, populated Imaging column and resolves through the allowlist
+	# above like any other. modality is deliberately absent: the column exists on both
+	# Imaging and CareService template and is null on every row, so exposing it would
+	# offer an operator a variable that is always blank - which, with no fallback set,
+	# refuses the send at resolve time rather than at design time.
+	"imaging": ("test_name", "test_arabic_name", "body_part"),
 }
 
 SOURCE_NAMESPACES = {
@@ -56,6 +74,8 @@ SOURCE_NAMESPACES = {
 	"PetCareService": "pet_service",
 	"Appointment": "appointment",
 	"Pet Boarding": "boarding",
+	"Lab": "lab",
+	"Imaging": "imaging",
 }
 
 
@@ -266,6 +286,8 @@ def _safe_values(doc, namespace: str) -> dict:
 		values["display_name"] = doc.get("pet_name") or doc.name
 	elif namespace == "boarding":
 		values.update(_room_values(doc.get("service_room")))
+	elif namespace in ("lab", "imaging"):
+		values.update(_care_service_values(doc.get("care_service")))
 	return values
 
 
@@ -288,6 +310,47 @@ def _room_values(service_room) -> dict:
 	if not row:
 		return {"room_name": "", "room_arabic_name": ""}
 	return {"room_name": cstr(row.room_name), "room_arabic_name": cstr(row.arabic_name)}
+
+
+def _care_service_values(care_service) -> dict:
+	"""Human-readable names for the linked CareService template.
+
+	``care_service`` holds a docname, and CareService template is autonamed
+	``CareService-.#####``, so that value is a code - "CareService-00006". Both names are
+	fetched so a template can pick the one matching its language; an Arabic lab-result
+	template wants test_arabic_name, an English one wants test_name.
+
+	A service that cannot be resolved yields blanks rather than the code, exactly as
+	_room_values does. Emitting the code would be emitting a docname into a customer's
+	message, which is the thing this fetch exists to prevent.
+
+	``arabic_name`` is unvalidated free text on CareService template - all 14 rows are
+	populated today, but a service added next month can arrive blank. A blank is returned
+	as a blank, and deliberately NOT quietly substituted with the English name: an Arabic
+	message that prints "CBC" mid-sentence is precisely the failure this pair exists to
+	avoid. resolve_slots (meta_templates.py:1004) then uses the slot's fallback, or
+	refuses the send when none is set - the same arrangement boarding_checkinn {{4}} uses
+	for a missing expected_check_out. The choice stays with the operator who wrote the
+	message rather than being made here, silently, for every template at once.
+
+	Routed through format_variable_value, unlike _room_values. Both fields are Data today
+	so it is a no-op; it is here because format_variable_value is the documented single
+	point at which a value becomes message text, and a second entry point that is correct
+	only because of the current field types is the kind of thing that breaks quietly when
+	somebody changes one. cstr runs after it, so an unset column lands as "" and not None.
+	"""
+	blank = {"test_name": "", "test_arabic_name": ""}
+	if not care_service:
+		return blank
+	row = frappe.db.get_value(
+		"CareService template", care_service, ["service_name", "arabic_name"], as_dict=True
+	)
+	if not row:
+		return blank
+	return {
+		"test_name": cstr(format_variable_value(row.service_name)),
+		"test_arabic_name": cstr(format_variable_value(row.arabic_name)),
+	}
 
 
 def _related_guardian_and_pet(doc) -> tuple[str | None, str | None]:

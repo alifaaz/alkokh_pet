@@ -37,6 +37,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Phone Number",
+   "length": 11,
    "reqd": 1,
    "unique": 1
   },
@@ -137,11 +138,11 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-22 23:12:47.459866",
+ "modified": "2026-09-01 18:14:12.027414",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Guardian",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -159,8 +160,8 @@
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
- "title_field": "full_name",
  "sort_field": "creation",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "title_field": "full_name"
 }

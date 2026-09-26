@@ -1,0 +1,68 @@
+{
+ "doctype": "DocType",
+ "name": "Stock Transfer Reservation",
+ "module": "Pet App",
+ "engine": "InnoDB",
+ "field_order": [
+  "transfer",
+  "line_id",
+  "item_code",
+  "warehouse",
+  "batch_no",
+  "serial_no",
+  "stock_qty",
+  "allocation_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "transfer",
+   "label": "Transfer",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "Stock Transfer Order"
+  },
+  {
+   "fieldname": "line_id",
+   "label": "Line Id",
+   "fieldtype": "Data"
+  },
+  {
+   "fieldname": "item_code",
+   "label": "Item Code",
+   "fieldtype": "Link",
+   "options": "Item"
+  },
+  {
+   "fieldname": "warehouse",
+   "label": "Warehouse",
+   "fieldtype": "Link",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "batch_no",
+   "label": "Batch No",
+   "fieldtype": "Link",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "serial_no",
+   "label": "Serial No",
+   "fieldtype": "Link",
+   "options": "Serial No"
+  },
+  {
+   "fieldname": "stock_qty",
+   "label": "Stock Qty",
+   "fieldtype": "Float",
+   "precision": "9"
+  },
+  {
+   "fieldname": "allocation_id",
+   "label": "Allocation Id",
+   "fieldtype": "Data"
+  }
+ ],
+ "permissions": [],
+ "istable": 0,
+ "autoname": "hash"
+}

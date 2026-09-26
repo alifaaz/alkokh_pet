@@ -13,7 +13,7 @@ from pet_app.pet_app.doctype.product_category.product_category import (
 	apply_product_category_to_product,
 	get_product_category_summary,
 )
-from pet_app.api.response import standardize_response
+from pet_app.api.response import fail, standardize_response
 
 # ─────────────────────────────────────────
 # Allowed Roles
@@ -1505,6 +1505,56 @@ def get_product(product_id=None):
     if not row:
         frappe.throw(_("Product {0} was not found.").format(product_id))
     frappe.response["data"] = _product_payload(row)
+
+
+@frappe.whitelist()
+@standardize_response
+def lookup_product_by_barcode(barcode=None):
+    """Resolve one Product from a scanned code. Exact match on the indexed column.
+
+    Deliberately NOT the `["barcode", "like", "%term%"]` clause get_products uses for
+    its search box. A scan is an identity claim, not a search: substring matching would
+    full-scan the table, and a code that is a prefix of another product's code would
+    return the wrong item to someone holding a scanner. This is a single equality read
+    against the UNIQUE index, so it returns at most one row by construction.
+
+    Nothing reaches the caller as an exception. Missing input, no match and an
+    unexpected failure each return a normal envelope with a stable `meta.code` the
+    client can branch on, because the caller is a handheld at a shelf that has to show
+    something. A permission denial is the one case left to @standardize_response, which
+    reports it as ok:false / PermissionError exactly as every other endpoint here does.
+    """
+    _check_permission("read")
+
+    # The same trim the write path applies (Product._normalize_barcode). A scan gun
+    # appends its terminator on the READ side too, so an untrimmed lookup would miss the
+    # row it just stored correctly - the one failure that would look like "the index
+    # does not work" while the index is perfectly fine.
+    code = cstr(barcode).strip()
+    if not code:
+        return fail(_("Scan or enter a barcode."), code="BARCODE_REQUIRED")
+
+    try:
+        row = frappe.db.get_value("Product", {"barcode": code}, "*", as_dict=True)
+    except Exception:
+        # A handheld gets a stable code and the traceback stays on the server, rather
+        # than the decorator shipping a raw stack trace to the shelf.
+        frappe.log_error(frappe.get_traceback(), "BARCODE_LOOKUP_FAILED")
+        return fail(_("Barcode lookup failed. Try again."), code="BARCODE_LOOKUP_FAILED")
+
+    if not row:
+        return fail(
+            _("No product carries the barcode {0}.").format(code),
+            code="BARCODE_NOT_FOUND",
+            data={"barcode": code},
+        )
+
+    payload = _product_payload(row)
+    # Top-level mirror of the unit, alongside the `price`/`in_stock` mirrors
+    # _product_payload already exposes. The scan screen shows "2 x Vial" next to a
+    # quantity and should not have to dig into the item block for the noun.
+    payload["unit"] = (payload.get("item") or {}).get("uom")
+    return payload
 
 
 @frappe.whitelist()

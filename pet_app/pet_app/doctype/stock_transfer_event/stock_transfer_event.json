@@ -1,0 +1,52 @@
+{
+ "doctype": "DocType",
+ "name": "Stock Transfer Event",
+ "module": "Pet App",
+ "engine": "InnoDB",
+ "field_order": [
+  "transfer",
+  "action",
+  "actor",
+  "timestamp",
+  "note",
+  "audit_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "transfer",
+   "label": "Transfer",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "Stock Transfer Order"
+  },
+  {
+   "fieldname": "action",
+   "label": "Action",
+   "fieldtype": "Data"
+  },
+  {
+   "fieldname": "actor",
+   "label": "Actor",
+   "fieldtype": "Link",
+   "options": "User"
+  },
+  {
+   "fieldname": "timestamp",
+   "label": "Timestamp",
+   "fieldtype": "Data"
+  },
+  {
+   "fieldname": "note",
+   "label": "Note",
+   "fieldtype": "Long Text"
+  },
+  {
+   "fieldname": "audit_json",
+   "label": "Audit Json",
+   "fieldtype": "Long Text"
+  }
+ ],
+ "permissions": [],
+ "istable": 0,
+ "autoname": "hash"
+}

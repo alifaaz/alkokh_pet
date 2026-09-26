@@ -6,6 +6,8 @@ with:
 """
 
 from alkokh.setup.french_pcg_vet_store import (  # noqa: F401
+	ensure_item_group,
+	get_account_name,
 	setup_french_pcg_vet_store,
 	smoke_check_french_pcg_vet_store,
 )

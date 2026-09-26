@@ -1,50 +1,12 @@
-"""Stock movement at dispense time, opted in one medication at a time.
+"""Medication invoice conversions and legacy Stock Entry return helpers.
 
-Before this, nothing in the system ever deducted medication stock. The visit path
-was wired to deduct at invoice submission and had never once fired - zero Stock
-Ledger Entries exist for any medication item - and the boarding path had no stock
-leg at all. Dispensing wrote workflow fields and, on visits only, an audit row.
+Current visit/boarding dispensing records clinical state only. Sales Invoice
+submission owns stock movement. Dose options supply stock units per billed dose;
+that conversion is stored on the invoice, keeping its price and dose count intact.
 
-Switching deduction on globally would have been wrong, because the quantity being
-dispensed today is not a stock quantity. A dose of "0.5 cc" is stored as qty = 1
-against an item stocked in Vials; `conversion_factor` is 0 on 802 of 848
-prescription rows; three items are stocked in Litres against doses written in ml,
-and one in "mg/ml", which is not a unit at all. Deducting against those numbers
-would consume a whole vial per injection - an error that looks like theft rather
-than a bug, and one that compounds silently.
-
-So the switch is per medication, and the thing that flips it is the thing that
-supplies the missing number:
-
-    A medication deducts stock if, and only if, it has at least one enabled
-    Medication Dose Option with a positive Stock Deduction Qty.
-
-Without one, `stock_per_dose` returns None and every caller does exactly what it
-did before: no movement, no error, no log. That silence is the point - 260 of 264
-medications are unconfigured, and a warning per dispense would train staff to
-ignore it. Each medication starts deducting the day its dose option is filled in,
-and no earlier.
-
-Two deliberate choices about units:
-
-  The Stock Entry line is always written in the item's OWN stock UOM with
-  conversion_factor 1. We compute stock units ourselves - dose count times stock
-  per dose - and hand ERPNext a number that needs no conversion. That sidesteps
-  the entire UOM machinery: no placeholder transaction UOM, no per-item UOM
-  conversion table, and crucially no global ml->Litre factor, which is where a
-  literal 1000x error would otherwise live.
-
-  `stock_per_dose` is read at dispense and RECORDED on the row alongside the qty
-  it produced. A return computes its reversal from what was actually issued, not
-  from the master, so editing a dose option later cannot make a return put back a
-  different amount than the dispense took out.
-
-Authorise-then-elevate: callers prove the user may write the visit or boarding
-before reaching here, and the warehouse is put through `require_restriction_value`
-so a warehouse-restricted user cannot draw from a warehouse they may not touch.
-The Stock Entry itself is then inserted with elevated permissions, because
-dispensing staff hold no Stock Entry create right and should not need one - the
-goods leaving is a consequence of the clinical act, not a separate decision.
+The legacy issue/receipt helpers remain for historical callers and recorded returns.
+No current visit, boarding or care-service completion path calls the issue helpers.
+Historical issued quantities are never erased or silently invoiced a second time.
 """
 
 from __future__ import annotations
@@ -52,6 +14,8 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.utils import cstr, flt
+
+from erpnext.stock.stock_ledger import is_negative_stock_allowed
 
 from pet_app.api.permissions import require_restriction_value
 
@@ -150,6 +114,51 @@ def is_opted_in(medication: str | None) -> bool:
 	)
 
 
+def medication_invoice_context(row, *, item_code=None, medication=None, branch=None, warehouse_required=True):
+	"""Snapshot dose conversion on the invoice; ERPNext moves stock on submission.
+
+	Visit rows already record their chosen conversion. Boarding rows have only a
+	Dose Option link, resolved when invoicing. Billed dose counts and rates stay intact.
+	"""
+	from pet_app.utils.invoice_stock import assert_not_preissued
+	from pet_app.pet_app.doctype.medication.medication import resolve_dose_option_placeholder_uom
+
+	item_code = item_code or row.get("medication_item") or row.get("item_code")
+	medication = medication or row.get("medication")
+	if not medication and (row.get("medication_item") or row.get("item_type") == "Medication"):
+		medication = frappe.db.get_value("Medication", {"linked_item": item_code}, "name")
+	item = frappe.db.get_value("Item", item_code, ["is_stock_item", "stock_uom"], as_dict=True)
+	if not item or not item.is_stock_item:
+		return {}
+	assert_not_preissued(row, medication or item_code)
+	defaults = frappe.db.get_value("Medication", medication,
+		["default_dispense_uom", "default_conversion_factor"], as_dict=True) if medication else None
+	defaults = defaults or {}
+	stock_uom = item.stock_uom
+	uom = row.get("dispense_uom")
+	factor = flt(row.get("conversion_factor"))
+	if not uom or factor <= 0:
+		per_dose = stock_per_dose(medication, row.get("dose_option"))
+		if per_dose is not None:
+			uom = resolve_dose_option_placeholder_uom(stock_uom)
+			factor = per_dose
+		else:
+			uom = uom or defaults.get("default_dispense_uom") or stock_uom
+			factor = factor or flt(defaults.get("default_conversion_factor"))
+			if not factor and uom == stock_uom:
+				factor = 1
+	if factor <= 0:
+		frappe.throw(_("Medication {0} needs an explicit conversion from {1} to {2} before invoicing.").format(
+			medication or item_code, uom, stock_uom))
+	warehouse = resolve_dispense_warehouse(medication=medication, medication_item=item_code,
+		row_warehouse=row.get("warehouse"), branch=branch, label=medication or item_code,
+		purpose=_("invoice")) if warehouse_required else cstr(row.get("warehouse")).strip()
+	context = {"warehouse": warehouse, "uom": uom, "stock_uom": stock_uom, "conversion_factor": factor}
+	if row.get("batch_no"):
+		context.update(batch_no=row.get("batch_no"), use_serial_batch_fields=1)
+	return context
+
+
 def assert_row_can_record_stock(meta, label: str | None = None):
 	"""Refuse to move stock we cannot write down.
 
@@ -178,18 +187,31 @@ def resolve_dispense_warehouse(
 	row_warehouse: str | None = None,
 	label: str | None = None,
 	purpose: str | None = None,
+	branch: str | None = None,
 ) -> str:
 	"""The warehouse the goods leave, or a throw naming what to fill in.
 
-	The same three steps the visit invoice builder has always used - the row's own
-	warehouse, then the Medication default, then Stock Settings - so a medication
-	issues from the same place whether it is dispensed on a visit, dispensed on a
-	boarding, or billed. There is one chain, and this is it.
+	The row's own warehouse, then the Medication default, then the branch, then Stock
+	Settings - so a medication issues from the same place whether it is dispensed on a
+	visit, dispensed on a boarding, or billed. There is one chain, and this is it.
+
+	The branch step was added when per-medication warehouses were retired. Without it,
+	blanking ``Medication.default_warehouse`` would drop every dispense straight onto
+	Stock Settings' single site-wide default - a warehouse that holds almost no stock and
+	that branch-restricted staff are not permitted to touch, so ``require_restriction_value``
+	below would refuse the dispense outright. See ``pet_app/utils/branch_warehouse.py``.
+
+	``branch`` is the branch that owns the work. Callers that know it - an order carrying
+	a snapshotted ``performing_branch`` - should pass it, so a service performed at one
+	branch on another branch's order relieves the performing branch's shelf. Left None it
+	falls back to the acting user's own branch, which is the common case.
 
 	The last step is Stock Settings' configured default. That is a setting an
 	administrator chose, not a value invented here; if it is also empty this throws
 	rather than picking any warehouse that happens to hold stock.
 	"""
+	from pet_app.utils.branch_warehouse import branch_warehouse
+
 	warehouse = cstr(row_warehouse).strip()
 
 	if not warehouse and medication:
@@ -201,13 +223,16 @@ def resolve_dispense_warehouse(
 		).strip()
 
 	if not warehouse:
+		warehouse = cstr(branch_warehouse(branch)).strip()
+
+	if not warehouse:
 		warehouse = cstr(frappe.db.get_single_value("Stock Settings", "default_warehouse")).strip()
 
 	if not warehouse:
 		frappe.throw(
 			_(
 				"Warehouse is required to {0} medication {1}. Set a Warehouse on the order row, "
-				"Medication Default Warehouse, or Stock Settings Default Warehouse."
+				"the Warehouse on your Branch, or Stock Settings Default Warehouse."
 			).format(purpose or _("dispense"), frappe.bold(label or medication or medication_item or ""))
 		)
 
@@ -258,6 +283,56 @@ def issue_for_dispense(
 		label=label or medication or medication_item,
 	)
 	return {"stock_entry": stock_entry, "qty": qty, "warehouse": warehouse, "per_dose": per_dose}
+
+
+def issue_explicit_qty(
+	*,
+	medication: str | None,
+	medication_item: str | None,
+	qty: float,
+	branch: str | None = None,
+	row_warehouse: str | None = None,
+	reference: str,
+	label: str | None = None,
+) -> dict | None:
+	"""Issue a quantity somebody else already worked out. Sibling of `issue_for_dispense`.
+
+	Same machinery, different source for the number. A dispense multiplies a dose count by
+	the medication's own per-dose quantity; a care service reads the quantity straight off
+	the weight band the operator picked, because for deworming the band IS the dose - it
+	sets the price and the tablets together and nobody types a quantity.
+
+	`qty` is therefore taken as given, in the item's OWN stock UOM, and handed to
+	`_post_stock_entry` with conversion_factor 1 - the same sidestep of the UOM machinery
+	this module's docstring argues for. Nothing here converts anything: if the item is
+	stocked in Strip, `qty` is strips.
+
+	Returns None only when there is nothing to do (no quantity). Every other failure -
+	no item, a group warehouse, a fraction against a whole-number UOM, no warehouse at
+	all - throws from the shared helpers, naming what to fix.
+	"""
+	qty = flt(qty)
+	if qty <= QTY_EPSILON:
+		return None
+
+	warehouse = resolve_dispense_warehouse(
+		medication=medication,
+		medication_item=medication_item,
+		row_warehouse=row_warehouse,
+		branch=branch,
+		label=label,
+		purpose=_("issue"),
+	)
+	stock_entry = _post_stock_entry(
+		entry_type=ISSUE_ENTRY_TYPE,
+		item_code=medication_item,
+		qty=qty,
+		warehouse=warehouse,
+		is_issue=True,
+		remark=_("Issued: {0} ({1}). {2}").format(label or medication or medication_item, qty, reference),
+		label=label or medication or medication_item,
+	)
+	return {"stock_entry": stock_entry, "qty": qty, "warehouse": warehouse}
 
 
 def receive_for_return(
@@ -399,17 +474,41 @@ def _validate_whole_number_qty(stock_uom: str | None, qty: float, label: str):
 
 
 def _validate_availability(item_code: str, warehouse: str, qty: float, label: str):
-	"""Refuse a dispense the warehouse cannot cover.
+	"""Say what the warehouse cannot cover, and refuse only where the item says to.
 
-	ERPNext would refuse this anyway at submit, since negative stock is disabled -
-	this exists to say WHY in terms the person holding the syringe can act on, and
-	to fail before a Stock Entry is created rather than after.
+	Whether a shortfall is fatal is not this module's decision to make. ERPNext already
+	answers it in one place - `is_negative_stock_allowed`, which reads the global Stock
+	Settings flag and then the per-Item one - and medication items carry the per-Item
+	flag precisely so a dose is never blocked by a ledger that is behind the shelf.
+	Asking that helper keeps one authority instead of two that can disagree.
+
+	Where the shortfall is allowed we still say so at the moment it is created, rather
+	than leaving it to be discovered at the next count: the bin is about to go negative
+	and the person holding the syringe is the only one who can explain why. Where it is
+	not allowed the throw stands, and it stays worded in terms they can act on - ERPNext
+	would refuse at submit anyway, but only after a Stock Entry had been built.
 	"""
 	available = flt(
 		frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty")
 	)
 	if available + QTY_EPSILON >= flt(qty):
 		return
+
+	if is_negative_stock_allowed(item_code=item_code):
+		frappe.msgprint(
+			_(
+				"Dispensing {0} takes {1} below zero: it holds {2} but {3} is being dispensed. Recount and receive the difference."
+			).format(
+				frappe.bold(label),
+				frappe.bold(warehouse),
+				frappe.bold(available),
+				frappe.bold(flt(qty)),
+			),
+			title=_("Stock going negative"),
+			indicator="orange",
+		)
+		return
+
 	frappe.throw(
 		_(
 			"Cannot dispense {0}: {1} needs {2} but holds {3}. Receive stock into {1} first, or dispense from a warehouse that has it."

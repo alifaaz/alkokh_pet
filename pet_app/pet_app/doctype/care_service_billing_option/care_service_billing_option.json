@@ -17,6 +17,8 @@
   "max_weight",
   "item_code",
   "default_rate",
+  "medication",
+  "stock_deduction_qty",
   "disabled",
   "sort_order",
   "service_title"
@@ -78,6 +80,22 @@
    "reqd": 1
   },
   {
+   "description": "The drug this band deducts. Set it together with a Stock Deduction Qty and completing a service on this band issues that quantity from the branch's warehouse. Leave blank and the drug is read from the CareService template instead; blank in both places and the band never touches stock - which is what every grooming and bathing band does. A service with several weight bands repeats the same drug on every one of them.",
+   "fieldname": "medication",
+   "fieldtype": "Link",
+   "label": "Medication",
+   "options": "Medication"
+  },
+  {
+   "default": "0",
+   "description": "Units of the linked Item deducted from stock each time this option is used. 0 means NOT CONFIGURED: a consumer must refuse to deduct and say so, never treat it as \"deduct nothing\". Fractional doses are allowed - a sixth of a tablet is 0.1667.",
+   "fieldname": "stock_deduction_qty",
+   "fieldtype": "Float",
+   "label": "Stock Deduction Qty",
+   "non_negative": 1,
+   "precision": "4"
+  },
+  {
    "default": "0",
    "fieldname": "disabled",
    "fieldtype": "Check",
@@ -114,7 +132,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-06-13 19:29:27.827188",
+ "modified": "2026-09-08 15:10:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Care Service Billing Option",

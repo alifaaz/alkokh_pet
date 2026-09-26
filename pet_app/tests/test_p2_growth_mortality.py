@@ -57,11 +57,14 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 		guardian, pet = self._make_guardian_pet()
 		record = frappe.get_doc(
 			{
-				"doctype": "Pet Vaccination Record",
+				"doctype": "Preventive Care Record",
 				"pet": pet.name,
 				"guardian": guardian.name,
-				"vaccine_name": "Rabies",
-				"next_due_date": frappe.utils.nowdate(),
+				"kind": "Vaccination",
+				"medication_name": "Rabies",
+				"status": "Administered",
+				"administered_on": frappe.utils.nowdate(),
+				"next_due_date": frappe.utils.add_days(frappe.utils.nowdate(), 30),
 				"reminder_enabled": 1,
 			}
 		).insert(ignore_permissions=True)
@@ -69,7 +72,7 @@ class TestP2GrowthAndMortality(FrappeTestCase):
 		reminders.enqueue_due_reminders()
 		reminders.enqueue_due_reminders()
 
-		self.assertEqual(frappe.db.count("Pet Reminder", {"reference_doctype": "Pet Vaccination Record", "reference_name": record.name}), 1)
+		self.assertEqual(frappe.db.count("Pet Reminder", {"reference_doctype": "Preventive Care Record", "reference_name": record.name}), 1)
 
 	def test_membership_discount_status(self):
 		guardian, _pet = self._make_guardian_pet()

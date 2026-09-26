@@ -1,0 +1,81 @@
+{
+ "actions": [],
+ "creation": "2026-09-02 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "surface_key",
+  "label",
+  "enabled",
+  "template_source",
+  "template_key",
+  "meta_template"
+ ],
+ "fields": [
+  {
+   "description": "Identifies one send surface - a screen or job that sends a WhatsApp message. Must be a key registered in SEND_SURFACES (pet_app/notifications/send_targets.py); an unregistered key is refused on save, because a settings row no surface reads is a default nobody can find.",
+   "fieldname": "surface_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Surface Key",
+   "reqd": 1
+  },
+  {
+   "description": "Human name for this surface. Filled from the registry on save when left blank.",
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Label",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "description": "Off behaves exactly as a blank default: the picker opens with nothing selected. Lets a default be switched off without losing which template it was.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "description": "Blank means this surface has no configured default and its picker opens blank. There is no code-side fallback.",
+   "fieldname": "template_source",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Template Source",
+   "options": "\nlocal\nmeta"
+  },
+  {
+   "depends_on": "eval:doc.template_source=='local'",
+   "description": "The local template's template_key. Data, not a Link, so deleting a local template degrades this default to blank rather than blocking the delete.",
+   "fieldname": "template_key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Template Key",
+   "mandatory_depends_on": "eval:doc.template_source=='local'"
+  },
+  {
+   "depends_on": "eval:doc.template_source=='meta'",
+   "fieldname": "meta_template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Meta Template",
+   "mandatory_depends_on": "eval:doc.template_source=='meta'",
+   "options": "Pet App WhatsApp Meta Template"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Pet App WhatsApp Send Default",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

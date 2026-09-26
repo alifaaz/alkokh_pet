@@ -138,19 +138,29 @@ class TestClinicalP1Flows(FrappeTestCase):
 	def test_vaccination_deworming_next_due_and_timeline(self):
 		visit = self._make_visit()
 		next_due = frappe.utils.add_days(frappe.utils.nowdate(), 30)
+		# One doctype now, separated by `kind`. Created as history (no catalogue row, so no
+		# price and no charge) because this test is about the timeline, not about billing.
 		vaccine = frappe.get_doc(
 			{
-				"doctype": "Pet Vaccination Record",
+				"doctype": "Preventive Care Record",
 				"visit": visit.name,
-				"vaccine_name": "Rabies",
+				"pet": visit.animal_patient,
+				"kind": "Vaccination",
+				"medication_name": "Rabies",
+				"status": "Administered",
+				"administered_on": frappe.utils.nowdate(),
 				"next_due_date": next_due,
 			}
 		).insert(ignore_permissions=True)
 		deworming = frappe.get_doc(
 			{
-				"doctype": "Pet Deworming Record",
+				"doctype": "Preventive Care Record",
 				"visit": visit.name,
+				"pet": visit.animal_patient,
+				"kind": "Deworming",
 				"medication_name": "Fenbendazole",
+				"status": "Administered",
+				"administered_on": frappe.utils.nowdate(),
 				"next_due_date": next_due,
 			}
 		).insert(ignore_permissions=True)

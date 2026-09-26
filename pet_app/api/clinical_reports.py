@@ -74,6 +74,39 @@ def diagnostics_turnaround(date_from=None, date_to=None):
 
 
 @frappe.whitelist()
+def unbilled_care_services(date_from=None, date_to=None):
+	try:
+		filters = {"status": ["in", ["completed", "Completed"]], "billed": 0}
+		if date_from and date_to:
+			filters["due_date"] = ["between", [getdate(date_from), getdate(date_to)]]
+		rows = frappe.get_all(
+			"PetCareService",
+			filters=filters,
+			fields=[
+				"name",
+				"pet_service_name",
+				"item_code",
+				"price",
+				"pet_id",
+				"guardian_id",
+				"performing_branch",
+				"due_date",
+				"end_date",
+				"status",
+				"visit",
+				"source_doctype",
+			],
+			order_by="end_date desc",
+			ignore_permissions=True,
+		)
+		services = [dict(row) for row in rows]
+		enrich_link_aliases(services, pet_field="pet_id", guardian_field="guardian_id", include_provider=False)
+		return ok({"services": services}, meta={"total": len(services)})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
 def unbilled_visits(date_from=None, date_to=None):
 	try:
 		filters = {"docstatus": ["<", 2], "billed": 0}

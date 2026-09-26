@@ -94,6 +94,91 @@ class TestWhatsAppActions(FrappeTestCase):
 		self.assertEqual(request.status, "Completed")
 		self.assertEqual(frappe.db.get_value("Rating", request.result_name, "overall_rating"), 4)
 
+	def test_customer_rating_is_typed_and_attributed_to_its_guardian(self):
+		guardian, pet = self._make_guardian_pet()
+		service = self._make_service(guardian, pet)
+		service.status = "completed"
+		service.save(ignore_permissions=True)
+
+		result = handle_whatsapp_webhook(self._text_payload(guardian.phone, "5"))
+		self.assertTrue(result["ok"])
+		request_name = frappe.db.get_value(
+			"Pet App WhatsApp Action Request",
+			{"rule": "PetCareService Completed Rating", "source_name": service.name},
+			"name",
+		)
+		rating = frappe.get_doc("Rating", frappe.db.get_value(
+			"Pet App WhatsApp Action Request", request_name, "result_name"
+		))
+		self.assertEqual(rating.rating_type, "Customer")
+		# The guardian, not a fallback user. Guardians on this site rarely have a User,
+		# and the old code filed all of them under "Administrator".
+		self.assertEqual(rating.rated_by_guardian, guardian.name)
+
+	def test_second_guardian_rating_replaces_the_first_instead_of_being_dropped(self):
+		"""The bug this executor shipped with: a collision discarded the new score.
+
+		The old upsert fetched the existing row, never assigned overall_rating, never
+		saved, and still returned {"overall_rating": score} - so the caller reported a
+		success for a rating it had not written.
+		"""
+		guardian, pet = self._make_guardian_pet()
+		service = self._make_service(guardian, pet)
+		service.status = "completed"
+		service.save(ignore_permissions=True)
+
+		self.assertTrue(handle_whatsapp_webhook(self._text_payload(guardian.phone, "5"))["ok"])
+		request_name = frappe.db.get_value(
+			"Pet App WhatsApp Action Request",
+			{"rule": "PetCareService Completed Rating", "source_name": service.name},
+			"name",
+		)
+		rating_name = frappe.db.get_value("Pet App WhatsApp Action Request", request_name, "result_name")
+		self.assertEqual(frappe.db.get_value("Rating", rating_name, "overall_rating"), 5)
+
+		frappe.db.set_value("Pet App WhatsApp Action Request", request_name, "status", "Waiting Reply")
+		self.assertTrue(handle_whatsapp_webhook(self._text_payload(guardian.phone, "2"))["ok"])
+		self.assertEqual(frappe.db.get_value("Rating", rating_name, "overall_rating"), 2)
+
+	def test_guardian_rating_does_not_land_on_a_staff_rating_of_the_same_service(self):
+		"""A supervisor's Internal row and a guardian's Customer row coexist.
+
+		Under the old key - reference_doctype + reference_name, rater-blind - the
+		guardian's reply resolved to this staff row, and the score was silently thrown
+		away. Now the two are separate rows and the staff score is untouched.
+		"""
+		guardian, pet = self._make_guardian_pet()
+		service = self._make_service(guardian, pet)
+		staff_rating = frappe.get_doc(
+			{
+				"doctype": "Rating",
+				"reference_doctype": "PetCareService",
+				"reference_name": service.name,
+				"overall_rating": 4,
+				"notes": "Internal audit note.",
+			}
+		).insert(ignore_permissions=True)
+		self.assertEqual(staff_rating.rating_type, "Internal")
+
+		service.status = "completed"
+		service.save(ignore_permissions=True)
+		self.assertTrue(handle_whatsapp_webhook(self._text_payload(guardian.phone, "1"))["ok"])
+
+		staff_rating.reload()
+		self.assertEqual(staff_rating.overall_rating, 4)
+		self.assertEqual(staff_rating.notes, "Internal audit note.")
+		customer = frappe.get_all(
+			"Rating",
+			filters={
+				"reference_doctype": "PetCareService",
+				"reference_name": service.name,
+				"rating_type": "Customer",
+			},
+			fields=["name", "overall_rating"],
+		)
+		self.assertEqual(len(customer), 1)
+		self.assertEqual(customer[0].overall_rating, 1)
+
 	def test_rating_executor_is_reusable_for_another_doctype(self):
 		guardian, pet = self._make_guardian_pet()
 		rule = self._make_rule(
@@ -264,6 +349,12 @@ class TestWhatsAppActions(FrappeTestCase):
 				"pet_name": f"WhatsApp Pet {suffix}",
 				"animal_species": "Mammal",
 				"animal_type": "Dog",
+				# birth_date, gender and weight became mandatory on Pet after this helper
+				# was written, which had been erroring every test in this module that
+				# builds a pet. Values are arbitrary; nothing here reads them.
+				"birth_date": "2024-01-01",
+				"gender": "Unknown",
+				"weight": 10,
 				"pet_status": "Approved",
 			}
 		).insert(ignore_permissions=True)

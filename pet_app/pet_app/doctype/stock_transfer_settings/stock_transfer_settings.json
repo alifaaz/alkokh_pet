@@ -1,0 +1,78 @@
+{
+ "doctype": "DocType",
+ "name": "Stock Transfer Settings",
+ "module": "Pet App",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "enabled",
+  "reservation_tests_passed",
+  "transit_warehouse",
+  "quarantine_warehouses",
+  "loss_expense_account",
+  "cost_center",
+  "public_app_url"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "label": "Company",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "unique": 1,
+   "options": "Company"
+  },
+  {
+   "fieldname": "enabled",
+   "label": "Enabled",
+   "fieldtype": "Check",
+   "default": "0"
+  },
+  {
+   "fieldname": "reservation_tests_passed",
+   "label": "Reservation Tests Passed",
+   "fieldtype": "Check",
+   "default": "0",
+   "description": "Enable only after isolated ledger and concurrent reservation acceptance tests pass."
+  },
+  {
+   "fieldname": "transit_warehouse",
+   "label": "Transit Warehouse",
+   "fieldtype": "Link",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "quarantine_warehouses",
+   "label": "Quarantine Warehouses",
+   "fieldtype": "Table",
+   "options": "Stock Transfer Quarantine"
+  },
+  {
+   "fieldname": "loss_expense_account",
+   "label": "Loss Expense Account",
+   "fieldtype": "Link",
+   "options": "Account"
+  },
+  {
+   "fieldname": "cost_center",
+   "label": "Cost Center",
+   "fieldtype": "Link",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "public_app_url",
+   "label": "Public App Url",
+   "fieldtype": "Data"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1
+  }
+ ],
+ "istable": 0,
+ "autoname": "hash"
+}

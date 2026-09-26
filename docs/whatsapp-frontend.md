@@ -189,8 +189,16 @@ Important fields:
 | `action_request` | Link | Related action card. |
 | `source_doctype` | Link | Linked business record type. |
 | `source_name` | Dynamic Link | Linked business record id. |
+| `replied_to_message` | Link | On an inbound reply, the message it answers. |
 
 Render `source_doctype` and `source_name` as a record link when both exist.
+
+`replied_to_message` comes from Meta's `message.context.id` and is set on the way in. It
+is what makes a quick-reply tap attributable: the tap itself carries the button's visible
+label and nothing about the record, and the message it answers carries `source_doctype` /
+`source_name`. Empty is normal — a message that quotes nothing has no context, and a
+quoted message this app never stored cannot be resolved. Render it as a quoted-reply
+preview if you show one; do not treat empty as an error.
 
 ### Action Request
 
@@ -669,6 +677,7 @@ Docname is `meta_template_id` — Meta's own ID — so a re-sync is a stable ups
 | `binding_state` | Data | `bound` / `unbound` / `ambiguous` |
 | `last_synced_at` | Datetime | |
 | `missing_on_meta` | Check | Set when Meta stops returning a row we hold. |
+| `delivers_reviewed_report` | Check | This template promises the record's report. See below. |
 
 #### `status`, `category` and `language` are `Data`, and must stay that way
 
@@ -1459,6 +1468,88 @@ As of 2026-07-20:
 
 Do not treat a queued message as delivered. Use the returned message/queue status and subsequent Meta webhook statuses.
 
+## Reviewed Report Delivery
+
+A template whose body says "press the button and we will send you the report" is making a
+promise, and there is **no server-side PDF renderer in this app** — `api/printing.py`
+returns JSON and nothing imports `get_pdf`. The only bytes that can ever be sent are the
+ones the client generated and a human reviewed. Two rules follow, and both are enforced
+by the backend.
+
+### The template declares the promise. Nothing in code lists which templates those are.
+
+Tick `delivers_reviewed_report` on the **mirror row** (`Pet App WhatsApp Meta Template`),
+not on the local template — `lab_result_ready` has no local row, and the send addresses
+the mirror directly. A radiology template, and whatever comes after it, ticks the same box
+and needs no backend change.
+
+Ticking it means exactly two things:
+
+1. The send is **refused** unless the source record already has a reviewed report attached.
+2. A tap on the template's button **delivers** that report, automatically.
+
+Both rows of a bilingual template need the box ticked — `en_US` and `ar` are separate
+approved templates and separate mirror rows.
+
+### Attach the reviewed PDF before sending the template
+
+```
+POST /api/method/pet_app.api.diagnostics.attach_reviewed_report
+{ "doctype": "Lab", "name": "LAB-00538",
+  "filedata": "<base64 or data: URL>",
+  "file_name": "Loli-lab-report.pdf" }
+
+→ { "ok": true, "data": { "file": { "name": "...", "file_name": "...", "is_private": 1 },
+                          "source_doctype": "Lab", "source_name": "LAB-00538" } }
+```
+
+`source_type` is accepted as an alias for `doctype`, and `content` / `filename` for
+`filedata` / `file_name`. The caller needs **write** permission on the record.
+
+Refused, with `errors[0].message` worth displaying verbatim: a file that is not a PDF
+(checked by its first bytes, not its name), an empty upload, an unreadable or truncated
+PDF, and anything over WhatsApp's 100 MB document limit. Re-uploading identical bytes
+returns the file already stored rather than a duplicate.
+
+The file is stored **private** and attached to the record via
+`attached_to_doctype` / `attached_to_name`, the same convention as result files.
+
+```
+GET /api/method/pet_app.api.diagnostics.get_reviewed_report?doctype=Lab&name=LAB-00538
+→ { "ok": true, "data": { "report": { "name": ..., "file_name": ..., "creation": ... } } }
+```
+
+`report` is `null` when nothing is attached. Use it to decide whether to offer the send at
+all, rather than letting the operator find out from a refusal.
+
+### What a refused send looks like
+
+| `meta.code` | Meaning |
+|---|---|
+| `REVIEWED_REPORT_MISSING` | The template promises a report; the record has none attached. |
+| `REPORT_SOURCE_MISSING` | The template promises a report; the send names no source record. |
+
+Both name the template and the record in `errors[0].message`. Display it as-is — it says
+what to do.
+
+### What the tap does
+
+The guardian taps → the 24-hour window opens → the backend resolves the tap's
+`replied_to_message` to the outbound message, reads its `source_doctype` / `source_name`,
+finds the **newest** reviewed report on that record, and sends it as a document. The send
+is queued after commit, not made inside the webhook.
+
+- **The stored file is sent, never a regenerated one.** The clinic reviewed those exact bytes.
+- **Repeat taps re-send.** They pressed a button that promised a report. Only a genuine
+  double-fire — the same file to the same conversation inside 60 seconds — is suppressed.
+- **A corrected report is never suppressed by the one before it**, because the guard is
+  scoped to the file rather than to the record.
+- **Taps on templates that promise nothing are unaffected**, rating templates included,
+  even though they carry quick-reply buttons too.
+
+If the send fails, staff get an inbox notification saying a promised report could not be
+sent — a guardian waiting on a document is not something to leave in the error log.
+
 ## Frontend Acceptance Checklist
 
 - Conversation list loads and displays unread/session state.
@@ -1484,3 +1575,8 @@ Do not treat a queued message as delivered. Use the returned message/queue statu
 - `example.body_text` is sent as an array of arrays.
 - The status returned by `edit_meta_template` is not shown as the post-edit state.
 - `message_template_status_update` is subscribed in the Meta App dashboard.
+- A lab or radiology template send attaches the reviewed PDF first, and surfaces
+  `REVIEWED_REPORT_MISSING` / `REPORT_SOURCE_MISSING` verbatim if it did not.
+- `get_reviewed_report` is consulted before offering a report-promising template, so the
+  operator learns there is no PDF before the customer would have.
+- `replied_to_message` renders as a quoted reply where shown, and empty is not an error.

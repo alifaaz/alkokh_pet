@@ -34,7 +34,8 @@
   "doctor_reviewed_at",
   "result_visibility",
   "attachment_required",
-  "result"
+  "result",
+  "extracted_result"
  ],
  "fields": [
   {
@@ -224,10 +225,10 @@
    "label": "Start At"
   },
   {
+   "description": "When this order is due to happen. Optional, and never defaulted - an absent value means 'do it now', which is most orders. A stamp written automatically would be indistinguishable from one a person chose, and nothing could then tell a scheduled order from an unscheduled one.",
    "fieldname": "scheduled_datetime",
    "fieldtype": "Datetime",
-   "label": "Scheduled Datetime",
-   "description": "When this order is due to happen. Optional, and never defaulted - an absent value means 'do it now', which is most orders. A stamp written automatically would be indistinguishable from one a person chose, and nothing could then tell a scheduled order from an unscheduled one."
+   "label": "Scheduled Datetime"
   },
   {
    "fieldname": "end_at",
@@ -239,12 +240,17 @@
    "fieldtype": "Select",
    "label": "Priority",
    "options": "Routine\nNormal\nHigh\nUrgent"
+  },
+  {
+   "fieldname": "extracted_result",
+   "fieldtype": "Text Editor",
+   "label": "Extracted result"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-08-12 20:58:42.327644",
+ "modified": "2026-09-13 20:22:51.932132",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Lab",

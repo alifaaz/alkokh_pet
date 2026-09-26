@@ -1338,7 +1338,7 @@ The workspace uses custom Appointment fields:
 
 | Field | Purpose |
 |---|---|
-| `custom_appointment_type` | appointment kind; supports `visit`, `service`, `follow_up` |
+| `custom_appointment_type` | appointment kind; use `pet_app.api.scheduling.list_appointment_types` for the current option list |
 | `custom_pet` | linked pet |
 | `custom_guardian` | linked guardian; spelling is existing backend field |
 | `custom_customer` | linked customer |

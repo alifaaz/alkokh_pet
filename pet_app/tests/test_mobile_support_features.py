@@ -181,7 +181,7 @@ class TestMobileSupportFeatures(FrappeTestCase):
 		)
 		self.assertTrue(created["ok"], created)
 		record_id = created["data"]["id"]
-		self.assertTrue(frappe.db.exists("Pet Vaccination Record", record_id))
+		self.assertTrue(frappe.db.exists("Preventive Care Record", record_id))
 
 		updated = pets.update_medical_record(pet=pet.name, record=record_id, notes="Done")
 		self.assertTrue(updated["ok"], updated)
@@ -194,7 +194,7 @@ class TestMobileSupportFeatures(FrappeTestCase):
 		deleted = pets.delete_medical_record(pet=pet.name, record=record_id)
 		self.assertTrue(deleted["ok"], deleted)
 		self.assertTrue(deleted["data"]["deleted"])
-		self.assertFalse(frappe.db.exists("Pet Vaccination Record", record_id))
+		self.assertFalse(frappe.db.exists("Preventive Care Record", record_id))
 
 	def _make_guardian_user_and_login(self):
 		guardian, user = self._make_guardian_user()

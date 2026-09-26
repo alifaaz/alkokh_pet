@@ -1,0 +1,229 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:partner_name",
+ "creation": "2026-09-10 12:00:00",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "partner_name",
+  "partner_name_ar",
+  "is_active",
+  "is_inside",
+  "column_break_identity",
+  "commission_type",
+  "commission_rate",
+  "commission_amount",
+  "settlement_cycle",
+  "logo",
+  "brand_color",
+  "section_break_billing",
+  "customer",
+  "commission_expense_account",
+  "column_break_billing",
+  "contact_person",
+  "contact_number",
+  "section_break_notes",
+  "notes"
+ ],
+ "fields": [
+  {
+   "description": "The aggregator's trading name - Talabat, Toters. This is also the record's primary key, so it is what a Sales Invoice's partner link stores and what the till prints on a partner receipt.",
+   "fieldname": "partner_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Partner Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "The trading name in Arabic, for the till and printed receipts. Not the primary key - partner_name is.",
+   "fieldname": "partner_name_ar",
+   "fieldtype": "Data",
+   "label": "Partner Name (Arabic)"
+  },
+  {
+   "default": "1",
+   "description": "Switched off partners keep their history and their settlements, but the till refuses to ring up a new order against them (PARTNER_INACTIVE).",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Active"
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Percentage",
+   "description": "Whether this partner keeps a share of each order (Percentage) or a flat fee per order (Amount). Snapshotted onto every sale in custom_partner_commission_type, so switching a partner over never restates a past month. Partners that predate this field are Percentage, which is what they were.",
+   "fieldname": "commission_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Commission Type",
+   "options": "Percentage\nAmount",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.commission_type==\"Percentage\"",
+   "description": "The live rate, used to SEED a sale's commission. Each invoice keeps its own snapshot in custom_partner_commission_rate, so changing this never restates a past month. Must be greater than 0 and less than 100.",
+   "fieldname": "commission_rate",
+   "fieldtype": "Percent",
+   "in_list_view": 1,
+   "label": "Commission Rate (%)",
+   "mandatory_depends_on": "eval:doc.commission_type==\"Percentage\""
+  },
+  {
+   "depends_on": "eval:doc.commission_type==\"Amount\"",
+   "description": "The flat fee this partner keeps from EACH order, whatever the order is worth. Seeds a sale's commission exactly as the rate does, and is snapshotted the same way. Must be greater than 0, and a sale whose total does not exceed it is refused at the till.",
+   "fieldname": "commission_amount",
+   "fieldtype": "Currency",
+   "label": "Commission Amount (per order)",
+   "mandatory_depends_on": "eval:doc.commission_type==\"Amount\""
+  },
+  {
+   "description": "How often this partner settles. Reporting metadata: nothing computes a settlement period from it, because the invoices a settlement covers are its own rows.",
+   "fieldname": "settlement_cycle",
+   "fieldtype": "Select",
+   "label": "Settlement Cycle",
+   "options": "\nWeekly\nBiweekly\nMonthly"
+  },
+  {
+   "description": "Public, never private: the till loads this as a plain <img>, and the browser sends no auth header on an image request, so a private file 403s on the POS partner tile. NOT mandatory - Frappe refuses an upload naming a doctype with no docname, so the record must exist before its logo can be attached at all.",
+   "fieldname": "logo",
+   "fieldtype": "Attach Image",
+   "label": "Logo"
+  },
+  {
+   "description": "Used by the POS partner tile so a cashier picks the right app by sight rather than by reading.",
+   "fieldname": "brand_color",
+   "fieldtype": "Color",
+   "label": "Brand Colour"
+  },
+  {
+   "fieldname": "section_break_billing",
+   "fieldtype": "Section Break",
+   "label": "Billing"
+  },
+  {
+   "description": "Backend-owned. Created automatically on insert and never sent by a client. Every order for this partner is billed here, so repointing it at a customer that already carries unrelated history is refused.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "description": "Where the partner's commission is booked as an expense at settlement time. Debited for the commission the partner kept, so the invoices close in full. Must not be a till's cash account.",
+   "fieldname": "commission_expense_account",
+   "fieldtype": "Link",
+   "label": "Commission Expense Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_billing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "contact_person",
+   "fieldtype": "Data",
+   "label": "Contact Person"
+  },
+  {
+   "fieldname": "contact_number",
+   "fieldtype": "Data",
+   "label": "Contact Number"
+  },
+  {
+   "fieldname": "section_break_notes",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_inside",
+   "fieldtype": "Check",
+   "label": "Bill the App Customer",
+   "description": "Ticked: a partner order is billed to the REAL customer the cashier picks, not to this partner's own Customer - but the partner still collects the money and settles with us, and still keeps its commission. The order therefore shows as debt on that customer's account until the partner settles, and the till refuses to collect it (PARTNER_INVOICE_COLLECTED_BY_PARTNER). Snapshotted onto each invoice, so switching it never changes an order that already exists."
+  }
+ ],
+ "grid_page_length": 50,
+ "image_field": "logo",
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-18 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Delivery Partner",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales User",
+   "share": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -140,7 +140,7 @@ Important folders:
 
 `Appointment`:
 
-- `custom_appointment_type`: `visit`, `follow_up`, `showering`, `barbering`
+- `custom_appointment_type`: `visit`, `follow_up`, `showering`, `barbering`, `surgery`, `examination`, `lab`, `radiology`, `advance`
 - `custom_pet`, `custom_guardian`, `custom_customer`, `custom_doctor`, `custom_room`
 - `custom_follow_up_of_visit_id`, `custom_linked_visit_id`, `custom_linked_service_id`
 - `custom_converted_target`, `custom_converted_at`
@@ -349,6 +349,7 @@ Use the URL `/api/method/<method>` for every method below.
 | Method | HTTP | Request | Response |
 |---|---:|---|---|
 | `pet_app.api.pet.list_pet_breeds` | GET/POST | `{ animal_type?, animal_species?, search?, page_size? }` | `data`: breed rows |
+| `pet_app.api.mobile.pets.list_breeds` | GET | `{ animal_type?, animal_species?, search?, limit? }` | envelope `{ items: [{ id, name, arabic_name, species, type }], total }` |
 | `pet_app.api.pet.list_pets` | GET/POST | `{ page?, page_size?, search? }` | paginated pet list; guardians see linked pets only |
 | `pet_app.api.pet.get_pet` | GET/POST | `{ pet_id }` | `data`: pet detail with images |
 | `pet_app.api.pet.upload_multiple_files` | GET/POST multipart | files + `doctype`, `docname` | `{ uploaded, skipped, errors }`; max 500 KB/file; SHA1 duplicate detection |
@@ -366,6 +367,7 @@ Use the URL `/api/method/<method>` for every method below.
 
 | Method | HTTP | Request | Response |
 |---|---:|---|---|
+| `pet_app.api.scheduling.list_appointment_types` | GET/POST | `{}` | envelope `{ appointment_types: [{ value, label }], types: [] }` |
 | `pet_app.api.scheduling.get_available_slots` | GET/POST | `{ date?, doctor?/practitioner?, room?, service_type?, duration_minutes? }` | envelope `{ slots }` |
 | `pet_app.api.scheduling.book_appointment` | POST | `{ data: { pet, guardian, scheduled_time, doctor?, appointment_type?, ... } }` | envelope `{ appointment }` |
 | `pet_app.api.scheduling.reschedule_appointment` | POST | `{ appointment, scheduled_time? / data }` | envelope `{ appointment }` |

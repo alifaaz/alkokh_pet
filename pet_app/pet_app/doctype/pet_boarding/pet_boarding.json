@@ -39,13 +39,19 @@
   "occupants",
   "notes_section",
   "note",
-  "boarding_note",
+  "check_in_note",
   "boarded_by",
   "cancelled_by",
   "cancellation_note",
-  "checkout_notes",
+  "check_out_note",
   "amended_from",
-  "notes"
+  "notes",
+  "discount_request",
+  "accommodation_subtotal",
+  "accommodation_discount_amount",
+  "accommodation_total",
+  "discount_recorded_at",
+  "discount_recorded_by"
  ],
  "fields": [
   {
@@ -264,11 +270,6 @@
    "search_index": 1
   },
   {
-   "fieldname": "checkout_notes",
-   "fieldtype": "Text",
-   "label": "Notes"
-  },
-  {
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "s"
@@ -279,11 +280,6 @@
    "label": "Visit",
    "options": "Vet Visit",
    "read_only": 1
-  },
-  {
-   "fieldname": "boarding_note",
-   "fieldtype": "Text",
-   "label": "Boarding Note"
   },
   {
    "fieldname": "boarded_by",
@@ -309,13 +305,66 @@
    "fieldname": "expected_check_out",
    "fieldtype": "Date",
    "label": "Expected Check Out"
+  },
+  {
+   "fieldname": "check_in_note",
+   "fieldtype": "Text",
+   "label": "Check In Note"
+  },
+  {
+   "fieldname": "check_out_note",
+   "fieldtype": "Text",
+   "label": "Check Out Note"
+  },
+  {
+   "fieldname": "discount_request",
+   "fieldtype": "Long Text",
+   "label": "Requested Accommodation Discount",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "accommodation_subtotal",
+   "fieldtype": "Currency",
+   "label": "Accommodation Subtotal",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "accommodation_discount_amount",
+   "fieldtype": "Currency",
+   "label": "Accommodation Discount Amount",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "accommodation_total",
+   "fieldtype": "Currency",
+   "label": "Accommodation Total",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "discount_recorded_at",
+   "fieldtype": "Datetime",
+   "label": "Discount Recorded At",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "discount_recorded_by",
+   "fieldtype": "Link",
+   "label": "Discount Recorded By",
+   "read_only": 1,
+   "no_copy": 1,
+   "options": "User"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-04-21 01:09:35.388016",
+ "modified": "2026-08-31 18:32:50.055074",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Boarding",

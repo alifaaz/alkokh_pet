@@ -1,0 +1,453 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "PCR-.#####",
+ "creation": "2026-09-10 09:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "visit",
+  "source_doctype",
+  "source_name",
+  "order_id",
+  "pet",
+  "guardian",
+  "doctor",
+  "provider",
+  "column_break_order",
+  "care_service",
+  "service_option",
+  "kind",
+  "category",
+  "section_break_administered",
+  "medication",
+  "medication_name",
+  "vaccine_type",
+  "dose",
+  "batch_no",
+  "column_break_administered",
+  "weight",
+  "qty",
+  "section_break_schedule",
+  "status",
+  "due_date",
+  "scheduled_datetime",
+  "priority",
+  "column_break_schedule",
+  "start_at",
+  "end_at",
+  "administered_on",
+  "section_break_recurrence",
+  "next_due_date",
+  "reminder_enabled",
+  "reminder_status",
+  "section_break_billing",
+  "item_code",
+  "rate",
+  "branch",
+  "performing_branch",
+  "column_break_billing",
+  "billed",
+  "sales_invoice",
+  "section_break_stock",
+  "stock_issued_qty",
+  "stock_entry",
+  "stock_warehouse",
+  "section_break_audit",
+  "administered_by",
+  "administered_at",
+  "cancelled_by",
+  "cancelled_at",
+  "cancellation_reason",
+  "notes"
+ ],
+ "fields": [
+  {
+   "description": "The visit this was ordered on, when it was ordered on one. Optional, unlike Lab: a preventive dose is routinely given on a pet's record with no visit at all, and that direct case is a first-class path rather than an exception.",
+   "fieldname": "visit",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Visit",
+   "options": "Vet Visit"
+  },
+  {
+   "fieldname": "source_doctype",
+   "fieldtype": "Link",
+   "label": "Source Doctype",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "description": "What ordered this, when it was not a Vet Visit - a Pet Boarding, say. A real Link, not a marker parsed out of free text.",
+   "fieldname": "source_name",
+   "fieldtype": "Dynamic Link",
+   "in_standard_filter": 1,
+   "label": "Source Name",
+   "options": "source_doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "order_id",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Order ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pet",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Pet",
+   "options": "Pet",
+   "reqd": 1
+  },
+  {
+   "fieldname": "guardian",
+   "fieldtype": "Link",
+   "label": "Guardian",
+   "options": "Guardian"
+  },
+  {
+   "description": "The practitioner who ORDERED this, taken from the visit. Distinct from Administering Practitioner on purpose: a doctor orders the vaccination during the consult and a nurse gives it, and the clinic knows both.",
+   "fieldname": "doctor",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "in_standard_filter": 1,
+   "label": "Ordering Practitioner",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "description": "The practitioner who actually ADMINISTERED the dose. Set when the record is started.",
+   "fieldname": "provider",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "in_list_view": 1,
+   "label": "Administering Practitioner",
+   "options": "Healthcare Practitioner"
+  },
+  {
+   "fieldname": "column_break_order",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The catalogue row this reads its item, price and drug from. Either this or Service Option must be set - vaccination is configured as a template, deworming as weight bands.",
+   "fieldname": "care_service",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Care Service",
+   "options": "CareService template"
+  },
+  {
+   "description": "The weight band picked for this dose. Carries the price and the stock deduction quantity for deworming.",
+   "fieldname": "service_option",
+   "fieldtype": "Link",
+   "label": "Service Option",
+   "options": "Care Service Billing Option"
+  },
+  {
+   "description": "Resolved from the catalogue category at insert and then frozen, so a later category rename cannot retroactively re-describe a dose that has already been given.",
+   "fieldname": "kind",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Kind",
+   "options": "\nVaccination\nDeworming",
+   "read_only": 1
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Link",
+   "label": "Category",
+   "options": "CategoryCareServices",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_administered",
+   "fieldtype": "Section Break",
+   "label": "What Was Given"
+  },
+  {
+   "description": "Defaulted from the band, else the template. Left alone once set, so a deliberate substitution is never silently overwritten by the catalogue.",
+   "fieldname": "medication",
+   "fieldtype": "Link",
+   "label": "Medication",
+   "options": "Medication"
+  },
+  {
+   "description": "The label this dose is recorded and billed under. Replaces the separate vaccine_name and medication_name of the two record doctypes this supersedes.",
+   "fieldname": "medication_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Administered",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.kind==\"Vaccination\"",
+   "fieldname": "vaccine_type",
+   "fieldtype": "Data",
+   "label": "Vaccine Type"
+  },
+  {
+   "depends_on": "eval:doc.kind==\"Deworming\"",
+   "fieldname": "dose",
+   "fieldtype": "Data",
+   "label": "Dose"
+  },
+  {
+   "description": "Hand-entered only. Never filled automatically - batch tracking is not configured, and a guessed lot number on a vaccination record is worse than an empty one.",
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "label": "Batch No"
+  },
+  {
+   "fieldname": "column_break_administered",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The pet's weight at the time of dosing. This is what selects the deworming band.",
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight (kg)"
+  },
+  {
+   "description": "How much of the drug this dose consumes, defaulted from the band and overridable for a partial dose. Precision 4 deliberately: a sixth of a tablet is 0.1667 and must survive this site's float precision of 2.",
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "label": "Quantity",
+   "precision": "4"
+  },
+  {
+   "fieldname": "section_break_schedule",
+   "fieldtype": "Section Break",
+   "label": "Schedule"
+  },
+  {
+   "default": "Ordered",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Ordered\nIn Progress\nAdministered\nCancelled"
+  },
+  {
+   "fieldname": "due_date",
+   "fieldtype": "Date",
+   "label": "Due Date"
+  },
+  {
+   "description": "When this dose is due to happen. Optional, and never defaulted - an absent value means 'do it now', which is most doses. A stamp written automatically would be indistinguishable from one a person chose, and nothing could then tell a scheduled dose from an unscheduled one.",
+   "fieldname": "scheduled_datetime",
+   "fieldtype": "Datetime",
+   "label": "Scheduled Datetime"
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Select",
+   "label": "Priority",
+   "options": "Routine\nNormal\nHigh\nUrgent"
+  },
+  {
+   "fieldname": "column_break_schedule",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "start_at",
+   "fieldtype": "Datetime",
+   "label": "Start At"
+  },
+  {
+   "fieldname": "end_at",
+   "fieldtype": "Datetime",
+   "label": "End At"
+  },
+  {
+   "fieldname": "administered_on",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Administered On"
+  },
+  {
+   "fieldname": "section_break_recurrence",
+   "fieldtype": "Section Break",
+   "label": "Recurrence"
+  },
+  {
+   "description": "The date of the NEXT dose, chosen by the operator and never computed. Empty is a real answer meaning no recurrence: no reminder is raised and nothing is reported.",
+   "fieldname": "next_due_date",
+   "fieldtype": "Date",
+   "in_standard_filter": 1,
+   "label": "Next Due Date"
+  },
+  {
+   "default": "1",
+   "fieldname": "reminder_enabled",
+   "fieldtype": "Check",
+   "label": "Reminder Enabled"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "reminder_status",
+   "fieldtype": "Select",
+   "label": "Reminder Status",
+   "options": "Pending\nSent\nAcknowledged\nCancelled"
+  },
+  {
+   "fieldname": "section_break_billing",
+   "fieldtype": "Section Break",
+   "label": "Billing"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item Code",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "label": "Rate",
+   "read_only": 1
+  },
+  {
+   "description": "Which clinic this record belongs to. Stamped from the acting user at insert and used to scope worklists. Distinct from Performing Branch, which comes from the catalogue and says where the service is physically carried out - blank on every catalogue row today.",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 0,
+   "in_standard_filter": 1,
+   "label": "Branch",
+   "options": "Branch"
+  },
+  {
+   "description": "Where this dose was given. Snapshotted from the catalogue at insert and never rewritten by a later catalogue edit.",
+   "fieldname": "performing_branch",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Performing Branch",
+   "options": "Branch",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_billing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "billed",
+   "fieldtype": "Check",
+   "label": "Billed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Sales Invoice",
+   "options": "Sales Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_stock",
+   "fieldtype": "Section Break",
+   "label": "Stock"
+  },
+  {
+   "description": "What actually left the shelf. Recorded, never recomputed, so a cancellation reverses the real quantity even if the band is edited afterwards.",
+   "fieldname": "stock_issued_qty",
+   "fieldtype": "Float",
+   "label": "Stock Issued Qty",
+   "precision": "4",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_warehouse",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Stock Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_audit",
+   "fieldtype": "Section Break",
+   "label": "Audit"
+  },
+  {
+   "fieldname": "administered_by",
+   "fieldtype": "Link",
+   "label": "Administered By (User)",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "administered_at",
+   "fieldtype": "Datetime",
+   "label": "Administered At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_by",
+   "fieldtype": "Link",
+   "label": "Cancelled By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_at",
+   "fieldtype": "Datetime",
+   "label": "Cancelled At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancellation_reason",
+   "fieldtype": "Small Text",
+   "label": "Cancellation Reason"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-10 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Preventive Care Record",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

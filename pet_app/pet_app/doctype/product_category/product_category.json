@@ -15,6 +15,7 @@
   "description",
   "erp_mirror_section",
   "item_group",
+  "auto_generated",
   "lft",
   "rgt",
   "old_parent"
@@ -83,6 +84,15 @@
    "read_only": 1
   },
   {
+   "default": "0",
+   "description": "Maintained by pet_app.utils.store_category_mirror from the Item Group tree. Edits made here are overwritten on the next rebuild.",
+   "fieldname": "auto_generated",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Auto Generated",
+   "read_only": 1
+  },
+  {
    "fieldname": "lft",
    "fieldtype": "Int",
    "hidden": 1,
@@ -106,7 +116,7 @@
  "index_web_pages_for_search": 0,
  "is_tree": 1,
  "links": [],
- "modified": "2026-05-02 00:00:00.000000",
+ "modified": "2026-09-06 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Product Category",

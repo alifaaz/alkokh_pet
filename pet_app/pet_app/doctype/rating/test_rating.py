@@ -119,6 +119,58 @@ class TestRating(FrappeTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			duplicate.insert()
 
+	def test_untyped_write_resolves_to_internal(self):
+		"""The staff Desk/REST path types itself without a frontend change.
+
+		A DocType field default would not do this: Frappe applies defaults in new_doc(),
+		not in frappe.get_doc({...}).insert(), which is the path /api/resource/Rating
+		takes and the path every existing staff rating on this site was written through.
+		"""
+		target = self._make_questionnaire("Test Rating Target Untyped")
+		doc = self._make_rating(target)
+		self.assertEqual(doc.rating_type, "Internal")
+
+	def test_rejects_unknown_rating_type(self):
+		target = self._make_questionnaire("Test Rating Target Bad Type")
+		doc = self._rating_doc(target)
+		doc.rating_type = "Staff"
+		with self.assertRaises(frappe.ValidationError):
+			doc.insert()
+
+	def test_rejects_guardian_reference_on_an_internal_rating(self):
+		"""The guardian reference and the type are one fact; they may not disagree."""
+		target = self._make_questionnaire("Test Rating Target Type Mismatch")
+		guardian = frappe.get_all("Guardian", pluck="name", limit=1)
+		if not guardian:
+			self.skipTest("No Guardian on this site to reference.")
+		doc = self._rating_doc(target)
+		doc.rating_type = "Internal"
+		doc.rated_by_guardian = guardian[0]
+		with self.assertRaises(frappe.ValidationError):
+			doc.insert()
+
+	def test_internal_and_customer_ratings_of_one_reference_do_not_collide(self):
+		"""The type joins the uniqueness tuple, so the two sides are separate rows.
+
+		Without this, adding the column would have been worse than leaving it out:
+		readers would filter on a field whose value the last writer happened to win.
+		"""
+		target = self._make_questionnaire("Test Rating Target Both Types")
+		guardian = frappe.get_all("Guardian", pluck="name", limit=1)
+		if not guardian:
+			self.skipTest("No Guardian on this site to reference.")
+		internal = self._make_rating(target, overall_rating=4)
+		self.assertEqual(internal.rating_type, "Internal")
+
+		customer = self._rating_doc(target, overall_rating=1)
+		customer.rating_type = "Customer"
+		customer.rated_by_guardian = guardian[0]
+		customer.insert()
+
+		internal.reload()
+		self.assertEqual(internal.overall_rating, 4)
+		self.assertNotEqual(customer.name, internal.name)
+
 	def _make_questionnaire(self, label, **kwargs):
 		name = f"{label} {frappe.generate_hash(length=8)}"
 		doc = frappe.get_doc(

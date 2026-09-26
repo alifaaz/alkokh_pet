@@ -7,6 +7,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr
 
+from pet_app.utils.image_orientation import normalize_image_orientation
+
 
 MAX_UPLOAD_SIZE = 500 * 1024
 FILE_REQUEST_INVALID = "file.request_invalid"
@@ -78,6 +80,11 @@ def attach_public_image(doctype: str, docname: str, fieldname: str, uploaded_fil
 		raise MobileFileError(FILE_REQUEST_INVALID, _("Uploaded file is empty."))
 	if len(content) > MAX_UPLOAD_SIZE:
 		raise MobileFileError(FILE_REQUEST_INVALID, _("Uploaded file is too large. Maximum size is 500 KB."))
+
+	# Rotate before hashing: the size limit applies to what the client sent, but the
+	# hash has to describe the bytes we actually store, or a re-upload of a photo that
+	# was saved sideways would dedupe straight back onto the broken copy.
+	content = normalize_image_orientation(content)
 
 	sha1 = hashlib.sha1(content).hexdigest()
 	file_values = {

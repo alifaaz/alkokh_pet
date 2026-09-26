@@ -39,6 +39,11 @@ def enqueue_due_reminders(limit=None):
 			source_doctype=reminder.source_doctype,
 			source_name=reminder.source_name,
 			template_key=reminder.template_key,
+			# Forwarded with .get so a site whose p1_22 has not run yet keeps working:
+			# the fields are simply absent and the pair arrives blank, which
+			# _resolve_meta_template_row reads as "local path", exactly as before.
+			template_source=reminder.get("template_source"),
+			meta_template=reminder.get("meta_template"),
 			channel=reminder.channel,
 			send_after=reminder.send_at,
 			idempotency_key=reminder.dedupe_key or reminder.name,

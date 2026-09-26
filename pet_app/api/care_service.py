@@ -1,10 +1,10 @@
 import frappe
 from frappe import _
-from frappe.utils import cstr, flt, now_datetime
+from frappe.utils import cint, cstr, flt, now_datetime
 from frappe.model.document import Document
 from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.permissions import require_doctype_permission
-from pet_app.api.response import standardize_response
+from pet_app.api.response import ok, standardize_response
 from pet_app.utils.visit_billing import (
     assert_boarding_billable_item_can_cancel,
     assert_visit_billable_item_can_cancel,
@@ -113,7 +113,7 @@ def get_providers_for_category(category: str) -> list:
         return []
 
     cat_name = (cat_doc or "").lower()
-    MEDICAL = ["lab", "radiology", "medication", "sonar", "checkup", "general"]
+    MEDICAL = ["lab", "radiology", "medication", "sonar", "checkup", "general", "vaccin", "deworm"]
     is_medical = any(k in cat_name for k in MEDICAL)
     fields = ["name", "practitioner_name", "practitioner_type", "photo", "user_id"]
 
@@ -248,6 +248,11 @@ def bulk_create_pet_care_services(entries=None, services=None):
             elif option:
                 svc.price = option.get("default_rate")
             svc.due_date = item.get("due_date") or today()
+            # `next_due_date` is NOT set here any more. The column was dropped from
+            # PetCareService with the rest of the preventive plumbing, so the assignment wrote
+            # nothing - Frappe persists only fields that exist in the meta. Recurrence now
+            # belongs to `Preventive Care Record`; a caller wanting a next dose date creates
+            # one of those (`pet_app.api.preventive_care.create_preventive_care_record`).
             svc.insert(ignore_permissions=True)
             frappe.db.commit()
             created.append(svc.name)

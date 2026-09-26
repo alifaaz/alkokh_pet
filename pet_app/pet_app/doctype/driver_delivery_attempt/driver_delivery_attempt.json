@@ -1,0 +1,62 @@
+{
+ "actions": [],
+ "creation": "2026-09-19 18:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "reason",
+  "note",
+  "at",
+  "driver"
+ ],
+ "fields": [
+  {
+   "fieldname": "reason",
+   "fieldtype": "Select",
+   "label": "Reason",
+   "options": "no_answer\nnot_home\nwrong_address",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "note",
+   "fieldtype": "Small Text",
+   "label": "Note",
+   "in_list_view": 1,
+   "columns": 4,
+   "read_only": 1
+  },
+  {
+   "fieldname": "at",
+   "fieldtype": "Datetime",
+   "label": "At",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1
+  },
+  {
+   "fieldname": "driver",
+   "fieldtype": "Link",
+   "label": "Driver",
+   "options": "Driver",
+   "in_list_view": 1,
+   "columns": 2,
+   "read_only": 1,
+   "ignore_user_permissions": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-19 18:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Driver Delivery Attempt",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": []
+}

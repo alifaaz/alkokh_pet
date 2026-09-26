@@ -9,7 +9,7 @@ from frappe.utils import cint, cstr, get_datetime, getdate, now_datetime, nowdat
 
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import is_clinical_user, require_doctype_permission
-from pet_app.api.response import fail, ok
+from pet_app.api.response import begin_action, fail, ok, rollback_action
 from pet_app.api.workspace import _assert_record_access, _has_field, _stamp_appointment_conversion
 from pet_app.pet_app.doctype.pet_care_episode.pet_care_episode import ACTIVE_EPISODE_STATUSES
 from pet_app.utils.medical_profile import (
@@ -28,6 +28,7 @@ from pet_app.utils.care_plan_links import (
 	sync_linked_plan_appointment_schedule,
 )
 from pet_app.utils.practitioner import get_practitioner_for_user
+from pet_app.utils.visit_fields import write_visit_fields
 from pet_app.workflows import clinical_state
 
 
@@ -111,6 +112,7 @@ MEDICATION_PAYLOAD_KEYS = {"medication", "medication_item", "qty", "dispense_uom
 @frappe.whitelist(methods=["POST"])
 def add_plan_item_from_visit(visit=None, data=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		visit_name = cstr(visit or payload.get("visit") or payload.get("source_visit")).strip()
 		if not visit_name:
@@ -174,6 +176,7 @@ def add_plan_item_from_visit(visit=None, data=None, **kwargs):
 @frappe.whitelist(methods=["POST"])
 def update_plan_item(plan_item=None, data=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		name = cstr(plan_item or payload.get("plan_item") or payload.get("name")).strip()
 		if not name:
@@ -208,6 +211,7 @@ def update_plan_item(plan_item=None, data=None, **kwargs):
 @frappe.whitelist(methods=["POST"])
 def cancel_plan_item(plan_item=None, reason=None, data=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		name = cstr(plan_item or payload.get("plan_item") or payload.get("name")).strip()
 		if not name:
@@ -231,6 +235,7 @@ def cancel_plan_item(plan_item=None, reason=None, data=None, **kwargs):
 @frappe.whitelist(methods=["POST"])
 def complete_plan_item(plan_item=None, note=None, data=None, linked_visit=None, completion_note=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		name = cstr(plan_item or payload.get("plan_item") or payload.get("name")).strip()
 		if not name:
@@ -273,6 +278,7 @@ def complete_plan_item(plan_item=None, note=None, data=None, linked_visit=None, 
 @frappe.whitelist(methods=["POST"])
 def schedule_plan_item_appointment(plan_item=None, appointment_data=None, data=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		name = cstr(plan_item or payload.get("plan_item") or payload.get("name")).strip()
 		if not name:
@@ -302,6 +308,7 @@ def schedule_plan_item_appointment(plan_item=None, appointment_data=None, data=N
 @frappe.whitelist(methods=["POST"])
 def convert_plan_item_to_visit(plan_item=None, data=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		name = cstr(plan_item or payload.get("plan_item") or payload.get("name")).strip()
 		if not name:
@@ -1424,6 +1431,10 @@ def _sync_medication_to_visit(visit, plan, payload: dict):
 	row_data.setdefault("qty", medication_payload.get("qty") or 1)
 	row_data.setdefault("instructions", medication_payload.get("instructions") or plan.instructions)
 	visit.append("prescribed_medications", row_data)
+	# Appending a row needs a real save, but a side-effect save must not re-check every
+	# existing link on the visit: rows billed onto drafts deleted on 2026-09-14 are kept
+	# as they are and would fail it. See pet_app.utils.visit_fields. (No caller today.)
+	visit.flags.ignore_links = True
 	visit.save(ignore_permissions=True)
 	sync_treatment_from_visit(visit)
 
@@ -1491,17 +1502,15 @@ def _sync_episode_profile_for_plan(plan):
 		visit = frappe.get_doc("Vet Visit", plan.source_visit)
 		if not clinical_state.is_billed_visit(visit):
 			if plan.plan_type == "Follow-up Visit":
+				updates = {}
 				if plan.due_date:
-					visit.follow_up_required = 1
-					visit.follow_up_date = plan.due_date
-					if _has_field("Vet Visit", "follow_up_preferred_date"):
-						visit.follow_up_preferred_date = plan.due_date
-				if plan.appointment and _has_field("Vet Visit", "follow_up_appointment_id"):
-					visit.follow_up_appointment_id = plan.appointment
-				if _has_field("Vet Visit", "follow_up_status"):
-					visit.follow_up_status = "Scheduled" if plan.appointment else "Requested"
-				visit.flags.ignore_billing_lock = True
-				visit.save(ignore_permissions=True)
+					updates["follow_up_required"] = 1
+					updates["follow_up_date"] = plan.due_date
+					updates["follow_up_preferred_date"] = plan.due_date
+				if plan.appointment:
+					updates["follow_up_appointment_id"] = plan.appointment
+				updates["follow_up_status"] = "Scheduled" if plan.appointment else "Requested"
+				write_visit_fields(visit, updates)
 				sync_follow_up_from_visit(visit)
 			else:
 				update_profile_for_visit(visit, plan_status="Active")
@@ -1825,5 +1834,7 @@ def _payload(data, kwargs) -> dict:
 
 
 def _error_response(exc: Exception) -> dict:
+	# Undo the action's partial writes before reporting it; see response.begin_action.
+	rollback_action()
 	code = "PERMISSION_DENIED" if isinstance(exc, frappe.PermissionError) else getattr(exc, "code", None) or "ERROR"
 	return fail(cstr(exc), code=code, details=frappe.get_traceback())

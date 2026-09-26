@@ -13,6 +13,7 @@ from pet_app.notifications import engine
 from pet_app.notifications import designer
 from pet_app.notifications.context import build_document_context, normalize_phone, recipient_phone
 from pet_app.notifications.inbox import get_or_create_conversation, notify_inbox_users
+from pet_app.utils.rating_entities import CUSTOMER_RATING
 
 
 EXECUTORS = set(designer.EXECUTORS)
@@ -578,16 +579,50 @@ def _create_rating(request, rule):
 	if score < 1 or score > scale or scale > 5:
 		frappe.throw(_("Rating must be within the configured 1-{0} scale.").format(scale))
 	_source_row_lock(request.source_doctype, request.source_name)
-	filters = {"reference_doctype": request.source_doctype, "reference_name": request.source_name}
-	if config.get("questionnaire"):
-		filters["questionnaire"] = config["questionnaire"]
+
+	# Who is rating: a Guardian, not a User. Only 4 of the 1,791 Guardians on this site
+	# have a linked User account, so the old fallback chain - guardian.user_id, then the
+	# whatsapp_feedback_user setting, then "Administrator" - handed almost every one of
+	# them the same identity. All three ratings this executor has ever written came from
+	# three different guardians and all three landed as rated_by="Administrator".
+	#
+	# An upsert cannot deduplicate on an identity everybody shares, so the guardian
+	# itself is the key, and it is stored on the row rather than resolved and thrown
+	# away. The fallback is gone: a rating that cannot be attributed is refused, not
+	# filed under somebody else's name.
+	conversation = frappe.get_doc("Pet App WhatsApp Conversation", request.conversation)
+	guardian = cstr(conversation.guardian).strip()
+	if not guardian:
+		frappe.throw(
+			_(
+				"This conversation is not linked to a Guardian, so the rating cannot be "
+				"attributed to anyone and was not recorded. Link conversation {0} to a "
+				"Guardian, then ask for the rating again."
+			).format(request.conversation)
+		)
+
+	# Keyed on the guardian, the reference, the questionnaire and the type - the same
+	# tuple Rating._validate_duplicate_rating enforces. It can only ever return this
+	# guardian's own Customer row, never a supervisor's Internal one.
+	filters = {
+		"reference_doctype": request.source_doctype,
+		"reference_name": request.source_name,
+		"questionnaire": config.get("questionnaire") or "",
+		"rating_type": CUSTOMER_RATING,
+		"rated_by_guardian": guardian,
+	}
 	existing = frappe.db.get_value("Rating", filters, "name")
 	if existing:
+		# A real upsert. The old code fetched the row here, never assigned
+		# overall_rating, never saved, and still returned {"overall_rating": score} - so
+		# a guardian's answer was discarded while the caller was told it had been
+		# stored. Now the second answer replaces the first, which is what an upsert
+		# claimed to do all along.
 		rating = frappe.get_doc("Rating", existing)
+		rating.overall_rating = score
+		rating.rated_at = now_datetime()
+		rating.save(ignore_permissions=True)
 	else:
-		conversation = frappe.get_doc("Pet App WhatsApp Conversation", request.conversation)
-		rated_by = frappe.db.get_value("Guardian", conversation.guardian, "user_id") if conversation.guardian else None
-		rated_by = rated_by or engine.get_settings().get("whatsapp_feedback_user") or "Administrator"
 		rating = frappe.get_doc(
 			{
 				"doctype": "Rating",
@@ -595,7 +630,12 @@ def _create_rating(request, rule):
 				"reference_name": request.source_name,
 				"questionnaire": config.get("questionnaire"),
 				"overall_rating": score,
-				"rated_by": rated_by,
+				"rating_type": CUSTOMER_RATING,
+				"rated_by_guardian": guardian,
+				# Accurate when the guardian has a User, empty when they do not - the
+				# controller then falls back to the session user. Either way nothing
+				# keys on it any more, so an empty one is honest instead of harmful.
+				"rated_by": frappe.db.get_value("Guardian", guardian, "user_id") or None,
 				"rated_at": now_datetime(),
 			}
 		).insert(ignore_permissions=True)
@@ -663,6 +703,16 @@ def _store_rating_comment(request, message):
 	if not request.result_name or request.result_doctype != "Rating":
 		return None
 	rating = frappe.get_doc("Rating", request.result_name)
+	# This executor writes free text straight over notes. _create_rating can now only
+	# ever link a request to the sending guardian's own Customer row, so the old failure
+	# - a customer's comment landing on top of a supervisor's internal audit note,
+	# because the upsert had resolved to that supervisor's row - is structurally out of
+	# reach. Stated rather than assumed: it is one comparison, and the thing it prevents
+	# is silent and unrecoverable.
+	if rating.rating_type != CUSTOMER_RATING:
+		frappe.throw(
+			_("Rating {0} is an internal rating; a customer comment cannot be stored on it.").format(rating.name)
+		)
 	rating.notes = cstr(message.body).strip()
 	rating.save(ignore_permissions=True)
 	request.matched_message = message.name

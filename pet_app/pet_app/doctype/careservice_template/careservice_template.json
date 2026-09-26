@@ -11,6 +11,7 @@
   "arabic_name",
   "frequency",
   "item_code",
+  "medication",
   "price_list",
   "specimen",
   "estimated_turnaround",
@@ -103,6 +104,13 @@
    "options": "Item"
   },
   {
+   "description": "The drug this service administers. Set it together with a Stock Deduction Qty on each weight band and completing the service issues that quantity from the branch's warehouse. Leave blank and the service never touches stock - which is what every grooming and bathing template does.",
+   "fieldname": "medication",
+   "fieldtype": "Link",
+   "label": "Medication",
+   "options": "Medication"
+  },
+  {
    "fieldname": "column_break_wbjw",
    "fieldtype": "Column Break"
   },
@@ -161,7 +169,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-19 01:09:39.725217",
+ "modified": "2026-09-07 09:17:29.098431",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "CareService template",

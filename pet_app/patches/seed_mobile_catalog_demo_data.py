@@ -3,7 +3,7 @@ from __future__ import annotations
 from urllib.parse import quote
 
 import frappe
-from frappe.utils import flt, now_datetime
+from frappe.utils import flt
 
 from pet_app.pet_app.doctype.product_category.product_category import STORE_ROOT_CATEGORY
 
@@ -200,7 +200,21 @@ BANNERS = (
 )
 
 
+def should_seed_mobile_catalog() -> bool:
+	"""Gate matching seed_initial_master_data's pet_app_seed_master_data / _demo_data flags.
+
+	Without this the module was ungated: any `bench execute` of it, or anyone adding it to
+	patches.txt, would create Items/Products and SUBMIT Stock Entry material receipts into
+	the live "Stores - K" warehouse. Set pet_app_seed_mobile_catalog in site_config.json to
+	run it deliberately.
+	"""
+	return bool(frappe.conf.get("pet_app_seed_mobile_catalog"))
+
+
 def execute():
+	if not should_seed_mobile_catalog():
+		return None
+
 	summary = {
 		"brands": [],
 		"categories": [],
@@ -208,7 +222,6 @@ def execute():
 		"products": [],
 		"banners": [],
 		"stock_receipts": [],
-		"ratings": [],
 	}
 
 	_ensure_price_list()
@@ -222,7 +235,6 @@ def execute():
 		summary["items"].append(item_code)
 		product_name = _ensure_product(row, item_code)
 		summary["products"].append(product_name)
-		_ensure_rating(product_name, row.get("rating"), summary)
 		receipt = _ensure_stock(item_code, row["stock_qty"], row["price"])
 		if receipt:
 			summary["stock_receipts"].append(receipt)
@@ -377,29 +389,6 @@ def _ensure_banner(row) -> str | None:
 	doc.action_value = row["action_value"]
 	_save(doc)
 	return doc.name
-
-
-def _ensure_rating(product_name: str, rating, summary):
-	if not rating or not frappe.db.exists("DocType", "Rating"):
-		return
-	name = frappe.db.get_value(
-		"Rating",
-		{
-			"reference_doctype": "Product",
-			"reference_name": product_name,
-			"rated_by": "Administrator",
-		},
-		"name",
-	)
-	doc = frappe.get_doc("Rating", name) if name else frappe.new_doc("Rating")
-	doc.reference_doctype = "Product"
-	doc.reference_name = product_name
-	doc.overall_rating = int(rating)
-	doc.notes = "Seeded mobile catalog rating."
-	doc.rated_by = "Administrator"
-	doc.rated_at = now_datetime()
-	_save(doc)
-	summary["ratings"].append(doc.name)
 
 
 def _ensure_stock(item_code: str, target_qty, rate) -> str | None:

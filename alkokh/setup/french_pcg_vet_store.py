@@ -264,6 +264,7 @@ COMPANY_ACCOUNT_DEFAULTS: dict[str, str] = {
 	"default_income_account": "707000",
 	"default_expense_account": "603700",
 	"purchase_expense_account": "607000",
+	"purchase_expense_contra_account": "603700",
 	"service_expense_account": "611000",
 	"default_discount_account": "709700",
 	"write_off_account": "654000",

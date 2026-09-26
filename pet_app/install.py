@@ -29,6 +29,37 @@ INSTALL_SCHEMA_PATCHES = (
 	"pet_app.patches.p1_15_meta_template_slot_map_stale.execute",
 	"pet_app.patches.p1_16_action_rule_meta_template.execute",
 	"pet_app.patches.p1_17_meta_template_source_doctype.execute",
+	"pet_app.patches.p1_22_reminder_meta_template.execute",
+	# Data-only, unlike everything above it: the doctype and the field come from JSON at
+	# model sync. It is here because install_app() marks patches.txt complete without
+	# running it, so without this entry a fresh site would come up with an empty send-
+	# default table - and an empty table means every surface's picker opens blank, which
+	# on a fresh install is silence rather than the seeded defaults.
+	"pet_app.patches.p1_23_whatsapp_send_defaults.execute",
+	# Data-only, like p1_23. A fresh install seeds the corrected key straight from p1_23
+	# and this is a no-op there; it is here so the two stay in step and a site can never
+	# be installed with the guessed key.
+	"pet_app.patches.p1_24_invoice_send_surface_key.execute",
+	# Adds replied_to_message (Link) to Pet App WhatsApp Message via ensure_doctype, but
+	# the doctype name is a module constant (DOCTYPE), not a string literal at the call
+	# site - test_install_schema_patches.py's static detector only recognises a literal
+	# first argument, so it cannot see this one and will not fail this list into staying
+	# correct. Without this entry a fresh install could receive no inbound reply and a
+	# quick-reply tap would be unattributable from the first message onward.
+	"pet_app.patches.p1_25_whatsapp_inbound_reply_context.execute",
+	# Adds pet_app_reviewed_report (Check) to File via create_custom_fields, a shape the
+	# detector does not parse at all (it only recognises ensure_doctype and a literal
+	# DOCTYPES dict). Without this entry a fresh install has no marker field, so nothing
+	# can ever be recorded as a deliverable report and the whole reviewed-report chain
+	# is silently absent rather than merely unconfigured.
+	"pet_app.patches.p1_26_reviewed_report_attachment.execute",
+	# Adds delivers_reviewed_report (Check) to Pet App WhatsApp Meta Template. The
+	# detector does see this one (a literal DOCTYPES dict), but seeing it only makes the
+	# test fail until the patch is also listed here - it does not run the patch itself.
+	"pet_app.patches.p1_27_template_promises_report.execute",
+	"pet_app.patches.driver_orders_schema.execute",
+	"pet_app.patches.stock_transfer_schema.execute",
+	"pet_app.patches.boarding_invoice_discount.execute",
 )
 
 

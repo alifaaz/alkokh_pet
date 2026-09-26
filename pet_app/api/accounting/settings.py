@@ -75,12 +75,54 @@ def _validate_cash_account(account: str | None, company: str | None, label: str)
 		)
 
 
+CATEGORY_FIELDS = (
+	"key",
+	"label_en",
+	"label_ar",
+	"account",
+	"branch",
+	"cost_center",
+	"company",
+	"enabled",
+)
+
+
+def _category_payload(row) -> dict:
+	return {field: row.get(field) for field in CATEGORY_FIELDS}
+
+
 def _settings_payload(doc) -> dict:
 	return {
 		"treasury_cash_account": doc.get("treasury_cash_account"),
 		"default_company": doc.get("default_company"),
 		"default_cash_mode_of_payment": doc.get("default_cash_mode_of_payment"),
+		# Returned on read as well as accepted on write, so a client that reads, edits one
+		# field and writes back cannot silently blank the table.
+		"expense_categories": [
+			_category_payload(row) for row in (doc.get("expense_categories") or [])
+		],
 	}
+
+
+def _set_expense_categories(doc, rows):
+	"""Replace the category table wholesale.
+
+	A full replace rather than a merge: the client edits the grid as a unit, and a merge
+	would leave no way to delete a row. Row-level validation lives in the controller, which
+	runs on save either way - this only decides which fields a caller may set.
+	"""
+	if isinstance(rows, str):
+		rows = json.loads(rows) if rows else []
+	doc.set("expense_categories", [])
+	for row in rows or []:
+		row = dict(row or {})
+		values = {field: row.get(field) for field in CATEGORY_FIELDS}
+		# An omitted `enabled` means "on". Passing None through would append a row the
+		# doctype default never gets to fill in, and a category nobody disabled would
+		# quietly stop being offered at the till.
+		if row.get("enabled") is None:
+			values["enabled"] = 1
+		doc.append("expense_categories", values)
 
 
 @frappe.whitelist()
@@ -111,6 +153,9 @@ def update_accounting_settings(data=None, **kwargs):
 	for fieldname in allowed_fields:
 		if fieldname in payload:
 			doc.set(fieldname, payload.get(fieldname))
+
+	if "expense_categories" in payload:
+		_set_expense_categories(doc, payload.get("expense_categories"))
 
 	_validate_company(doc.default_company)
 	_validate_mode_of_payment(doc.default_cash_mode_of_payment)
