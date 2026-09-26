@@ -1,0 +1,72 @@
+{
+ "actions": [],
+ "creation": "2026-09-10 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sales_invoice",
+  "posting_date",
+  "partner_order_ref",
+  "gross_amount",
+  "commission_amount"
+ ],
+ "fields": [
+  {
+   "columns": 3,
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sales Invoice",
+   "options": "Sales Invoice",
+   "reqd": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Posting Date",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "partner_order_ref",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Partner Order Ref",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "description": "What this invoice still OWED when the settlement was built - its outstanding amount, not its grand total. A partly paid invoice contributes only the remainder.",
+   "fieldname": "gross_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Gross Amount",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "commission_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Commission",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-10 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Delivery Partner Settlement Invoice",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

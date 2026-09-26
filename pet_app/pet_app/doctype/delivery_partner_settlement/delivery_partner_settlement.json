@@ -1,0 +1,278 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-09-10 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "partner",
+  "partner_name",
+  "customer",
+  "column_break_header",
+  "posting_date",
+  "from_date",
+  "to_date",
+  "statement_reference",
+  "section_break_money",
+  "gross_amount",
+  "commission_rate",
+  "commission_amount",
+  "adjustment_amount",
+  "adjustment_account",
+  "column_break_money",
+  "received_amount",
+  "received_in",
+  "payment_entry",
+  "journal_entry",
+  "invoice_count",
+  "section_break_invoices",
+  "invoices",
+  "section_break_audit",
+  "idempotency_key",
+  "remarks"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "DPS-.YYYY.-",
+   "reqd": 1
+  },
+  {
+   "fieldname": "partner",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Delivery Partner",
+   "options": "Delivery Partner",
+   "reqd": 1
+  },
+  {
+   "description": "Denormalised so a settlement list renders without a second fetch per row.",
+   "fetch_from": "partner.partner_name",
+   "fieldname": "partner_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Partner Name",
+   "read_only": 1
+  },
+  {
+   "description": "The partner's own Customer, snapshotted from the partner at settlement time.",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_header",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Posting Date",
+   "reqd": 1
+  },
+  {
+   "description": "The statement period this settlement covers. Reporting metadata only - the invoices actually covered are the rows in the table below, never a date range re-evaluated later.",
+   "fieldname": "from_date",
+   "fieldtype": "Date",
+   "label": "From Date"
+  },
+  {
+   "fieldname": "to_date",
+   "fieldtype": "Date",
+   "label": "To Date"
+  },
+  {
+   "description": "The partner's own statement or transfer number. What a human matches this settlement against when the figures are queried months later.",
+   "fieldname": "statement_reference",
+   "fieldtype": "Data",
+   "label": "Statement Reference"
+  },
+  {
+   "fieldname": "section_break_money",
+   "fieldtype": "Section Break",
+   "label": "Money"
+  },
+  {
+   "description": "The sum of each covered invoice's OUTSTANDING amount, not its grand total. Computed from the rows below; never typed.",
+   "fieldname": "gross_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Gross Amount",
+   "read_only": 1
+  },
+  {
+   "description": "Derived: commission over gross. NOT the partner's live rate and not any invoice's snapshot - it is what this settlement actually worked out at, which is the number to compare against the statement when a partner disputes it.",
+   "fieldname": "commission_rate",
+   "fieldtype": "Percent",
+   "label": "Effective Commission Rate (%)",
+   "read_only": 1
+  },
+  {
+   "description": "Editable, deliberately. The stored rate seeds it, but the document being reconciled is the partner's own statement - when the two disagree, the statement wins. Booked as a debit to the partner's commission expense account so the invoices close in full.",
+   "fieldname": "commission_amount",
+   "fieldtype": "Currency",
+   "label": "Commission Amount",
+   "reqd": 1
+  },
+  {
+   "description": "Anything the statement carries that is neither takings nor commission - a refund the partner clawed back, a rounding difference. Debited alongside the commission. May be negative.",
+   "fieldname": "adjustment_amount",
+   "fieldtype": "Currency",
+   "label": "Adjustment"
+  },
+  {
+   "description": "Where the adjustment is booked. Separate from the commission account on purpose: a clawback or a rounding difference is not commission, and merging them makes the commission figure unusable for reporting. Falls back to the commission account when blank.",
+   "fieldname": "adjustment_account",
+   "fieldtype": "Link",
+   "label": "Adjustment Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_money",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "What actually landed in the bank. received + commission + adjustment must equal gross, or the settlement is refused.",
+   "fieldname": "received_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Received Amount",
+   "reqd": 1
+  },
+  {
+   "description": "The bank account the transfer landed in. Must NOT be a cashier's cash account: the money never passed through a drawer, and crediting one would tell that cashier to hand over cash they never received.",
+   "fieldname": "received_in",
+   "fieldtype": "Link",
+   "label": "Received In",
+   "options": "Account",
+   "reqd": 1
+  },
+  {
+   "fieldname": "payment_entry",
+   "fieldtype": "Link",
+   "label": "Payment Entry",
+   "options": "Payment Entry",
+   "read_only": 1
+  },
+  {
+   "description": "Set instead of Payment Entry when the settlement covers orders billed to the partner's app customers (Bill the App Customer). A Payment Entry has ONE party, so it cannot clear invoices spread over many customers; this Journal Entry credits each customer's invoice in one balanced document.",
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1
+  },
+  {
+   "description": "Stored rather than counted per row, so a settlement list does not fetch every child table.",
+   "fieldname": "invoice_count",
+   "fieldtype": "Int",
+   "label": "Invoice Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_invoices",
+   "fieldtype": "Section Break",
+   "label": "Covered Invoices"
+  },
+  {
+   "fieldname": "invoices",
+   "fieldtype": "Table",
+   "label": "Invoices",
+   "options": "Delivery Partner Settlement Invoice",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_audit",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Makes a retry after a timeout return this settlement instead of paying the partner's account down twice.",
+   "fieldname": "idempotency_key",
+   "fieldtype": "Data",
+   "label": "Idempotency Key",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Small Text",
+   "label": "Remarks"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-09-18 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Delivery Partner Settlement",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales User",
+   "share": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "partner",
+ "track_changes": 1
+}
