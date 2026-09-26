@@ -1,0 +1,21 @@
+{
+ "doctype": "DocType",
+ "name": "Stock Transfer Quarantine",
+ "module": "Pet App",
+ "engine": "InnoDB",
+ "field_order": [
+  "warehouse"
+ ],
+ "fields": [
+  {
+   "fieldname": "warehouse",
+   "label": "Warehouse",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "Warehouse"
+  }
+ ],
+ "permissions": [],
+ "istable": 1,
+ "autoname": "hash"
+}

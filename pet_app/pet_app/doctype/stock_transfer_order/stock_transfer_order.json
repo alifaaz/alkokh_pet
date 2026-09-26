@@ -1,0 +1,159 @@
+{
+ "doctype": "DocType",
+ "name": "Stock Transfer Order",
+ "module": "Pet App",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "source_warehouse",
+  "target_warehouse",
+  "requester",
+  "requested_date",
+  "priority",
+  "notes",
+  "status",
+  "revision",
+  "ready",
+  "has_exceptions",
+  "items",
+  "shipment_json",
+  "transit_warehouse",
+  "arrived_at",
+  "arrived_by",
+  "received_at",
+  "received_by"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "label": "Company",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "Company"
+  },
+  {
+   "fieldname": "source_warehouse",
+   "label": "Source Warehouse",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "Warehouse",
+   "ignore_user_permissions": 1
+  },
+  {
+   "fieldname": "target_warehouse",
+   "label": "Target Warehouse",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "Warehouse",
+   "ignore_user_permissions": 1
+  },
+  {
+   "fieldname": "requester",
+   "label": "Requester",
+   "fieldtype": "Link",
+   "reqd": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "requested_date",
+   "label": "Requested Date",
+   "fieldtype": "Date"
+  },
+  {
+   "fieldname": "priority",
+   "label": "Priority",
+   "fieldtype": "Select",
+   "options": "Low\nNormal\nHigh\nUrgent"
+  },
+  {
+   "fieldname": "notes",
+   "label": "Notes",
+   "fieldtype": "Long Text"
+  },
+  {
+   "fieldname": "status",
+   "label": "Status",
+   "fieldtype": "Select",
+   "reqd": 1,
+   "options": "Ordered\nPreparing\nTransferring\nReceived\nCancelled"
+  },
+  {
+   "fieldname": "revision",
+   "label": "Revision",
+   "fieldtype": "Int"
+  },
+  {
+   "fieldname": "ready",
+   "label": "Ready",
+   "fieldtype": "Check"
+  },
+  {
+   "fieldname": "has_exceptions",
+   "label": "Has Exceptions",
+   "fieldtype": "Check"
+  },
+  {
+   "fieldname": "items",
+   "label": "Items",
+   "fieldtype": "Table",
+   "options": "Stock Transfer Line"
+  },
+  {
+   "fieldname": "shipment_json",
+   "label": "Shipment Json",
+   "fieldtype": "Long Text"
+  },
+  {
+   "fieldname": "transit_warehouse",
+   "label": "Transit Warehouse",
+   "fieldtype": "Link",
+   "options": "Warehouse",
+   "ignore_user_permissions": 1
+  },
+  {
+   "fieldname": "arrived_at",
+   "label": "Arrived At",
+   "fieldtype": "Data"
+  },
+  {
+   "fieldname": "arrived_by",
+   "label": "Arrived By",
+   "fieldtype": "Link",
+   "options": "User"
+  },
+  {
+   "fieldname": "received_at",
+   "label": "Received At",
+   "fieldtype": "Data"
+  },
+  {
+   "fieldname": "received_by",
+   "label": "Received By",
+   "fieldtype": "Link",
+   "options": "User"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "Stock User",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "print": 1,
+   "report": 1
+  },
+  {
+   "role": "Stock Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "print": 1,
+   "report": 1,
+   "submit": 1,
+   "cancel": 1
+  }
+ ],
+ "istable": 0,
+ "autoname": "hash",
+ "is_submittable": 1
+}

@@ -1,0 +1,52 @@
+{
+ "doctype": "DocType",
+ "name": "Stock Transfer Request",
+ "module": "Pet App",
+ "engine": "InnoDB",
+ "field_order": [
+  "request_hash",
+  "actor",
+  "method",
+  "transfer",
+  "result_json",
+  "documents_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "request_hash",
+   "label": "Request Hash",
+   "fieldtype": "Data",
+   "reqd": 1
+  },
+  {
+   "fieldname": "actor",
+   "label": "Actor",
+   "fieldtype": "Link",
+   "options": "User"
+  },
+  {
+   "fieldname": "method",
+   "label": "Method",
+   "fieldtype": "Data"
+  },
+  {
+   "fieldname": "transfer",
+   "label": "Transfer",
+   "fieldtype": "Link",
+   "options": "Stock Transfer Order"
+  },
+  {
+   "fieldname": "result_json",
+   "label": "Result Json",
+   "fieldtype": "Long Text"
+  },
+  {
+   "fieldname": "documents_json",
+   "label": "Documents Json",
+   "fieldtype": "Long Text"
+  }
+ ],
+ "permissions": [],
+ "istable": 0,
+ "autoname": "hash"
+}

@@ -1,0 +1,132 @@
+{
+ "actions": [],
+ "autoname": "hash",
+ "creation": "2026-09-09 11:45:44.267319",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "line_id",
+  "item_code",
+  "item_name",
+  "ar_name",
+  "uom",
+  "stock_uom",
+  "conversion_factor",
+  "requested_qty",
+  "approved_qty",
+  "prepared_qty",
+  "dispatched_qty",
+  "accepted_qty",
+  "damaged_qty",
+  "lost_qty",
+  "allocations_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "line_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Line Id",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Uom",
+   "options": "UOM",
+   "reqd": 1
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "label": "Stock Uom",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "conversion_factor",
+   "fieldtype": "Float",
+   "label": "Conversion Factor",
+   "precision": "9"
+  },
+  {
+   "fieldname": "requested_qty",
+   "fieldtype": "Float",
+   "label": "Requested Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "approved_qty",
+   "fieldtype": "Float",
+   "label": "Approved Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "prepared_qty",
+   "fieldtype": "Float",
+   "label": "Prepared Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "dispatched_qty",
+   "fieldtype": "Float",
+   "label": "Dispatched Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "accepted_qty",
+   "fieldtype": "Float",
+   "label": "Accepted Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "damaged_qty",
+   "fieldtype": "Float",
+   "label": "Damaged Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "lost_qty",
+   "fieldtype": "Float",
+   "label": "Lost Qty",
+   "precision": "9"
+  },
+  {
+   "fieldname": "allocations_json",
+   "fieldtype": "Long Text",
+   "label": "Allocations Json"
+  },
+  {
+   "fetch_from": "item_code.item_name",
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "item name"
+  },
+  {
+   "fetch_from": "item_code.arabic_name",
+   "fieldname": "ar_name",
+   "fieldtype": "Data",
+   "label": "ar name"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-11 11:47:08.036288",
+ "modified_by": "Administrator",
+ "module": "Pet App",
+ "name": "Stock Transfer Line",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
