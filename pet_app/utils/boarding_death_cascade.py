@@ -241,8 +241,8 @@ def _close_boarding(boarding_name: str, death_doc, death_datetime) -> dict:
 	boarding.record_status = "Checked Out"
 	boarding.status = "Closed"
 	boarding.workflow_state = "Closed"
-	if boarding.meta.has_field("checkout_notes"):
-		boarding.checkout_notes = _death_checkout_note(boarding, death_doc)
+	if boarding.meta.has_field("check_out_note"):
+		boarding.check_out_note = _death_checkout_note(boarding, death_doc)
 
 	boarding.flags.ignore_permissions = True
 	boarding.save(ignore_permissions=True)
@@ -349,7 +349,7 @@ def _death_checkout_note(boarding, death_doc) -> str:
 	reason = death_doc.death_reason_category or death_doc.death_reason
 	if reason:
 		parts.append(_("Reason: {0}.").format(cstr(reason)))
-	existing = cstr(boarding.get("checkout_notes")).strip()
+	existing = cstr(boarding.get("check_out_note")).strip()
 	note = " ".join(parts)
 	return f"{existing}\n{note}".strip() if existing else note
 

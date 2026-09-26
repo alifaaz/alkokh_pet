@@ -2,6 +2,14 @@
 
 This contract describes the visit-origin boarding flow added for Visit V11. It is a clinical handoff from an active visit into the boarding desk queue.
 
+## Invoice stock policy (2026-09-09)
+
+Regular stock and service charges reuse the same customer/company/branch draft. Stock moves only when ERPNext submits that invoice. Checkout and death settlement use the shared invoice helper. See [Invoice reuse and stock policy](INVOICE_REUSE_CONTRACT.md).
+
+`dispense_medication` now records clinical state without a Material Issue. Existing historical issue fields and their return behavior are preserved. Billable medication carries its explicit dose conversion onto the invoice; quantities and charges are not increased.
+
+Included medication remains excluded from invoices. Its dispensing response includes `data.stock_notice`, and an orange message explains that no invoice stock line exists. It therefore has **no automatic stock deduction** under the invoice-only policy. No extra charge or inferred stock line is added. Visit-prescribed medication absorbed into a Treatment stay has the same unresolved conflict.
+
 ## Lifecycle
 
 `Pet Boarding.record_status` is the boarding lifecycle field. The generic `Pet Boarding.status` remains `Open` / `Closed` / `Cancelled`.
@@ -288,3 +296,142 @@ This feature does not create a new `HealthcareStatus`.
 This feature does not alter visit status when boarding starts.
 
 This feature does not delete or replace the existing room-centric boarding flow.
+
+## Accommodation discount at checkout (v1)
+
+`check_out_boarding(boarding_id, check_out_note=None, checkout_note=None,
+checkout_notes=None, discount=None)` accepts an optional object (or its JSON encoding):
+
+```json
+{"discount": {"type": "percentage", "value": 10}}
+```
+
+Types are exactly `amount` and `percentage`. Values must be finite, nonnegative JSON
+numbers (not strings or booleans). Percentage is at most 100; an amount exceeding the
+eligible accommodation subtotal is rejected. Omission/null means no request; an explicit
+zero request is valid and echoed. Existing note aliases and checkout permissions apply.
+
+Both checkout and detail return these keys at the envelope's `data` root (also within
+`boarding` where that nested object exists):
+
+```json
+{
+  "discount": {"type": "amount", "value": 10000},
+  "accommodation_subtotal": 100000,
+  "accommodation_discount_amount": 10000,
+  "accommodation_total": 90000
+}
+```
+
+These are booking-scoped accommodation amounts in invoice currency (IQD on this site),
+using the tax-exclusive accommodation basis before discount and tax recalculation. They are not whole-invoice totals.
+`discount` is null when no discount was requested. Final figures are null before checkout
+and for historical records without a saved calculation; known zero amounts remain zero.
+No historical invoice or historical discount is reconstructed or changed.
+
+The booking stores `discount_request` (JSON text), the three accommodation amounts,
+`discount_recorded_by` (acting User), and `discount_recorded_at` (checkout timestamp).
+Legacy `total_cost`, `balance`, and original billable rates keep their gross semantics;
+use `accommodation_total` for discounted accommodation and `invoice_outstanding` for
+actual debt. Existing invoice, payment, warning, and allocation keys remain available.
+
+Eligibility comes from this booking's non-Cancelled/non-Included `Room Stay` billable
+rows, including departed pets and previous admissions. Server-owned occupant dates
+reconcile nights; the existing catalogue resolver fills missing rates, preserving saved
+rates and authorized billable edits. Checkout never creates a deliberately removed charge.
+Each invoice description carries both the parent booking provenance marker and an exact
+`Pet Billable Item` source marker. Selection requires both markers plus the source row's
+category; labels, item codes, and active-pet lists do not establish eligibility.
+Medication, service, product, and other-booking rows are excluded even with the same Item.
+New checkout invoices remain separate (`force_new=True`); the discount helper also protects
+unrelated rows when presented with a mixed draft. Submitted historical invoices are outside
+this feature.
+
+The Sales Invoice keeps each original accommodation row's quantity, nightly rate, and
+amount intact. The discount is recorded in native `Sales Invoice.discount_amount` with
+`apply_discount_on = "Net Total"`. For example: three nights at 15,000 IQD remain one
+45,000 IQD row, with an invoice discount of 5,000 IQD and a grand total of 40,000 IQD
+before any applicable taxes. The invoice screen's pre-discount subtotal is `total`;
+`net_total` is the discounted tax-exclusive amount.
+
+`custom_boarding_discount_booking` records the booking whose accommodation may receive
+the invoice discount. The Sales Invoice controller extends ERPNext's discount allocation
+only: eligible rows receive native `distributed_discount_amount`, `net_amount`, and
+`net_rate`; original `qty`, `rate`, and `amount` never change. Fixed discounts are
+proportional to eligible tax-exclusive row amounts, with currency rounding and a bounded
+final adjustment. Percentages are converted to a fixed amount using the same basis.
+Medications, services and other bookings retain both their gross and net row amounts.
+ERPNext continues to calculate all taxes, rounding, ledger entries and payment allocations.
+Regular invoices without this booking scope retain standard ERPNext behavior. Returns
+of scoped invoices derive discount amounts from the returned source rows; a service-only
+return receives no accommodation discount.
+
+This supersedes the initial implementation that reduced unit rates and split nights to
+represent rounding. Submitted invoices from that implementation are not rewritten.
+
+Checkout uses a savepoint and booking/room locks, including a database booking row lock
+held until transaction completion. It reconciles charges, calculates the discount and
+existing taxes, attaches advances to the draft, submits as non-POS (which reconciles those
+advances into Payment Entry References), then closes/submits the booking. Any failure rolls
+back the checkout, including occupant/stint departures, invoice/ledger writes and payment
+allocations. An unpaid balance is a warning, not a validation error. Excess payments remain
+customer credit; the reported remainder includes all payments, even after the invoice's
+allocation ceiling is reached. A wholly free stay closes without an invoice; remaining
+non-accommodation charges are invoiced normally.
+
+Repeated checkout returns the saved discount/figures and existing invoice with current
+payment/outstanding information. Omission or the identical discount succeeds; an explicitly
+different discount is rejected. Replays do not alter notes, timestamps, prices, or deposits.
+An open booking already referenced by an invoice is refused for review. MariaDB deadlock
+or snapshot conflicts return the standard `QueryDeadlockError` envelope: retry the entire
+request/transaction, never only the last SQL statement. Individual pet departure does not
+apply or record a discount.
+
+### Deployment and verification
+
+Migrate the site's `Pet Boarding` metadata, run
+`pet_app.patches.boarding_invoice_discount` to install the Sales Invoice scope field,
+and restart the web workers before frontend use. The patch is also registered for fresh
+installs. Existing checkout and payment APIs do not change.
+`get_boarding_detail.data.capabilities.boarding_discount_v1` is a literal boolean and is
+true only with the supporting code, all required booking fields, and the invoice booking-scope field. This describes server
+support, not the user's permission to check out. Production migration and worker reload
+must be verified separately from tests on the isolated site.
+
+Tests: `pet_app.tests.test_boarding_discount` (rollback per test) and
+`pet_app.tests.boarding_discount_concurrency.run` (committed fixtures on the isolated test
+database only). They cover contract persistence/replay, validation, excluded charges,
+departed admissions, rounding, taxes, full/zero discounts, actual Payment Entry allocation,
+post-submission rollback and concurrent requests. Do not run the concurrency harness on
+production.
+
+### Production verification — 2026-09-13
+
+Deployed on `frappe.localhost` after database backup
+`20260913_233538-frappe_localhost-database.sql.gz`. The focused command
+`bench --site frappe.localhost reload-doc pet_app doctype pet_boarding` installed exactly
+the six new fields; existing fields and permissions matched the live metadata. Unrelated
+pending patches were not run. Site caches were cleared.
+
+The supervised web master was gracefully terminated by its owning OS account and restarted
+by supervisor (`autorestart=true`), producing a fresh master and workers. Authenticated HTTP
+through nginx verified `boarding_discount_v1: true`, all four canonical response fields,
+null final figures for an open booking, and the new invalid-discount validation envelope.
+The validation probe used a nonexistent booking ID; no production checkout was performed.
+The implementation had passed 18 isolated contract tests and three concurrent-request rounds
+before deployment.
+
+### Invoice discount correction deployed — 2026-09-13
+
+Following review of the initial rate-splitting presentation, checkout was changed to the
+native invoice-discount representation described above. Production backup:
+`20260913_234738-frappe_localhost-database.sql.gz`. The focused
+`pet_app.patches.boarding_invoice_discount` patch was applied and recorded in Patch Log;
+web caches were cleared and the supervised gunicorn master/workers were restarted.
+
+Validation: 22 boarding contract tests, four regular/driver invoice regression tests, and
+three concurrent-request rounds passed. An HTTP checkout on the isolated test site through
+the restarted web server produced one row (3 nights × 15,000 IQD), subtotal 45,000,
+invoice discount 5,000, grand total 40,000, advances 15,000, and outstanding 25,000.
+Production HTTP reads verified the capability and new schema. Existing submitted invoices
+were not amended; correction of those documents requires separate authorization.

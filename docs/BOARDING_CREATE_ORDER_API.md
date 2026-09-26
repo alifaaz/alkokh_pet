@@ -1137,3 +1137,208 @@ for 99.6% of animals. The rest are safely inert — they resolve to nothing.
   check-in stamped it. On a card they read as "has not arrived yet" while the animal is in
   the kennel, and they bill a one-night placeholder. They need correcting by hand; the
   check-in fix only prevents new ones.
+
+---
+
+# Part D — check-in / check-out notes, and reading the booking policy
+
+Two fixes that were backend-only. Neither needs a frontend change to take effect; both
+allow one to simplify afterwards.
+
+## 1. The notes are now stored and returned
+
+`check_in_boarding` and `check_out_boarding` never declared a note parameter. Frappe drops
+undeclared keys from `form_dict` before the function body runs, so the note was discarded
+while `deposit` in the very same request persisted — which is why the request looked fine
+from the client side and the field read back `-`.
+
+Both endpoints now accept a note, and every booking response returns it.
+
+### 1.1 What to send
+
+| endpoint | canonical key | also accepted |
+| --- | --- | --- |
+| `check_in_boarding` | **`check_in_note`** | `notes` |
+| `check_out_boarding` | **`check_out_note`** | `checkout_note`, `checkout_notes` |
+
+The extra spellings exist only so the shipped build keeps working. **Send one key per
+call — the canonical one — and drop the duplicates.** A blank or whitespace-only note is
+ignored rather than written, so it never clears a note already on the record.
+
+`billable_items` is still not a parameter of either endpoint and is still dropped: billable
+rows go through `sync_billable_items`.
+
+### 1.2 What comes back
+
+`get_boarding_detail`, `list_boarding_records`, the room-card `bookings[]` /
+`active_boarding`, and the `boarding` object returned by the write endpoints all carry:
+
+```jsonc
+{
+  "check_in_note":  "…",   // canonical
+  "check_out_note": "…",   // canonical
+  "check_in_notes": "…",   // alias, same value
+  "checkout_note":  "…",   // alias, same value
+  "checkout_notes": "…"    // alias, same value
+}
+```
+
+### 1.3 Three different note fields. Do not merge them
+
+| key | what it is |
+| --- | --- |
+| `note` | the **reservation** note — `reserve_room(note=…)`, and what a visit-started stay records. Renders as the stay's instructions. |
+| `check_in_note` | what the counter typed at **check-in**. |
+| `check_out_note` | what the counter typed at **check-out**, and where the death cascade appends its closure note. |
+| `notes` | **Service Room master data** on the room-card grain — the kennel's own description. Never a stay's note. Reading it under a "Check In Notes" label is how the room blurb ended up being sent to guardians. |
+
+`boarding_note` is **deprecated**. The field is gone; the key is still emitted, sourced from
+`note`, which is byte-for-byte what it always held. Stop reading it.
+
+## 2. `get_boarding_defaults` — read the policy without touching the Single
+
+```
+pet_app.api.healthcare.boarding.get_boarding_defaults()
+```
+
+No parameters. Gated on ordinary boarding read access.
+
+```jsonc
+{
+  "max_pets_per_booking": 7,
+  "default_boarding_type": "Travel",
+  "boarding_types": ["Travel", "Treatment"],
+  "boarding_category": "CategoryCareServices-0016"
+}
+```
+
+**Use this instead of `frappe.client.get(doctype="Pet Boarding Settings", …)`.** That raw
+read is permission-checked twice over, and both checks were failing for real staff:
+
+1. **DocPerm** — `Administrator` short-circuits `has_permission`; everyone else needed an
+   explicit read row on the Single, and the three roles that had been granted one ad hoc
+   were not roles the front desk holds.
+2. **User Permission, at document level** — the harder one. `has_user_permission` walks a
+   document's Link fields and refuses the whole document when one names a value the reader
+   is not permitted. The Single's `boarding_branch` is `hotel`, while staff are scoped to
+   their own branch, so the read was refused **even for a System Manager**. No amount of
+   DocPerm granting would have fixed that.
+
+Both are now fixed on the backend (read granted to `All`; `ignore_user_permissions` on the
+Single's Link fields), so **the existing `frappe.client.get` call works today without a
+redeploy**. Migrating to `get_boarding_defaults` is still worth doing: it stops a booking
+policy inheriting a settings doctype's permissions, and it lets the client drop the
+`catch`-and-retry-without-`name` fallback that fires the "You are not authorized" banner
+twice per failed attempt.
+
+Capacity is a hard limit, not a hint: `_assert_reservation_capacity` **refuses** an
+over-capacity reservation rather than truncating it, so never offer more than this number.
+
+---
+
+## Where a boarding deposit's cash lands
+
+Backend-only; no client change needed.
+
+A deposit is taken at a counter, in a branch, and belongs in that counter's drawer.
+`_resolve_boarding_deposit_account` used to try exactly one thing — the acting user's own
+POS Profile — and send everything else to the site treasury inside a bare
+`except Exception`, silently.
+
+Most desk work here is done by users who hold no profile, `Administrator` among them, so
+"everything else" was the common case rather than the edge one. BRD-00210's 70,000 deposit
+posted to the general cash account (`Cash - K`) instead of the hotel drawer, carried no
+`custom_pos_profile`, and therefore appeared in **no till settlement breakdown**. Nothing
+surfaced it; a ledger review found it weeks later.
+
+Three tiers now, most specific first:
+
+| # | Source | Gives |
+| --- | --- | --- |
+| 1 | The acting user's own till (`resolve_session_cashier_till`) | account **and** the person who took the cash |
+| 2 | The stay's branch (`_branch_till`) | the right drawer, operator unattributed |
+| 3 | `Pet App Accounting Settings.treasury_cash_account` | last resort, now **logged and commented** |
+
+Tier 2 is the new one and is what fixes the `Administrator` case: `Pet Boarding.branch` is
+stamped at insert from a single site setting, and `POS Profile.branch` names the counter, so
+the drawer is knowable even when the person is not. It refuses to guess when a branch has no
+enabled profile or more than one — two counters in one branch is a real configuration, and
+picking either would reconcile to a plausible balance in the wrong drawer.
+
+Tier 1's `except` is narrowed to `frappe.ValidationError` (the documented "no profile"
+outcome) so a genuine fault surfaces instead of being scored as "no till".
+
+Tier 3 still exists on purpose: refusing the cash would turn a working check-in into a
+failed one for anyone at a desk that is not set up. But it now writes an Error Log **and a
+comment on the Payment Entry** saying the deposit is attributed to no till and will not
+appear in any settlement breakdown — visible where someone reconciling is already looking,
+which is precisely what BRD-00210 lacked.
+
+> Deposits are **not** deducted from the invoice total — the stay is invoiced in full and
+> the deposit rides in `Sales Invoice.advances`. What the till collects is the net figure;
+> see `amount_due` in `README.pos-sale-creation-backend.md`.
+
+---
+
+## Paying for a stay: `record_boarding_payment`
+
+`POST /api/method/pet_app.api.healthcare.boarding.record_boarding_payment`
+
+| key | type | notes |
+| --- | --- | --- |
+| `boarding_id` | string | also accepted as `boarding` |
+| `amount` | number | must be > 0 |
+| `note` | string | optional, becomes a comment on the Payment Entry |
+
+Until this existed there was exactly one way for boarding money to enter the system -
+`check_in_boarding(deposit=...)`, which happens once. A guardian paying in instalments
+could not be recorded at all: the deposit path returns the EXISTING Payment Entry when one
+is present, so a second payment silently became no payment. The desk wrote hand-made
+Payment Entries instead, which carried no link to the stay, so check-out never saw them -
+the stay was invoiced in full, the till asked for the whole amount again, and the money
+already taken sat on the customer as credit nobody could see. Four such payments are on the
+production site.
+
+**It does two different things depending on where the stay is.**
+
+*Before check-out* there is no invoice, so the money is an advance on the customer.
+`Pet Boarding.deposit` is the RUNNING TOTAL of everything paid against the stay (not just
+the check-in deposit), and `balance` follows it. Check-out then allocates the lot.
+
+*After check-out* the invoice exists and is posted, so the payment is written with a
+`references` row against it and clears the outstanding directly. Without that row the
+Payment Entry is an unallocated advance and the invoice stays outstanding AND the customer
+shows credit for the same money - both at once.
+
+Refused: a cancelled stay; a zero or negative amount; more than the invoice's outstanding;
+an invoice already settled in full.
+
+Every payment - the check-in deposit included - is written by one function
+(`_new_boarding_payment_entry`), so they all land in the same drawer with the same stamps
+and the same `reference_no = <boarding name>` link. `boarding_payment_entries()` derives
+the list from that link rather than caching it, so cancelling a payment removes it by
+itself.
+
+## Check-out posts the invoice
+
+`check_out_boarding` now:
+
+1. raises the stay's own invoice with **`force_new=True`**. Reuse used to append the stay to
+   whatever draft the customer had open in the branch - `ACC-SINV-2026-01888` on production
+   carries three different stays - which also made the advances ambiguous, because payments
+   for one stay were allocated against a total that included another's;
+2. allocates **every** payment on the stay to `Sales Invoice.advances`, not just the deposit;
+3. **submits it**, as a NON-POS invoice.
+
+Two response keys are new: `invoice_submitted` and `invoice_outstanding`, plus `total_paid`
+and `payments[]`.
+
+> **The invoice must not be a POS invoice, and must not be settled at the till.** ERPNext
+> skips `update_against_document_in_jv()` entirely when `is_pos` is set, so a POS invoice
+> never converts its advances into Payment Entry References. `settle_open_invoice` now
+> refuses any invoice carrying advances (`INVOICE_CARRIES_ADVANCES`) for exactly this
+> reason. See `README.pos-sale-creation-backend.md`.
+
+A stay nobody paid for submits with its full value outstanding. That is the intended
+outcome: a real receivable against the guardian, rather than a draft with no GL entry, no
+revenue and no debt - which is what 820,000 of production drafts are today.
