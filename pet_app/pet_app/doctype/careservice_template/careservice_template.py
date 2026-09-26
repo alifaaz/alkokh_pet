@@ -6,6 +6,11 @@ from frappe.utils import flt
 from frappe.model.document import Document
 
 from pet_app.utils.price_list import get_veterinary_selling_price_list
+from pet_app.utils.item_name_guard import (
+    may_rename_linked_item,
+    previous_master_values,
+    warn_linked_item_rename_skipped,
+)
 
 
 class CareServicetemplate(Document):
@@ -34,9 +39,13 @@ class CareServicetemplate(Document):
         if self.item_code and frappe.db.exists("Item", self.item_code):
             item = frappe.get_doc("Item", self.item_code)
             if item.item_name != self.service_name:
-                item.item_name = self.service_name
-                item.flags.ignore_permissions = True
-                item.save()
+                previous = previous_master_values(self, ("service_name",)).get("service_name")
+                if may_rename_linked_item(item, previous):
+                    item.item_name = self.service_name
+                    item.flags.ignore_permissions = True
+                    item.save()
+                else:
+                    warn_linked_item_rename_skipped(item, self)
             return
 
         # تحديد Item Group

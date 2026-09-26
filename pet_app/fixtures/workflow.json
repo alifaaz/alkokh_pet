@@ -4,7 +4,7 @@
   "doctype": "Workflow",
   "document_type": "Sales Order",
   "enable_action_confirmation": 0,
-  "is_active": 1,
+  "is_active": 0,
   "modified": "2026-03-07 04:27:28.072122",
   "name": "orders",
   "override_status": 1,

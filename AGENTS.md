@@ -13,6 +13,11 @@ Canonical backend contracts live in this app's `docs/` directory:
 - `docs/MEDICATION_BILLING_CONTRACT.md`
 - `docs/MOBILE_API_README.md`
 - `docs/VISIT_REFERRAL_CONTRACT.md`
+- `docs/ITEM_BARCODE_GENERATOR.md`
+- `docs/DRIVER_ORDERS_CONTRACT.md`
+- `docs/backend/cashier-activity.md`
+- `docs/backend/delivery-partners.md`
+- `docs/STOCK_PRICE_CONTRACT.md`
 
 ## Backend Guardrails
 
@@ -67,7 +72,24 @@ Billing:
   - `Travel` uses `travel_boarding_item`.
   - `Treatment` uses `treatment_boarding_item`.
 - `Pet Boarding Settings.default_boarding_type` defaults to `Travel`; clients must read it and must not invent `Treatment` client-side.
+- Read that default and `max_pets_per_booking` through `get_boarding_defaults()`, never through a raw
+  `frappe.client.get` on the Single. The raw read is permission-checked twice over - by DocPerm, and at
+  document level by any User Permission scoping the reader's Branch - and a client that swallows the
+  refusal silently floors capacity at 1, which makes multi-pet booking disappear rather than error.
 - Checkout creates `Sales Invoice` lines from final `billable_items`.
+
+Notes on a stay - three different fields, deliberately not merged:
+
+- `Pet Boarding.note` is the RESERVATION note (`reserve_room(note=...)`, and what a visit-started stay
+  records). Formerly duplicated into `boarding_note`, which no longer exists; responses still echo a
+  `boarding_note` key sourced from `note` for older clients.
+- `Pet Boarding.check_in_note` is what the counter types at check-in. Was `boarding_note`.
+- `Pet Boarding.check_out_note` is what the counter types at check-out, and where the death cascade
+  appends its closure note. Was `checkout_notes`.
+- `Service Room.notes` is room master data and is NOT any of the above. It surfaces as `notes` on the
+  room-card grain; do not read it as a stay's check-in note.
+- Every endpoint that returns a booking must return `check_in_note` and `check_out_note`. A field that
+  is stored but left out of a select list reads on screen as lost data.
 
 API contracts:
 
@@ -75,8 +97,10 @@ API contracts:
 - `get_boarding_detail(boarding_id=None, room_id=None, name=None)`
 - `list_boarding_records(search=None, status=None, pet_id=None, guardian_id=None, date_from=None, date_to=None, limit_start=0, limit_page_length=10, order_by='modified desc')`
 - `reserve_room(roomId, petId, guardianId, checkIn=None, checkOut=None, note=None, boardingType=None)`
-- `check_in_boarding(boarding_id)`
-- `check_out_boarding(boarding_id)`
+- `check_in_boarding(boarding_id, deposit=None, check_in_note=None, notes=None)`
+- `check_out_boarding(boarding_id, check_out_note=None, checkout_note=None, checkout_notes=None, discount=None)`
+- `record_boarding_payment(boarding_id, amount, note=None)` — a payment part-way through a stay, or the balance after check-out
+- `get_boarding_defaults()`
 
 Response style:
 
@@ -183,9 +207,28 @@ This section records the backend issue work completed across the recent pet_app 
 
 ### #12 Boarding Deposit Payment Entry
 
-- `Pet Boarding` now has `deposit_payment_entry` to store the created `Payment Entry` reference.
+- `Pet Boarding` now has `deposit_payment_entry` to store the FIRST `Payment Entry` reference.
 - `pet_app/api/healthcare/boarding.py` auto-creates and submits a receive `Payment Entry` during `check_in_boarding` when `deposit > 0`.
 - Deposit payment creation is idempotent for an existing non-cancelled `deposit_payment_entry`.
+- **`Pet Boarding.deposit` is the RUNNING TOTAL of everything paid against the stay**, not only the check-in deposit; `balance` is computed from it. Later payments go through `record_boarding_payment`.
+- All boarding money is written by one function, `_new_boarding_payment_entry`, and linked to the stay by `Payment Entry.reference_no = <boarding name>`. `boarding_payment_entries()` derives the list from that link rather than caching it.
+- Deposit account resolution is a three-tier ladder: the acting user's own till → the stay's branch (`_branch_till`, via `POS Profile.branch`) → `treasury_cash_account`, the last logged AND commented on the Payment Entry. Tier 2 exists because most desk users hold no POS Profile.
+- `check_out_boarding` raises the invoice with `force_new=True`, allocates **every** payment to `advances`, and **submits it as a non-POS invoice**.
+- **Never stamp a boarding invoice `is_pos`, and never settle one at the till.** ERPNext skips `update_against_document_in_jv()` when `is_pos` is set, so advances are never converted to Payment Entry References and the prepayment is stranded. `settle_open_invoice` refuses invoices carrying advances (`INVOICE_CARRIES_ADVANCES`).
+
+### Only a till-holder may receive boarding money
+
+- `_resolve_boarding_deposit_account` (healthcare/boarding.py) **throws** when the acting user holds no POS Profile. There is no branch fallback and no treasury fallback for cash; the guardian is sent to a cashier.
+- **Why:** `Doctor` is in `BOARDING_WRITE_ROLES` and the doctors here also hold `Accounts User`, so each can check a stay out AND collect its balance. Under the earlier branch-fallback design every dinar they took posted to the *hotel cashier's* drawer — cash in the doctor's hand, ledger says it is in Farah's till, and Farah counts short at settlement. `custom_cashier_user` made that traceable but not preventable.
+- `check_out_boarding` is **never blocked** by an unpaid balance; it returns `warnings[]` with `BOARDING_BALANCE_DUE` (amount, invoice, and `collect_via`). The animal goes home either way.
+- Collection after check-out goes through `record_boarding_payment`, NOT the till: the invoice is submitted and non-POS by then, and `settle_open_invoice` refuses both.
+
+### Customer balance reads Payment Ledger Entry, never GL Entry
+
+- `pet_app/api/accounting/balance.py::_ledger_totals` sources from **`tabPayment Ledger Entry`**.
+- **Why it matters:** `reconcile_against_document` (erpnext/accounts/utils.py) writes an advance allocation to the Payment Ledger and does NOT rewrite `GL Entry`, so the payment's GL row keeps an empty `against_voucher`. Grouping GL by `against_voucher` therefore reports a settled invoice as an open debt AND counts the same money again as credit. Measured on production: 3 customers, 125,000 of debt that did not exist, 4 "open" invoices paid in full.
+- `delinked = 1` is this table's `is_cancelled`; there is no docstatus to filter.
+- A `net_balance` assertion does NOT catch a regression here — the net is right either way; the split between `receivable` and `credit` is what breaks. See `pet_app/tests/test_customer_balance.py`.
 
 ### #10 Response Shape Standardization
 
@@ -577,3 +620,132 @@ anywhere. `sync_meta_templates` is the fallback path.
 Tests: none added. Verification was done against the live site by running each path inside a
 transaction and rolling back — including a 102-payload replay of stored webhook events
 through the new `_extract_events`, which produced zero classification changes.
+
+## Reviewed Report Delivery (2026-09-03)
+
+A template promising "press the button and we will send you the report" is a promise the
+system has to keep. On 2026-09-03 it could not: `lab_result_ready` went out against
+LAB-00538, the guardian tapped 19 seconds later, and nothing happened. Four phases, four
+patches — `p1_25` through `p1_27` plus the code — and `docs/whatsapp-frontend.md` holds
+the frontend contract.
+
+### There is no server-side PDF renderer, and this design assumes there never will be
+
+`api/printing.py` returns JSON. Nothing in this app imports `get_pdf`. The only bytes that
+can be sent are the ones the client generated and a human reviewed, which is why the file
+is stored at template-send time and sent verbatim on the tap. **Never regenerate a report
+at send time** — the clinic reviewed that exact file, and no other file is the one they
+approved.
+
+### `Pet App WhatsApp Message.replied_to_message` (p1_25)
+
+Meta sends `message.context.id` on every reply — the wamid of the quoted message, which is
+the same value stored as `provider_message_id`, unique since `p1_6`. `_message_event` never
+read it, so a quick-reply tap recorded the button's label and nothing about the record.
+
+Direction is deliberately not filtered on resolution: a guardian can quote their own
+message, and the field says which message was replied to, not which of ours. No match is
+normal — the quoted message can predate this app's records. The raw wamid survives in
+`raw_json` either way, which is what the backfill read.
+
+### A file is a reviewed report because something said so (p1_26)
+
+`File.pet_app_reviewed_report`, a Check, written only by
+`notifications/reports.py::save_reviewed_report`.
+
+**Do not replace this with a heuristic.** Lab and Imaging carry 1041 attachments on this
+site: 1037 photos of paper results, three PDFs staff uploaded that nobody reviewed for
+sending, one Photoshop file. LAB-00538 — the record behind the real tap — has one
+attachment and it is a `.webp`. "Newest attachment" and "newest `.pdf`" each send a
+customer the wrong file. `tests/test_reviewed_report.py` pins both.
+
+On `File` rather than on Lab and Imaging so a source doctype nobody has built yet works
+with no schema change. The patch is the field's **only** owner — deliberately absent from
+the fixture allow-list in `hooks.py`, which `tests/test_fixture_allowlist.py` enforces.
+
+### The template declares the promise (p1_27)
+
+`Pet App WhatsApp Meta Template.delivers_reviewed_report`, a Check. It drives both the
+send refusal and the tap delivery, so there is one place to look.
+
+On the **mirror** row, not the local template: `lab_result_ready` has no local row —
+neither its `en_US` nor its `ar` row is bound — and the send addresses the mirror
+directly. Local-only metadata in the same class as `local_template`, `slot_map_stale` and
+`source_doctype` (p1_17); `upsert_mirror_row` assigns only its own named fields and
+`apply_status_update` writes by name, so a sync leaves it alone.
+
+**Nothing in code names a template or a source doctype.** Adding the radiology template is
+one ticked box. If a change ever needs a template name in a module, it has gone wrong.
+
+A Check rather than a kind because one record carries one report, which holds while Lab
+and Imaging are separate records. A single record owing two different documents makes this
+a kind, with the mirror row naming which one — a different decision, with per-template
+configuration behind it.
+
+### The send refusal is at queue time, not send time
+
+`engine._reviewed_report_refusal`, next to the `TEMPLATE_INTERACTIVE_CONFLICT` guard and
+the same shape: the send is impossible, and the only question is whether anyone finds out
+before the customer is told to expect something. `REVIEWED_REPORT_MISSING` and
+`REPORT_SOURCE_MISSING` are separate codes because they need different fixes.
+
+Queue time is where a person is watching. The consequence, stated so it is a decision and
+not an accident: a report-promising template **scheduled** for later is guaranteed a report
+existed when it was queued, not when it sends. No such send exists today.
+
+### The tap delivery must not be inline
+
+`webhook._apply_event` writes `processed=1` only after it returns, so an outbound HTTP call
+inside it would let Meta redeliver into the unique constraint on the stored event row. This
+is the first inbound path that sends anything. It is `enqueue_after_commit=True` with a
+deduplicating `job_id` bucketed by the minute, and the job re-checks the database because
+a job id only exists while its job does.
+
+**`send_reply_report` sets `frappe.set_user("Administrator")` and this is load-bearing.**
+The webhook is `allow_guest`, `frappe.enqueue` hardcodes `"user": frappe.session.user` with
+no override, and `send_conversation_message` read-checks the file — which is private. As
+Guest that raises `PermissionError` and the tap silently does nothing, which is the exact
+failure this work exists to remove. Consent and rate limits still apply; a system actor is
+not a reason to skip them.
+
+Repeat taps re-send by agreement — they pressed a button that promised a report. The
+60-second guard is scoped to the **file**, not the record, so a corrected report attached
+seconds later still goes out.
+
+Tests: `tests/test_reviewed_report.py` (15), `tests/test_whatsapp_report_delivery.py` (20).
+Verification was also done against the live site by replaying the real 2026-09-03 tap
+through the whole chain inside a transaction and rolling back.
+
+
+## Regular invoice reuse and stock ownership (2026-09-09)
+
+The owner requires stock movement on Sales Invoice submission. Regular drafts reuse by
+customer/company/branch across dates; stock and non-stock service items share one draft.
+`invoice_stock.py` recognizes stock Items and Product Bundle contents and protects historical
+Material Issues. Never infer stock ownership from a warehouse or erase old issue fields.
+Visit/boarding dispensing and care-service completion no longer create Material Issues.
+Included medication and consumables absent from invoice stock lines remain explicit
+exceptions; do not add charges or invent quantities. Manual regular invoices reuse too,
+including calls carrying the legacy `allow_duplicate` parameter. POS, returns and driver
+boundaries stay separate. See `docs/INVOICE_REUSE_CONTRACT.md` for the full contract,
+isolated tests, MariaDB whole-transaction retry requirement, and deployment notes.
+
+## Boarding accommodation discounts
+
+The canonical v1 contract is the accommodation discount section in
+`docs/VISIT_BOARDING_CONTRACT.md`. Checkout accepts `{type: amount|percentage, value: number}`
+under `discount`; only exact booking/source-row provenance plus `Room Stay` category is
+eligible. Original billables and gross booking totals are preserved. Discount facts and
+actor/time are persisted separately. Invoice submission errors now roll back checkout rather
+than leaving a closed stay and a draft invoice. Replays return saved facts; changed discounts
+are refused. Advances attach before non-POS submission, which performs ledger reconciliation.
+The frontend capability is conditional on the migrated booking fields.
+
+### Invoice discount presentation correction
+
+Boarding discounts now use native `Sales Invoice.discount_amount` against Net Total,
+with distribution restricted by `custom_boarding_discount_booking` and exact source-row
+provenance. Do not reduce nightly rates or split accommodation rows. The controller
+extension preserves original qty/rate/amount and writes native distributed discount/net
+fields before ERPNext recalculates taxes. Patch: `boarding_invoice_discount`. Legacy
+submitted invoices require a separately authorized accounting correction.

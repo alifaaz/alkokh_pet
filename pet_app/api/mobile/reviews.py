@@ -8,6 +8,7 @@ from frappe.utils import cint, cstr, flt
 
 from pet_app.api.mobile.response import error, ok
 from pet_app.utils.guardian_customer import get_guardian_by_user
+from pet_app.utils.rating_entities import CUSTOMER_RATING
 
 
 REVIEW_AUTH_ERROR = "auth.wrong_credentials"
@@ -53,10 +54,27 @@ def _require_product(product: str) -> str:
 	return product
 
 
+def _customer_review_filters(product: str) -> dict:
+	"""Rows the storefront may show: Customer ratings of this product, and only those.
+
+	rating_type is the filter that matters here, not reference_doctype. The product
+	scope says *which* thing is being rated; it says nothing about who wrote the row,
+	and an Internal rating of a Product is a perfectly valid thing for a staff member
+	to create. list_product_reviews is allow_guest=True and renders ``notes`` verbatim,
+	so leaning on the doctype as a proxy for the author is how a supervisor's audit
+	note ends up published on the public storefront.
+	"""
+	return {
+		"reference_doctype": "Product",
+		"reference_name": product,
+		"rating_type": CUSTOMER_RATING,
+	}
+
+
 def review_summary(product: str) -> dict:
 	rows = frappe.get_all(
 		"Rating",
-		filters={"reference_doctype": "Product", "reference_name": product},
+		filters=_customer_review_filters(product),
 		fields=["overall_rating"],
 		ignore_permissions=True,
 	)
@@ -84,7 +102,7 @@ def list_product_reviews(product=None, product_id=None, limit=20, cursor=0, **kw
 	offset = max(0, cint(cursor or 0))
 	rows = frappe.get_all(
 		"Rating",
-		filters={"reference_doctype": "Product", "reference_name": product},
+		filters=_customer_review_filters(product),
 		fields=["name", "overall_rating", "notes", "rated_by", "rated_at", "creation", "performer_name"],
 		order_by="rated_at desc, creation desc",
 		limit_start=offset,
@@ -104,7 +122,7 @@ def list_product_reviews(product=None, product_id=None, limit=20, cursor=0, **kw
 @frappe.whitelist(methods=["POST"])
 @_mobile_review_endpoint
 def upsert_product_review(product=None, product_id=None, rating=None, notes=None, **kwargs):
-	_current_guardian()
+	guardian = _current_guardian()
 	product = _require_product(product or product_id)
 	rating = cint(rating)
 	if rating < 1 or rating > 5:
@@ -118,9 +136,10 @@ def upsert_product_review(product=None, product_id=None, rating=None, notes=None
 			and reference_name = %s
 			and rated_by = %s
 			and ifnull(questionnaire, '') = ''
+			and rating_type = %s
 		limit 1
 		""",
-		(product, frappe.session.user),
+		(product, frappe.session.user, CUSTOMER_RATING),
 		as_dict=True,
 	)
 	if existing:
@@ -137,6 +156,12 @@ def upsert_product_review(product=None, product_id=None, rating=None, notes=None
 				"overall_rating": rating,
 				"notes": cstr(notes).strip(),
 				"rated_by": frappe.session.user,
+				# Stamped, never deduced. This endpoint is guardian-only - it throws in
+				# _current_guardian before reaching here - so every row it writes is a
+				# Customer rating by construction, and the guardian is recorded so the
+				# row identifies its author even if the User link is later removed.
+				"rating_type": CUSTOMER_RATING,
+				"rated_by_guardian": guardian.get("name"),
 			}
 		)
 		doc.insert(ignore_permissions=True)

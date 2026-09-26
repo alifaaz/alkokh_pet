@@ -6,8 +6,10 @@ import frappe
 from frappe import _
 from frappe.utils import cstr, getdate, now_datetime, nowdate
 
-from pet_app.api.response import fail, ok, standardize_response
+from pet_app.api.response import begin_action, fail, ok, rollback_action, standardize_response
 from pet_app.api.link_aliases import with_link_aliases
+from pet_app.utils.medical_profile import update_profile_for_visit
+from pet_app.utils.visit_fields import write_visit_fields
 
 
 OPEN_FOLLOW_UP_STATUSES = ("Requested", "Scheduled", "Contacted", "Missed")
@@ -83,20 +85,26 @@ def mark_follow_up_missed(visit=None, missed_reason=None, data=None, **kwargs):
 @frappe.whitelist(methods=["POST"])
 def reschedule_follow_up(visit=None, follow_up_date=None, data=None, **kwargs):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		doc = _get_visit(visit or payload.get("visit"))
 		new_date = follow_up_date or payload.get("follow_up_date") or payload.get("date")
 		if not new_date:
 			return fail(_("Follow-up date is required."), code="VALIDATION_ERROR")
-		doc.follow_up_required = 1
-		doc.follow_up_date = getdate(new_date)
-		if doc.meta.has_field("follow_up_preferred_date"):
-			doc.follow_up_preferred_date = getdate(new_date)
-		doc.follow_up_status = "Scheduled"
-		if doc.meta.has_field("follow_up_contact_note") and payload.get("note"):
-			doc.follow_up_contact_note = payload.get("note")
-		doc.flags.ignore_billing_lock = True
-		doc.save(ignore_permissions=True)
+		updates = {
+			"follow_up_required": 1,
+			"follow_up_date": getdate(new_date),
+			"follow_up_preferred_date": getdate(new_date),
+			"follow_up_status": "Scheduled",
+		}
+		if payload.get("note"):
+			updates["follow_up_contact_note"] = payload.get("note")
+		# Field-level write, not doc.save(): see pet_app.utils.visit_fields.
+		write_visit_fields(doc, updates)
+		# Vet Visit.on_update used to do this through _sync_medical_profile_snapshot
+		# (vet_visit.py:361-367). Called explicitly now, so the pet's medical profile keeps
+		# showing the follow-up date and status this endpoint just wrote.
+		update_profile_for_visit(doc)
 		return ok({"follow_up": _follow_up_payload(doc)})
 	except Exception as exc:
 		return _error_response(exc)
@@ -104,18 +112,22 @@ def reschedule_follow_up(visit=None, follow_up_date=None, data=None, **kwargs):
 
 def _update_follow_up(visit, data, kwargs, *, status, note=None, missed_reason=None):
 	try:
+		begin_action()
 		payload = _payload(data, kwargs)
 		doc = _get_visit(visit or payload.get("visit"))
-		doc.follow_up_required = 1
-		doc.follow_up_status = status
+		updates = {"follow_up_required": 1, "follow_up_status": status}
 		if status == "Contacted":
-			doc.follow_up_contacted_at = now_datetime()
-			doc.follow_up_contacted_by = frappe.session.user
-			doc.follow_up_contact_note = note or payload.get("note") or payload.get("follow_up_contact_note")
+			updates["follow_up_contacted_at"] = now_datetime()
+			updates["follow_up_contacted_by"] = frappe.session.user
+			updates["follow_up_contact_note"] = note or payload.get("note") or payload.get("follow_up_contact_note")
 		if status == "Missed":
-			doc.missed_reason = missed_reason or payload.get("missed_reason") or payload.get("reason")
-		doc.flags.ignore_billing_lock = True
-		doc.save(ignore_permissions=True)
+			updates["missed_reason"] = missed_reason or payload.get("missed_reason") or payload.get("reason")
+		# Field-level write, not doc.save(): see pet_app.utils.visit_fields.
+		write_visit_fields(doc, updates)
+		# Vet Visit.on_update used to do this through _sync_medical_profile_snapshot
+		# (vet_visit.py:361-367). Called explicitly now, so the pet's medical profile keeps
+		# showing the follow-up date and status this endpoint just wrote.
+		update_profile_for_visit(doc)
 		return ok({"follow_up": _follow_up_payload(doc)})
 	except Exception as exc:
 		return _error_response(exc)
@@ -200,6 +212,8 @@ def _payload(data, kwargs) -> dict:
 
 
 def _error_response(exc):
+	# Undo the action's partial writes before reporting it; see response.begin_action.
+	rollback_action()
 	if isinstance(exc, frappe.PermissionError):
 		return fail(_("Not permitted"), code="PERMISSION_ERROR")
 	return fail(cstr(exc), code=getattr(exc, "exc_type", None) or exc.__class__.__name__)

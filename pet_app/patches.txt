@@ -2,6 +2,16 @@
 # Patches added in this section will be executed before doctypes are migrated
 # Read docs to understand patches: https://frappeframework.com/docs/v14/user/en/database-migrations
 pet_app.patches.rename_guardian_typo_fields
+# Must precede the schema sync: the UNIQUE index on Product.barcode is declared on
+# the DocField (product.json) so it survives migrate, and the sync creates it before
+# any post_model_sync patch could clean the data it needs. Trims, nulls blanks, and
+# refuses with the offending rows named rather than failing on a raw Duplicate entry.
+pet_app.patches.product_barcode_unique_index
+# The Item counterpart, and NOT symmetrical with it: Item.custom_barcode is a Custom
+# Field owned by fixtures/custom_field.json, and sync_fixtures runs after every patch,
+# so on the migrate that introduces the field this no-ops by design. It guards the site
+# where the column already exists with rows - see the patch docstring.
+pet_app.patches.item_barcode_unique_index
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
@@ -135,3 +145,272 @@ pet_app.patches.p1_16_action_rule_meta_template
 # 94. Data, not Select: the source list lives in SOURCE_NAMESPACES and grows by code
 # change, and a copy baked into a patch would go stale.
 pet_app.patches.p1_17_meta_template_source_doctype
+# Rating rows carry a type: Internal (staff reviewing staff, counts toward practitioner
+# averages and the Employee of the Month leaderboard) or Customer (a guardian rating the
+# service they received, reported separately and never blended into a staff score). The
+# column ships with rating.json; this patch only classifies the rows that predate it,
+# using two independent predicates that must agree. The 8 seeded Product rows are left
+# untyped on purpose - see the patch docstring.
+pet_app.patches.p1_18_rating_type_backfill
+# The eight Product ratings p1_18 left untyped are seeded demo data and Mostafa ruled to
+# delete rather than type them. Keyed on identity - Product plus no type - never on the
+# seed's notes string or a name list, so a real customer review landing in between is
+# typed Customer and survives. Stops if the predicate does not select exactly eight.
+pet_app.patches.p1_19_delete_seeded_product_ratings
+# Two Pet Boarding fields were renamed in the desk UI (boarding_note -> check_in_note,
+# checkout_notes -> check_out_note) and Frappe left the old columns behind, populated.
+# This moves the one value that is not recoverable elsewhere - BRD-00042's death-closure
+# note - into check_out_note. check_in_note is deliberately NOT backfilled: boarding_note
+# was written byte-for-byte identical to note on every one of its 39 rows, so nothing is
+# at risk, and that text is reservation-time text that would misread under "Check In Notes".
+pet_app.patches.p1_20_boarding_note_rename
+# max_pets_per_booking is 7 and the backend enforces it, but the client read the Single
+# through frappe.client.get, which permission-checks. Only Administrator passed, so the
+# capacity fell back to 1 and multi-pet booking vanished with no error. Granted to All
+# rather than role by role - three roles already grant read here and staff hold none of
+# them. Written as a Custom DocPerm because this doctype has custom perms, which makes
+# get_all_perms ignore the JSON row entirely on an existing site.
+pet_app.patches.p1_21_boarding_settings_read_for_all
+# A scheduled reminder can name a Meta template. Reminders fire on a schedule, so they
+# almost always reach a closed 24-hour window - the one case where only an approved Meta
+# template can be delivered - and Pet App Reminder was the last live send path that could
+# store nothing but a local slug. Same pair, same meanings, as the queue (p1_13) and the
+# action rule (p1_16). Additive: existing rows keep their template_key and the local path.
+pet_app.patches.p1_22_reminder_meta_template
+# Phase 11a: which template a send surface uses is configuration, not code. It used to
+# live in a dict in send_targets.py and, for the frontend-only surfaces, in constants in
+# the Vue app - so "what does boarding check-in send?" had no single answer. This seeds
+# Pet App Access Settings.send_defaults with the values that were in code immediately
+# before the move, resolved through the mirror by template name exactly as the old
+# registry did. The frontend surfaces are seeded blank because they have no default
+# today. Behaviour on day one is unchanged; only the place to look has changed.
+pet_app.patches.p1_23_whatsapp_send_defaults
+# p1_23 seeded the invoice surface as invoice.due_reminder, which was a guess - that
+# surface had never sent, so there was no queue row to read its key off. The frontend
+# actually sends manual.invoice_send. The row was seeded blank so no default is lost,
+# but it has to carry the key the frontend sends or nothing will ever look it up - and
+# since the guessed key is no longer a registered surface, a site that ran p1_23 cannot
+# save Pet App Access Settings at all until this corrects the row.
+pet_app.patches.p1_24_invoice_send_surface_key
+# An inbound WhatsApp reply arrives carrying message.context.id - the wamid of the message
+# it answers - and _message_event never read it. A quick-reply tap therefore recorded the
+# button's label and nothing about the record the template was about, so a tap on "send me
+# the report" could not be traced back to the Lab or Imaging row it was promising. This adds
+# the self-link and populates it on the way in; provider_message_id has been unique since
+# p1_6, so the resolution is one indexed read. Backfills existing inbound rows from the
+# context already stored verbatim in their raw_json.
+pet_app.patches.p1_25_whatsapp_inbound_reply_context
+# There is no server-side PDF renderer in this app, so a template promising "we will send
+# you the report" can only ever deliver bytes the client generated and a human reviewed.
+# This marks which of a record's attachments that is. It cannot be inferred: of the 1041
+# files on Lab and Imaging, 1037 are photos and three are PDFs nobody reviewed for
+# sending, so both "newest attachment" and "newest .pdf" send a customer the wrong file.
+# A Check on File rather than fields on Lab and Imaging, so a radiology template - and
+# whatever source doctype comes after it - needs no schema change and no code change.
+pet_app.patches.p1_26_reviewed_report_attachment
+# lab_result_ready ends "press the button below and we will send you the full report", and
+# on 2026-09-03 the system could not keep that promise - the guardian tapped 19 seconds
+# after the send and nothing happened. The refusal needs something to key on, and it may
+# not be a template name: the clinic will add a radiology template and more, and each has
+# to work with no code change. So the template declares it, once, as configuration. On the
+# mirror row rather than the local template because lab_result_ready has no local row -
+# neither its en_US nor its ar row is bound - and the send addresses the mirror directly.
+pet_app.patches.p1_27_template_promises_report
+
+# One clinic-wide setting decides when a billable item becomes an invoice line, for every
+# service type. Seeds it with `on_release`, the behaviour that predates it, and brings
+# Pet Billable Item.sales_invoice with it - medication has no order document to record
+# per-order billing state on, and cancellation has to find the line it must remove.
+pet_app.patches.billing_trigger_setting
+
+# Journal Entry gains the stamps a till payout needs to be found again: which profile booked
+# it, which category, and which clinic. Without them a cashier expense is indistinguishable
+# from a driver handover crediting the same account, and the settlement drawer can only show
+# a total it cannot itemise. branch is a plain Link, matching the *-branch reporting fields
+# already on Sales Invoice and Payment Entry, rather than a site-wide Accounting Dimension.
+pet_app.patches.cashier_expense_setup
+
+# Item Group becomes the single storefront taxonomy, so it needs the three presentation
+# fields that used to live only on Product Category (image and arabic_name already exist).
+# Must precede store_taxonomy_merge, which sets custom_show_in_shop while folding the tree.
+pet_app.patches.item_group_shop_fields
+
+# cashier_backend_setup is in Patch Log but its Payment Entry and Sales Invoice stamp fields
+# were never created, so every payment was stamped with nothing and the settlement snapshot's
+# activity_summary / recent_payment_entries / last_settlement read an absent column and came
+# back empty for every profile. Re-runs the same declaration under a new name, because a
+# logged patch never executes again.
+pet_app.patches.cashier_stamp_fields_repair
+
+# The weight band gains the quantity it deducts, next to the price it charges: a deworming
+# band can now say "0-10 kg consumes one tablet" as well as "0-10 kg costs X". Float with
+# explicit precision 4, because a sixth of a tablet is a real dose and this site's
+# float_precision is 2. Nothing is backfilled - 0 means NOT CONFIGURED, and a consumer that
+# reads 0 must refuse to deduct rather than silently take nothing off the shelf.
+pet_app.patches.care_service_billing_option_stock_qty
+
+# Medicine is allowed to go negative; food and accessories are not. Sets ERPNext's per-Item
+# Allow Negative Stock on every Item a Medication points at, so a dispense is never blocked
+# by a ledger that is behind the shelf. Deliberately NOT the global Stock Settings flag,
+# which would lift the floor for all ~2160 items and disable Stock Reservation.
+pet_app.patches.medication_items_allow_negative_stock
+
+# Deworming is dosed by weight, so the band that sets the price also sets how much of the
+# drug is consumed. CareService template gains `medication` (what is given, once per
+# service); Care Service Billing Option.stock_deduction_qty finally gets a consumer (how
+# much, per band); PetCareService gains the three stamps Pet Billable Item already carries,
+# so a cancellation reverses what actually left rather than what the band says today.
+# Quantities are in the Item's own Stock UOM - Strip for most deworming products, not
+# Tablet - and no Item's stock_uom is changed here.
+pet_app.patches.care_service_stock_relief_fields
+
+# Pet Notification Template had zero rows, so every preventive reminder was delivered as
+# the literal string "Vaccination Due" / "Deworming Due" - no pet, no date. Seeds one
+# In-App template per type, Arabic and English in the same body because the doctype has no
+# language field and the lookup keys on {reminder_type, channel} alone. Rendering of the
+# placeholders was added to api/notifications._send_legacy_reminder in the same change.
+pet_app.patches.seed_preventive_notification_templates
+
+# Deleting a prescription row from a Vet Visit used to leave its Pet Billable Item behind
+# as Billed, with sales_invoice set and the invoice line untouched - the guardian still
+# being charged for a medication the visit no longer prescribes. Reverses the ones sitting
+# on a DRAFT invoice through the same call the cancel_medication action makes. Anything on
+# a submitted invoice is left exactly as it is and named in the log: removing a line from
+# an issued document is a Credit Note, not a migration's decision.
+pet_app.patches.reverse_orphaned_medication_charges
+
+# The next dose date stops being computed from `CareService template.frequency` and becomes
+# a date the operator sets on the individual service. Adds `PetCareService.next_due_date`
+# and clears the four Vaccination Records still carrying a calculated date. `frequency` is
+# left on the template untouched - this only stops one path reading it.
+pet_app.patches.care_service_manual_next_due_date
+
+# The band names the drug it deducts. `care_service_stock_relief_fields` put `medication`
+# only on `CareService template`, assuming a band knows its template - it does not, and the
+# three controller lookups that read `category_care_services` as a template name return
+# None for all 45 rows. Deworming had a band with a quantity and no template; Vaccination a
+# template with a drug and no band. Adds `Care Service Billing Option.medication`; the
+# template's field stays and remains the fallback, because vaccination works only through
+# it. Nothing is backfilled - every existing band resolves exactly as it does today.
+pet_app.patches.care_service_billing_option_medication
+
+# Driver custody, separate customer receipts and cash handovers; disabled by default.
+pet_app.patches.driver_orders_schema
+
+# Staged transfer workflow; disabled until configured and verified.
+pet_app.patches.stock_transfer_schema
+
+# Vaccination and deworming become their own execution record, modelled on Lab: own name
+# series, own lifecycle, own billing and stock stamps, and native links back to whatever
+# ordered them instead of a LIKE over a provenance marker in free text. Creates the doctype
+# only. The catalogue is untouched - the record READS CareService template and Care Service
+# Billing Option. Nothing is migrated or removed by this patch.
+pet_app.patches.preventive_care_record_schema
+
+# Delivery partners (Talabat, Toters): the partner master, its settlements, and the six
+# Sales Invoice stamps a partner order carries. Additive only - creates three empty tables
+# and six nullable columns, migrates nothing, and changes no existing behaviour.
+pet_app.patches.delivery_partner_schema
+
+# The settlements tab showed nothing for every partner: the doctype called its link
+# `delivery_partner` while the client filters on `partner`, and Frappe fails a whole list
+# query on one unknown field. Renames that column (and `notes` -> `remarks`) preserving the
+# rows already banked, and adds the rest of the field list the client asks for.
+pet_app.patches.delivery_partner_settlement_field_alignment
+
+# Preventive Care Record gains its own `branch` and joins branch.SCOPED_DOCTYPES. Modelled on
+# Lab, it had `performing_branch` only - correct for Lab, which always hangs off a visit that
+# carries the branch, but wrong here: a dose is routinely given with no visit, and with
+# `performing_branch` blank on every catalogue row the invoice then had no branch at all,
+# which get_or_create_open_invoice refuses for any user not restricted to one clinic. Schema
+# only; the table is empty and the patch verifies that rather than assuming it.
+pet_app.patches.preventive_care_record_branch
+
+# Visit Order.kind gains `preventive`, so a vaccination or deworming can be ordered from a
+# visit as its own kind rather than as a generic `service`. Select options live in the
+# database, so the option is refused until the doctype is reloaded. Additive only: no column,
+# no row written, every existing order keeps the kind it has, and the deterministic order-id
+# digest of every other kind is unchanged.
+pet_app.patches.visit_order_preventive_kind
+
+# Preventive Care Record inherits the role grants its predecessors held - the two superseded
+# record doctypes plus PetCareService, unioned, strongest flag wins, `delete` deliberately not
+# copied. Created with System Manager only, the doctype would refuse every real user the
+# moment the frontend reached it. MUST run before the purge, which deletes the source rows.
+pet_app.patches.preventive_care_record_permissions
+
+# The one destructive step, last. Drops `Pet Vaccination Record` and `Pet Deworming Record`
+# with their rows, the reminders pointing at them, and the Draft invoice lines sourced from
+# preventive PetCareService rows; then drops three preventive columns off PetCareService.
+# Gated on PREDICATES, not counts: every row must carry the machine provenance marker, be
+# unedited since insert, have no Version/Comment/File dependents, and sit on one pet, and the
+# invoice it edits must be Draft and unpaid. Refuses with an Error Log if any of that has
+# stopped holding. Deliberately leaves submitted documents alone - the 29 legacy
+# PetCareService rows, 12 submitted Stock Entries, 13 lines on a submitted invoice - and
+# reports `stock_warehouse` rather than dropping it, because non-preventive rows carry a value.
+pet_app.patches.preventive_care_purge
+pet_app.patches.preventive_next_dose_backfill
+
+# Clears the links the 2026-07-14 force-delete left pointing at deleted test Items,
+# practitioners, users and visits, which made PCE-2026-00021 and three other open episodes
+# unsaveable. An explicit audited row list, each entry gated on the target still being absent
+# and deleted inside that run; a second run changes nothing. Leaves `Stool Test` (a real lab
+# service) and submitted records alone.
+pet_app.patches.clear_force_deleted_test_links
+
+pet_app.patches.boarding_invoice_discount
+
+# Releases medication charges left Billed against a cancelled invoice (on_sales_invoice_cancel
+# never reset them) and repairs the draft the front-end "Save as draft" sync emptied: its rows
+# are released and re-billed through bill_visit_medications_at, so the header recomputes from
+# real lines. Leaves the 591 rows stranded by the 2026-09-14 draft deletion to the owner.
+pet_app.patches.repair_stranded_medication_charges
+
+# A delivery partner may now keep a flat fee per order instead of a percentage: adds the
+# partner's `commission_type`/`commission_amount` and the `custom_partner_commission_type`
+# snapshot a settlement reads to know which stored figure applies. Additive - every existing
+# partner is stamped Percentage, which is what it already was, and no invoice is recomputed.
+pet_app.patches.delivery_partner_commission_type
+
+# Per-screen categories for the WhatsApp template picker: the `Pet App Template Category`
+# doctype, its nine screen records, and a `surface_category` Link on BOTH template
+# doctypes - the local one and the Meta mirror, because 21 of the 23 mirror rows have no
+# local row and a picker offers them anyway. Additive and idempotent: no existing row is
+# touched, every template starts uncategorised, and an uncategorised template still
+# reaches every screen. Meta's own `category` (MARKETING / UTILITY / AUTHENTICATION) is
+# a different axis and is left exactly as it is.
+pet_app.patches.p1_28_template_surface_category
+# page_key on Pet App Template Category: the screen each category belongs to, editable in
+# desk so a new category needs no frontend deploy. Unique; seeds only the four one-to-one
+# pairings and never overwrites a value already set.
+pet_app.patches.p1_29_template_category_page_key
+# surface_key on Pet App Template Category: bind a category to one send dialog, not only a
+# page. Resolution is surface match, then page match, then none. Unique; seeds nothing -
+# the frontend's surface keys are not in the deployed bundle to confirm against.
+pet_app.patches.p1_30_template_category_surface_key
+# A screen shows several template categories: one Pet App Template Screen record per page or
+# send surface, listing its categories. Migrates every category-held page_key / surface_key to
+# a screen record (lossless, never overwrites); the category's own keys become read-only.
+pet_app.patches.p1_31_template_screens
+
+# A delivery partner may bill the REAL app customer (`is_inside`) while still collecting the
+# money and settling later. Adds the `custom_partner_is_inside` snapshot the till's
+# double-collection guard reads, and the settlement's `journal_entry` link - a Payment Entry
+# has one party and cannot clear invoices spread over many customers. Additive only.
+pet_app.patches.delivery_partner_inside
+# Driver orders are visible by Branch, not by the origin till / driver warehouse snapshot.
+pet_app.patches.driver_orders_ignore_till_permissions
+# Driver delivery fee is booked: invoice income + a per-driver fee payable (Driver Fees HR-DRI-...).
+pet_app.patches.driver_fee_accounting
+# One-step driver settlement (Driver Settlement doctype, Sales Order stamp, start date).
+pet_app.patches.driver_settlement
+# Driver self-screen: page.drivers.me for the Driver role; customer-phone switch.
+pet_app.patches.driver_self_screen
+# Driver screen fields (note, refusal, attempts), driver role profile; seeds settlement start + phone switch.
+pet_app.patches.driver_self_screen_fields
+# Driver report_return: why a delivered order came back.
+pet_app.patches.driver_return_fields
+# Driver orders are not tied to any till: clear old till stamps (payments keep it only where money went through that till).
+pet_app.patches.driver_orders_unlink_tills
+# Sales Invoices are visible by Branch, not by the till that rang them up (POS Recent Purchases was empty for other tills' sales).
+pet_app.patches.sales_invoice_ignore_till_permissions

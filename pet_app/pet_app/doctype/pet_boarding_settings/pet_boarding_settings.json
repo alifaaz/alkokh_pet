@@ -25,23 +25,26 @@
    "description": "The CareService category holding boarding rates. Boarding prices resolve from rows in this category, so adding a species or changing a price is a catalogue edit, never a deploy.",
    "fieldname": "boarding_category",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Boarding Category",
    "options": "CategoryCareServices"
   },
   {
+   "description": "DEPRECATED and no longer read. Boarding rates now resolve from the CareService catalogue via Boarding Category above, so a species or a price is a catalogue edit rather than a deploy. Left in place rather than deleted so the old configuration stays visible; safe to clear.",
    "fieldname": "travel_boarding_item",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Travel Boarding Item (Deprecated)",
    "options": "Item",
-   "description": "DEPRECATED and no longer read. Boarding rates now resolve from the CareService catalogue via Boarding Category above, so a species or a price is a catalogue edit rather than a deploy. Left in place rather than deleted so the old configuration stays visible; safe to clear.",
    "read_only": 1
   },
   {
+   "description": "DEPRECATED and no longer read. Boarding rates now resolve from the CareService catalogue via Boarding Category above, so a species or a price is a catalogue edit rather than a deploy. Left in place rather than deleted so the old configuration stays visible; safe to clear.",
    "fieldname": "treatment_boarding_item",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Treatment Boarding Item (Deprecated)",
    "options": "Item",
-   "description": "DEPRECATED and no longer read. Boarding rates now resolve from the CareService catalogue via Boarding Category above, so a species or a price is a catalogue edit rather than a deploy. Left in place rather than deleted so the old configuration stays visible; safe to clear.",
    "read_only": 1
   },
   {
@@ -61,11 +64,12 @@
    "label": "Attribution"
   },
   {
+   "description": "The branch every boarding stay is attributed to. Boarding happens at the boarding facility, so this is never taken from the user processing the stay. Checkout refuses to bill until it is set.",
    "fieldname": "boarding_branch",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Boarding Branch",
-   "options": "Branch",
-   "description": "The branch every boarding stay is attributed to. Boarding happens at the boarding facility, so this is never taken from the user processing the stay. Checkout refuses to bill until it is set."
+   "options": "Branch"
   },
   {
    "fieldname": "capacity_section",
@@ -101,6 +105,10 @@
    "role": "System Manager",
    "share": 1,
    "write": 1
+  },
+  {
+   "read": 1,
+   "role": "All"
   }
  ],
  "row_format": "Dynamic",

@@ -10,6 +10,7 @@ from pet_app.api import guardian_portal
 from pet_app.api.mobile.files import MobileFileError, attach_public_image, get_first_uploaded_file
 from pet_app.api.mobile.response import error, ok
 from pet_app.pet_app.doctype.pet_medical_profile.pet_medical_profile import ensure_pet_medical_profile
+from pet_app.pet_app.doctype.preventive_care_record.preventive_care_record import committed_by
 from pet_app.utils.guardian_customer import get_guardian_by_user
 from pet_app.utils.mortality import apply_pet_visibility_filters
 
@@ -19,6 +20,11 @@ PET_NOT_FOUND = "pet.not_found"
 PET_REQUEST_INVALID = "pet.request_invalid"
 PET_DISABLED = "pet.disabled"
 PET_MEDICAL_NOT_FOUND = "pet.medical_record_not_found"
+# A record that exists and belongs to the guardian's pet, but is the CLINIC's to change.
+# Distinct from `not_found` on purpose: the app shows these rows in the pet's history and a
+# client needs to tell "you cannot see this" apart from "you can see it but not edit it", so
+# it can hide the edit control rather than the record.
+PET_MEDICAL_CLINIC_OWNED = "pet.medical_record_clinic_owned"
 
 PET_READ_FIELDS = (
 	"name",
@@ -80,13 +86,24 @@ PET_REQUIRED_CREATE_FIELDS = (
 	"gender",
 )
 
+# THE EXTERNAL CONTRACT IS UNCHANGED. Both record types still exist, still answer to
+# "vaccination" and "deworming", and `vaccine_name` is still accepted on the way in. What
+# changed is underneath: one doctype holds both, so `kind` is what separates them instead of
+# which table the row came out of, and the one label field is `medication_name`.
+#
+# `vaccine_name` survives as an ALIAS rather than as a field, so an app that has not been
+# rebuilt keeps working. It maps onto `medication_name`, which is the single label field the
+# replacement doctype carries for both kinds.
+PREVENTIVE_DOCTYPE = "Preventive Care Record"
+
 MEDICAL_RECORD_TYPES = {
 	"vaccination": {
-		"doctype": "Pet Vaccination Record",
-		"summary_field": "vaccine_name",
-		"required_field": "vaccine_name",
+		"doctype": PREVENTIVE_DOCTYPE,
+		"kind": "Vaccination",
+		"summary_field": "medication_name",
+		"required_field": "medication_name",
 		"fields": (
-			"vaccine_name",
+			"medication_name",
 			"vaccine_type",
 			"batch_no",
 			"administered_on",
@@ -95,10 +112,11 @@ MEDICAL_RECORD_TYPES = {
 			"reminder_status",
 			"notes",
 		),
-		"aliases": {"name": "vaccine_name", "title": "vaccine_name"},
+		"aliases": {"name": "medication_name", "title": "medication_name", "vaccine_name": "medication_name"},
 	},
 	"deworming": {
-		"doctype": "Pet Deworming Record",
+		"doctype": PREVENTIVE_DOCTYPE,
+		"kind": "Deworming",
 		"summary_field": "medication_name",
 		"required_field": "medication_name",
 		"fields": (
@@ -115,6 +133,9 @@ MEDICAL_RECORD_TYPES = {
 		"aliases": {"name": "medication_name", "title": "medication_name"},
 	},
 }
+
+
+_KIND_TO_TYPE = {config["kind"]: key for key, config in MEDICAL_RECORD_TYPES.items()}
 
 
 class MobilePetError(Exception):
@@ -169,6 +190,14 @@ def _doctype_has_field(doctype: str, fieldname: str) -> bool:
 
 def _read_fields() -> list[str]:
 	return [fieldname for fieldname in PET_READ_FIELDS if fieldname == "name" or _pet_has_field(fieldname)]
+
+
+def _breed_fields() -> list[str]:
+	fields = ["name"]
+	for fieldname in ("breed_name", "arabic_name", "animal_species", "animal_type"):
+		if _doctype_has_field("Pet Breed", fieldname):
+			fields.append(fieldname)
+	return fields
 
 
 def _is_disabled(row) -> bool:
@@ -297,8 +326,21 @@ def _medical_payload(record_type: str, row) -> dict:
 		"modified": cstr(row.get("modified") or ""),
 	}
 	for field in config["fields"]:
-		if field in row:
+		# `field not in payload`, not a blind overwrite. The keys above are deliberately
+		# normalised - `administered_on` and `next_due_date` are stringified with cstr() - and
+		# this loop used to replace them with the raw `datetime.date` off the row. The list
+		# endpoint then sorted on a mix of dates and empty strings and died with
+		# "'<' not supported between instances of 'datetime.date' and 'str'".
+		#
+		# It never showed before because `administered_on` was `reqd` on both doctypes this
+		# replaces, so no row could have an empty one and every value compared was a date.
+		# The replacement doctype is ordered before it is administered, so the empty case is
+		# now real.
+		if field in row and field not in payload:
 			payload[field] = row.get(field)
+	# Echoed back under its old name as well, for an app built against the previous shape.
+	if record_type == "vaccination":
+		payload.setdefault("vaccine_name", summary)
 	return payload
 
 
@@ -307,18 +349,49 @@ def _find_medical_doc(record_name: str, record_type=None):
 	if not record_name:
 		raise MobilePetError(PET_REQUEST_INVALID, _("Medical record is required."))
 
-	types = [_medical_record_type(record_type)] if record_type else list(MEDICAL_RECORD_TYPES)
-	for type_key in types:
-		doctype = MEDICAL_RECORD_TYPES[type_key]["doctype"]
-		if frappe.db.exists(doctype, record_name):
-			return type_key, frappe.get_doc(doctype, record_name)
-	raise MobilePetError(PET_MEDICAL_NOT_FOUND, _("Medical record was not found."), 404)
+	# Both type keys share one table, so "does a row with this name exist in that doctype"
+	# can no longer tell them apart - it would match whichever key came first and report a
+	# deworming as a vaccination. The row's own `kind` is the answer.
+	if not frappe.db.exists(PREVENTIVE_DOCTYPE, record_name):
+		raise MobilePetError(PET_MEDICAL_NOT_FOUND, _("Medical record was not found."), 404)
+	doc = frappe.get_doc(PREVENTIVE_DOCTYPE, record_name)
+	resolved = _KIND_TO_TYPE.get(cstr(doc.get("kind")).strip())
+	if not resolved:
+		raise MobilePetError(PET_MEDICAL_NOT_FOUND, _("Medical record was not found."), 404)
+	if record_type and _medical_record_type(record_type) != resolved:
+		# Asked for as the wrong type. Refused rather than quietly returned as the type it
+		# actually is: the caller's own state is wrong and silently correcting it hides that.
+		raise MobilePetError(PET_MEDICAL_NOT_FOUND, _("Medical record was not found."), 404)
+	return resolved, doc
 
 
 def _assert_medical_record_access(guardian: str, pet: str, doc):
+	"""The guardian's own history, and nothing else.
+
+	Owning the pet is not the same as owning the record. This check used to test only that
+	the row belonged to the pet and that the guardian could reach the pet - which let a
+	guardian edit, or delete, a dose THE CLINIC gave: `medication_name`, `batch_no`,
+	`administered_on` and `next_due_date` on a record that was priced, charged and stamped by
+	a member of staff, with the clinic worklist then showing the result as fact.
+
+	The line is the same one `PreventiveCareRecord._refuse_edit_when_committed` draws, drawn
+	with the same function so the two can never disagree: a record that committed something -
+	an item, a charge, a staff stamp, stock - belongs to the clinic. A record that committed
+	nothing is what this API exists to maintain.
+
+	Guarded on the SAVED row rather than on anything in the request, and reached before any
+	field is applied, so neither an edit nor a delete can get past it.
+	"""
 	if doc.pet != pet:
 		raise MobilePetError(PET_MEDICAL_NOT_FOUND, _("Medical record was not found."), 404)
 	_assert_pet_access(guardian, pet)
+	if doc.doctype == PREVENTIVE_DOCTYPE and committed_by(doc):
+		raise MobilePetError(
+			PET_MEDICAL_CLINIC_OWNED,
+			_("This dose was recorded by the clinic and cannot be changed here. "
+			  "Ask the clinic to correct it."),
+			403,
+		)
 
 
 def _approve_mobile_pet(pet: str, guardian: str):
@@ -394,6 +467,17 @@ def _pet_payload(row) -> dict:
 	}
 
 
+def _breed_payload(row) -> dict:
+	name = cstr(row.get("name")).strip()
+	return {
+		"id": name,
+		"name": cstr(row.get("breed_name") or name),
+		"arabic_name": row.get("arabic_name"),
+		"species": row.get("animal_species"),
+		"type": row.get("animal_type"),
+	}
+
+
 def _unwrap_guardian_portal(result, key):
 	if isinstance(result, dict) and result.get("ok") is True:
 		return (result.get("data") or {}).get(key) or []
@@ -402,6 +486,55 @@ def _unwrap_guardian_portal(result, key):
 		message = errors[0].get("message") if errors else _("Request failed.")
 		raise MobilePetError((result.get("meta") or {}).get("code") or PET_REQUEST_INVALID, message)
 	return []
+
+
+@frappe.whitelist(methods=["GET"])
+@_mobile_pet_endpoint
+def list_breeds(
+	animal_type=None,
+	animal_species=None,
+	search=None,
+	limit=100,
+	page_size=None,
+	**kwargs,
+):
+	_current_guardian()
+	if not frappe.db.exists("DocType", "Pet Breed"):
+		return {"items": [], "total": 0}
+
+	filters = {}
+	if _doctype_has_field("Pet Breed", "enabled"):
+		filters["enabled"] = 1
+	animal_type = cstr(animal_type).strip()
+	animal_species = cstr(animal_species).strip()
+	search = cstr(search).strip()
+	if animal_type and _doctype_has_field("Pet Breed", "animal_type"):
+		filters["animal_type"] = animal_type
+	if animal_species and _doctype_has_field("Pet Breed", "animal_species"):
+		filters["animal_species"] = animal_species
+	if search:
+		search_field = (
+			"breed_name"
+			if _doctype_has_field("Pet Breed", "breed_name")
+			else "name"
+		)
+		filters[search_field] = ["like", f"%{search}%"]
+
+	page_length = max(1, min(cint(page_size or limit or 100), 500))
+	order_by = (
+		"breed_name asc"
+		if _doctype_has_field("Pet Breed", "breed_name")
+		else "name asc"
+	)
+	rows = frappe.get_all(
+		"Pet Breed",
+		filters=filters,
+		fields=_breed_fields(),
+		order_by=order_by,
+		limit_page_length=page_length,
+		ignore_permissions=True,
+	)
+	return {"items": [_breed_payload(row) for row in rows], "total": len(rows)}
 
 
 @frappe.whitelist(methods=["GET"])
@@ -571,7 +704,14 @@ def list_medical_records(pet=None, pet_id=None, record_type=None, type=None, lim
 		config = MEDICAL_RECORD_TYPES[type_key]
 		rows = frappe.get_all(
 			config["doctype"],
-			filters={"pet": name},
+			# `kind` is what separates the two types now. Without it every listing would
+			# return both and label them all as whichever type was asked for.
+			#
+			# `Administered` only, because that is what a medical record IS. The doctypes this
+			# replaces had no status and could hold nothing else; the replacement is Ordered
+			# first, and an ordered-but-not-given dose has not happened yet. It belongs to the
+			# clinic's worklist and to the reminder queue, not to the pet's history.
+			filters={"pet": name, "kind": config["kind"], "status": "Administered"},
 			fields=_medical_fields(type_key),
 			order_by="administered_on desc, creation desc",
 			ignore_permissions=True,
@@ -599,7 +739,22 @@ def add_medical_record(pet=None, pet_id=None, record_type=None, type=None, **kwa
 	config = MEDICAL_RECORD_TYPES[type_key]
 	updates = _medical_updates(type_key, kwargs, require_required_field=True)
 
+	from pet_app.utils.branch import get_default_branch
+
 	doc = frappe.get_doc({"doctype": config["doctype"], "pet": name, "guardian": guardian})
+	# WHAT was given, stated rather than derived: a guardian recording a dose given elsewhere
+	# has no catalogue row to resolve a kind from. See preventive_catalogue.assert_selection.
+	doc.kind = config["kind"]
+	# ALREADY GIVEN. This records history, it does not order anything: the doctypes this
+	# replaces had no status at all and every row they held was a dose that had happened.
+	# Created `Administered`, it is also inert - no action is allowed from a terminal status,
+	# and with no item_code it can never be billed.
+	doc.status = "Administered"
+	# A self-reported dose belongs to no clinic, but a NULL branch is visible to every clinic
+	# rather than to none, so the site default is stamped instead. Without this the insert is
+	# refused outright: a guardian holds no Branch User Permission, which makes them
+	# "unrestricted", and an unrestricted user must choose a branch.
+	doc.branch = get_default_branch()
 	for fieldname, value in updates.items():
 		doc.set(fieldname, value)
 	doc.insert(ignore_permissions=True)

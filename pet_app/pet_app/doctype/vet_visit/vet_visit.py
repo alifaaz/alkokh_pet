@@ -10,7 +10,6 @@ from frappe.utils import cint, cstr, flt, getdate, now_datetime
 
 from pet_app.api.permissions import require_doctype_permission
 from pet_app.pet_app.doctype.medication.medication import resolve_dose_option_placeholder_uom
-from pet_app.utils.medication_stock import resolve_dispense_warehouse
 from pet_app.pet_app.doctype.vet_case_sheet.vet_case_sheet import build_case_summary
 from pet_app.utils.care_plan_links import assert_no_active_plan_items_linked_to
 from pet_app.utils.clinical_options import has_internal_clinical_note, validate_visit_clinical_selections
@@ -31,6 +30,7 @@ from pet_app.utils.visit_billing import (
 	apply_billable_item_amounts,
 	billable_row_label,
 	billed_row_field_changed,
+	cancel_visit_billable_item_by_link,
 	get_care_service_doc,
 	log_visit_billing_event,
 	summarise_visit_billing,
@@ -122,6 +122,35 @@ class VetVisit(Document):
 		self._sync_case_sheet()
 		self._sync_medical_profile_snapshot()
 		self._audit_manual_billable_items()
+		self._bill_prescribed_medications_on_request()
+
+	def _bill_prescribed_medications_on_request(self):
+		"""Raise medication charges at prescribe time, when that is the clinic's trigger.
+
+		In on_update, not in validate. `_sync_prescribed_medications_billables` creates the
+		billable row during validate, and the row has to EXIST in the database before it can
+		be marked Billed - billing without being able to record it would re-charge the same
+		prescription on the next save of the visit.
+
+		No re-save and therefore no recursion: the charge is recorded with db.set_value on
+		the child row (see order_billing._commit_medication_billing), so this does not
+		re-enter on_update. The guard flag is belt and braces for a caller that saves from
+		inside a save.
+		"""
+		# Imported inside the method. order_billing pulls in invoice_reuse and the whole
+		# ERPNext selling chain behind it, and a module-level import in a doctype
+		# controller loads that at boot for every site that never bills on request.
+		from pet_app.utils.order_billing import bill_visit_medications_at
+
+		if self.flags.get("billing_prescribed_medications"):
+			return
+		if not self.get("prescribed_medications"):
+			return
+		self.flags.billing_prescribed_medications = True
+		try:
+			bill_visit_medications_at(self, "on_request")
+		finally:
+			self.flags.billing_prescribed_medications = False
 
 	def on_trash(self):
 		protect_care_episode_before_visit_delete(self)
@@ -542,6 +571,42 @@ class VetVisit(Document):
 			if billable_row.linked_service_id in active_linked_ids:
 				continue
 			if billable_row.status == "Billed":
+				# The prescription row was DELETED rather than cancelled - the only thing
+				# the visit page actually does - and its charge is already on an invoice.
+				# Skipping here, which is what this did, left the line on the invoice and
+				# the guardian paying for a medication the visit no longer prescribes. The
+				# cancel_medication action reverses this correctly; deletion has to reach
+				# the same place, not a second implementation of it.
+				#
+				# So: the same call cancel_medication makes. It removes the line from a
+				# draft invoice, clears sales_invoice on the row, marks it Cancelled, and
+				# REFUSES when the invoice has already been submitted - a frappe.throw out
+				# of validate, which aborts this whole save. That refusal is the point. A
+				# line may never be silently removed from an issued document, so the delete
+				# is rejected with ISSUED_INVOICE_CANCEL_MESSAGE and the operator is sent to
+				# the cashier for a Credit Note.
+				#
+				# visit=self and save=False: this operates on the copy already in hand, and
+				# the save that carried the deletion persists the cancelled row with it.
+				# _cancel_parent_billable_row sets flags.ignore_billing_lock on the way
+				# through, which is what lets _validate_billed_billable_rows_unchanged
+				# accept the Billed -> Cancelled transition it just made.
+				cancel_visit_billable_item_by_link(
+					self.name,
+					linked_service_id=billable_row.linked_service_id,
+					item_type="Medication",
+					visit=self,
+					save=False,
+				)
+				if billable_row.status != "Cancelled":
+					# Unreachable while the row is found by its own linked_service_id, and
+					# loud on purpose: a reversal that quietly did nothing is precisely the
+					# bug this replaced, and it must never be reintroduced by a silent miss.
+					frappe.throw(
+						_("Could not reverse the charge for removed medication {0}. Please contact the cashier.").format(
+							frappe.bold(billable_row_label(billable_row))
+						)
+					)
 				continue
 			billable_row.status = "Cancelled"
 
@@ -875,24 +940,9 @@ def _create_sales_invoice_for_visit(visit_name: str) -> dict:
 		_validate_visit_ready_for_invoice(visit)
 
 	items, total_amount = get_billable_invoice_items(visit)
-	updates_stock = any(item.get("warehouse") for item in items)
-
-	# A line carrying the warehouse key with an empty value is one whose goods were
-	# already issued at dispense. ERPNext's update_stock is a DOCUMENT flag with no
-	# per-row equivalent, so an invoice cannot deduct one stock line while leaving
-	# another alone: with the flag on it demands a warehouse for every stock item
-	# and refuses to save without one. Of the three possible outcomes - deduct
-	# twice, block the invoice, or let this invoice stop being a stock document -
-	# only the third neither corrupts stock nor stops the clinic billing. It can
-	# under-deduct a second medication that is not yet opted in and happens to
-	# share the invoice; that is recorded on the invoice rather than left silent.
-	already_issued = [item for item in items if "warehouse" in item and not item["warehouse"]]
-	stock_flag_dropped = bool(already_issued and updates_stock)
-	if stock_flag_dropped:
-		updates_stock = False
 
 	# Appends to this customer's open Draft when one exists for the same company, branch
-	# and stock kind; creates one only when it does not. The invoice belongs to the clinic
+	# across stock and service items; creates one only when it does not. The invoice belongs to the clinic
 	# that did the work, not to whoever bills it, so the visit's branch is passed rather
 	# than the acting user's - and it is part of the match key, so two branches never
 	# share an invoice.
@@ -908,7 +958,6 @@ def _create_sales_invoice_for_visit(visit_name: str) -> dict:
 		ignore_pricing_rule=1,
 		remarks=_("Vet Visit {0} billed.").format(visit.name),
 		guardian=visit.guardian,
-		requires_stock=updates_stock,
 	)
 	sales_invoice = result.invoice
 	guardian_field = result.guardian_reference_field
@@ -918,14 +967,6 @@ def _create_sales_invoice_for_visit(visit_name: str) -> dict:
 			_("created") if result.created else _("extended"), visit.name, frappe.session.user
 		),
 	)
-	if stock_flag_dropped:
-		sales_invoice.add_comment(
-			"Comment",
-			_(
-				"Update Stock was turned off on this invoice: {0} medication line(s) were already issued from stock at dispense. "
-				"Any other stock line on this invoice is therefore not deducted here."
-			).format(len(already_issued)),
-		)
 	log_visit_billing_event(
 		"INVOICE_CREATED",
 		visit=visit.name,
@@ -1004,7 +1045,7 @@ def get_billable_invoice_items(visit, *, allow_non_invoiceable: bool = False) ->
 			"amount": amount,
 			"description": row.item_name or row.item_code,
 		}
-		invoice_item.update(_get_stock_invoice_context(row, medication_rows))
+		invoice_item.update(_get_stock_invoice_context(row, medication_rows, branch=visit.get("branch")))
 		items.append(invoice_item)
 
 	if not items:
@@ -1024,7 +1065,7 @@ def get_billable_invoice_items(visit, *, allow_non_invoiceable: bool = False) ->
 	return items, total_amount
 
 
-def _get_stock_invoice_context(billable_row, medication_rows: dict) -> dict:
+def _get_stock_invoice_context(billable_row, medication_rows: dict, *, branch=None) -> dict:
 	item = frappe.db.get_value(
 		"Item",
 		billable_row.item_code,
@@ -1036,58 +1077,10 @@ def _get_stock_invoice_context(billable_row, medication_rows: dict) -> dict:
 
 	medication_row = _get_billable_medication_row(billable_row, medication_rows)
 
-	# The goods for this line already left the warehouse when it was dispensed.
-	# Invoicing it with a warehouse would deduct the same medication twice - once
-	# at the bedside and once at the till - and the invoice is the wrong one of the
-	# two to keep, because it bills the PRESCRIBED qty while the dispense issued
-	# what was actually handed over. An explicit empty string, not a missing key:
-	# ERPNext backfills `warehouse` from Item Default when the value is None, which
-	# would silently reinstate the second deduction.
-	if medication_row and flt(medication_row.get("stock_issued_qty")) > 0:
-		return {"warehouse": ""}
+	from pet_app.utils.medication_stock import medication_invoice_context
 
-	medication_defaults = {}
-	medication_label = (
-		cstr(medication_row.get("medication") if medication_row else "").strip()
-		or cstr(billable_row.get("item_name")).strip()
-		or item.name
-	)
-	if medication_row:
-		medication_defaults = _get_medication_invoice_defaults(medication_row)
-	warehouse = resolve_dispense_warehouse(
-		medication=medication_row.get("medication") if medication_row else None,
-		# Left None for a non-medication stock line so the chain falls straight
-		# through to Stock Settings, exactly as it always has for those rows.
-		medication_item=medication_row.get("medication_item") if medication_row else None,
-		row_warehouse=medication_row.get("warehouse") if medication_row else None,
-		label=medication_label,
-		purpose=_("invoice"),
-	)
+	return medication_invoice_context(medication_row or {}, item_code=billable_row.item_code, branch=branch)
 
-	stock_uom = cstr(item.stock_uom).strip()
-	uom = stock_uom
-	conversion_factor = 1 if stock_uom else 0
-
-	if medication_row:
-		stock_uom = cstr(medication_row.get("stock_uom") or stock_uom).strip()
-		uom = cstr(medication_row.get("dispense_uom") or medication_defaults.get("default_dispense_uom") or uom).strip()
-		conversion_factor = flt(medication_row.get("conversion_factor"))
-		if conversion_factor <= 0:
-			conversion_factor = flt(medication_defaults.get("default_conversion_factor"))
-		if conversion_factor <= 0 and uom and stock_uom and uom == stock_uom:
-			conversion_factor = 1
-
-	context = {"warehouse": warehouse}
-	if uom:
-		context["uom"] = uom
-	if stock_uom:
-		context["stock_uom"] = stock_uom
-	if conversion_factor > 0:
-		context["conversion_factor"] = flt(conversion_factor)
-	if medication_row and medication_row.get("batch_no"):
-		context["batch_no"] = medication_row.get("batch_no")
-		context["use_serial_batch_fields"] = 1
-	return context
 
 
 def _get_medication_invoice_defaults(medication_row) -> dict:

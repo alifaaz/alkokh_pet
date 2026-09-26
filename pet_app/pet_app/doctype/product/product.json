@@ -53,7 +53,8 @@
   {
    "fieldname": "barcode",
    "fieldtype": "Data",
-   "label": "barcode"
+   "label": "barcode",
+   "unique": 1
   },
   {
    "fieldname": "description",

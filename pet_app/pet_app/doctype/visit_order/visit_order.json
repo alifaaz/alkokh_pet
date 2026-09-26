@@ -34,7 +34,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Kind",
-   "options": "lab\nradiology\nservice\nprocedure\nmedication\nother",
+   "options": "lab\nradiology\nservice\nprocedure\nmedication\nother\npreventive",
    "reqd": 1
   },
   {

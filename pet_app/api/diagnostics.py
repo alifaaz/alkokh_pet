@@ -8,6 +8,7 @@ from frappe.utils import cint, cstr, now_datetime
 
 from pet_app.api.link_aliases import with_link_aliases
 from pet_app.api.response import fail, ok
+from pet_app.notifications import reports
 from pet_app.utils import order_billing
 from pet_app.workflows import clinical_state
 
@@ -20,10 +21,19 @@ def collect_sample(lab=None, name=None):
 		clinical_state.assert_action_allowed(doc, "collect_sample")
 		doc.sample_collected_by = doc.sample_collected_by or frappe.session.user
 		doc.sample_collected_at = doc.sample_collected_at or now_datetime()
+		# Collecting the sample IS starting the lab - it is the step that puts the order
+		# In Progress on the visit, below. `start_test` is the other route to the same
+		# state, so under on_start both bill and whichever happens first wins; the second
+		# plans nothing because `billed` is already set.
+		plan = order_billing.plan_order_billing_at(doc, "on_start", item_type="Lab")
 		clinical_state.transition_status(doc, "Sample Collected", action="collect_sample")
 		doc.save(ignore_permissions=True)
 		_sync_order_status(doc, "In Progress")
-		return ok({"lab": _diagnostic_payload(doc)})
+		billing = order_billing.commit_order_billing(doc, plan)
+		payload_out = _diagnostic_payload(doc)
+		if billing:
+			payload_out["billing"] = billing
+		return ok({"lab": payload_out})
 	except Exception as exc:
 		return _error_response(exc)
 
@@ -67,9 +77,13 @@ def release_lab_result(lab=None, name=None, result_visibility=None, data=None, *
 		doc.released_at = now_datetime()
 		# Resolved and validated BEFORE the release is written: this endpoint converts its
 		# own exceptions into a fail() response, so a billing problem raised after the save
-		# would leave the lab Released and uncharged. None for a lab with no performing
-		# branch, which is every lab today - that charge rides the visit as before.
-		plan = order_billing.plan_order_billing(doc, item_type="Lab")
+		# would leave the lab Released and uncharged.
+		#
+		# Release is also the CATCH-UP point for the earlier triggers. clinical_state allows
+		# a release straight from Pending, so a lab billing on_start that was never started
+		# would otherwise never be charged at all. plan_order_billing returns None once the
+		# order is billed, so a lab already charged at its own trigger plans nothing here.
+		plan = order_billing.plan_order_billing_at(doc, "on_release", item_type="Lab")
 		clinical_state.transition_status(doc, "Released", action="release_lab_result")
 		doc.save(ignore_permissions=True)
 		_sync_order_status(doc, "Completed")
@@ -120,10 +134,11 @@ def release_imaging_report(imaging=None, name=None, result_visibility=None, data
 		doc.result_visibility = result_visibility or payload.get("result_visibility") or doc.result_visibility or "Guardian Visible"
 		doc.released_by = frappe.session.user
 		doc.released_at = now_datetime()
-		# Pre-flight before the release is written - see release_lab_result. For radiology
-		# this is the case the whole change exists for: performing_branch is "hotel", so
-		# the charge leaves the visit here and lands on the facility's invoice.
-		plan = order_billing.plan_order_billing(doc, item_type="Imaging")
+		# Pre-flight before the release is written, and the catch-up point for the earlier
+		# triggers - see release_lab_result. For radiology this is also the case per-order
+		# billing exists for: performing_branch is "hotel", so the charge leaves the visit
+		# here and lands on the facility's invoice.
+		plan = order_billing.plan_order_billing_at(doc, "on_release", item_type="Imaging")
 		clinical_state.transition_status(doc, "Released", action="release_imaging_report")
 		doc.save(ignore_permissions=True)
 		_sync_order_status(doc, "Completed")
@@ -132,6 +147,78 @@ def release_imaging_report(imaging=None, name=None, result_visibility=None, data
 		if billing:
 			payload_out["billing"] = billing
 		return ok({"imaging": payload_out})
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist(methods=["POST"])
+def attach_reviewed_report(
+	source_type=None, name=None, doctype=None, filedata=None, content=None, file_name=None, data=None, **kwargs
+):
+	"""Store the reviewed report PDF the client generated, against its record.
+
+	The record is addressed as (doctype, name) and this endpoint does not care which
+	doctype it is - a radiology template, or one for a record type nobody has built yet,
+	reaches the same code with no change here. The record must exist and the caller must
+	be able to write to it; beyond that the only rules are that the bytes are a PDF and
+	that WhatsApp could carry them.
+
+	Status is deliberately not checked. Whether a report may be attached before its record
+	is Released is a clinical policy question, and clinical_state already owns those:
+	registering "attach_reviewed_report" in ACTION_ALLOWED_STATUSES is how it gets an
+	answer, without editing this function. Unregistered actions pass through today.
+	"""
+	try:
+		payload = _payload(data, kwargs)
+		doctype = cstr(doctype or source_type or payload.get("doctype") or payload.get("source_type")).strip()
+		name = cstr(name or payload.get("name")).strip()
+		if not doctype or not name:
+			return fail(_("doctype and name are required."), code="VALIDATION_ERROR")
+		if not frappe.db.exists("DocType", doctype):
+			return fail(_("Unsupported source type: {0}").format(doctype), code="VALIDATION_ERROR")
+
+		doc = _get_doc(doctype, name)
+		doc.check_permission("write")
+		clinical_state.assert_action_allowed(doc, "attach_reviewed_report")
+
+		file_doc = reports.save_reviewed_report(
+			doc.doctype,
+			doc.name,
+			content=filedata or content or payload.get("filedata") or payload.get("content"),
+			file_name=file_name or payload.get("file_name") or payload.get("filename"),
+		)
+		return ok(
+			{
+				"file": {
+					"name": file_doc.name,
+					"file_name": file_doc.file_name,
+					"file_url": file_doc.file_url,
+					"is_private": cint(file_doc.is_private),
+					"creation": file_doc.creation,
+				},
+				"source_doctype": doc.doctype,
+				"source_name": doc.name,
+			}
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
+def get_reviewed_report(source_type=None, name=None, doctype=None):
+	"""Which reviewed report a record would deliver right now, or None.
+
+	The same lookup the send guard and the button-tap delivery use, exposed so a screen
+	can show whether the promise a template makes can currently be kept.
+	"""
+	try:
+		doctype = cstr(doctype or source_type).strip()
+		name = cstr(name).strip()
+		if not doctype or not name:
+			return fail(_("doctype and name are required."), code="VALIDATION_ERROR")
+		doc = _get_doc(doctype, name)
+		doc.check_permission("read")
+		return ok({"report": reports.newest_reviewed_report(doc.doctype, doc.name)})
 	except Exception as exc:
 		return _error_response(exc)
 

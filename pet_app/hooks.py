@@ -26,6 +26,15 @@ app_license = "mit"
 # include js, css files in header of desk.html
 # app_include_css = "/assets/pet_app/css/pet_app.css"
 # app_include_js = "/assets/pet_app/js/pet_app.js"
+# Desk form scripts for pet_app's DB-only (custom = 1) doctypes. `doctype_js` below never
+# reaches them: FormMeta.add_code() returns early for a custom doctype, so a form script for
+# one has to ship as an app include (or a Client Script record). A plain /assets path is
+# served through the sites/assets/pet_app symlink - no bench build.
+app_include_js = [
+	# ?v= because nginx serves /assets with a one-year Cache-Control and this URL carries no
+	# content hash: bump it with every edit to the file, or browsers keep the old script.
+	"/assets/pet_app/js/template_category.js?v=p1_31",
+]
 # Whitelisted APIs
 # include js, css files in header of web template
 # web_include_css = "/assets/pet_app/css/pet_app.css"
@@ -46,6 +55,7 @@ app_license = "mit"
 doctype_js = {
     "Pet App WhatsApp Template": "public/js/whatsapp_template.js",
     "Pet App WhatsApp Action Rule": "public/js/whatsapp_action_rule.js",
+    "Sales Invoice": "public/js/sales_invoice.js",
 }
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
@@ -90,7 +100,13 @@ doctype_js = {
 
 # before_install = "pet_app.install.before_install"
 after_install = "pet_app.install.after_install"
-after_migrate = "pet_app.patches.enforce_iqd_defaults.ensure_iqd_defaults"
+# after_migrate intentionally disabled (2026-09-04, production go-live).
+# ensure_iqd_defaults() rewrote Currency/Country/Global Defaults/System Settings and
+# EVERY Company's currency+country, plus all Price List and Item Price currencies, on
+# every single migrate. Its work is already applied and permanent on this site, and a
+# clean migrate must not write data. Run it by hand if it is ever needed again:
+#   bench --site <site> execute pet_app.patches.enforce_iqd_defaults.ensure_iqd_defaults
+# after_migrate = "pet_app.patches.enforce_iqd_defaults.ensure_iqd_defaults"
 
 # Uninstallation
 # ------------
@@ -182,6 +198,13 @@ before_tests = "pet_app.tests.bootstrap.before_tests"
 # ------------------------------
 #
 # Specify custom mixins to extend the standard doctype controller.
+extend_doctype_class = {
+    "Sales Invoice": [
+        "pet_app.utils.driver_orders.DriverSalesInvoiceMixin",
+        "pet_app.utils.boarding_discount.BoardingSalesInvoiceMixin",
+    ],
+}
+
 # extend_doctype_class = {
 # 	"Task": "pet_app.custom.task.CustomTaskMixin"
 # }
@@ -260,6 +283,10 @@ auth_hooks = [
 
 doc_events = {
 	"*": {
+        "before_validate": "pet_app.stock_transfer.guards.stock_document",
+        "before_cancel": "pet_app.stock_transfer.guards.stock_document",
+        "before_update_after_submit": "pet_app.stock_transfer.guards.stock_document",
+        "on_trash": "pet_app.stock_transfer.guards.stock_document",
 		"after_insert": "pet_app.notifications.actions.after_insert",
 		"on_update": "pet_app.notifications.actions.on_update",
 		"on_submit": "pet_app.notifications.actions.on_submit",
@@ -269,6 +296,14 @@ doc_events = {
 	},
 	"Pet App WhatsApp Action Rule": {
 		"validate": "pet_app.notifications.actions.validate_action_rule",
+	},
+	# DB-only doctype with no controller: page_key uniqueness and normalisation.
+	"Pet App Template Category": {
+		"validate": "pet_app.notifications.template_categories.validate_template_category",
+	},
+	# One record per screen, listing the categories it shows (p1_31).
+	"Pet App Template Screen": {
+		"validate": "pet_app.notifications.template_categories.validate_template_screen",
 	},
     "User": {
         "before_validate": "pet_app.utils.role_profiles.before_validate_user_role_profiles",
@@ -367,6 +402,15 @@ doc_events = {
             "pet_app.utils.branch.stamp_boarding_branch",
         ],
     },
+    "Preventive Care Record": {
+        "before_insert": [
+            # A dose is not given to a deceased pet, and a record with no branch is
+            # visible to every clinic. Both guards are the ones PetCareService carries
+            # directly below, for the same two reasons.
+            "pet_app.utils.mortality.validate_document_not_deceased",
+            "pet_app.utils.branch.stamp_branch_on_insert",
+        ],
+    },
     "PetCareService": {
         "before_insert": [
             "pet_app.utils.mortality.validate_document_not_deceased",
@@ -380,6 +424,9 @@ doc_events = {
         ],
     },
     "Sales Order": {
+        "validate": "pet_app.utils.driver_orders.guard_document",
+        "before_cancel": "pet_app.utils.driver_orders.guard_document",
+        "on_trash": "pet_app.utils.driver_orders.guard_document",
         # before_validate, not validate: the row lock must be held before ERPNext's own
         # validate_coupon_code() reads `used`. Bound to the doctype so the desk and every
         # other creation path are covered, not just the mobile endpoint.
@@ -388,6 +435,10 @@ doc_events = {
         "on_update_after_submit": "pet_app.api.order.on_sales_order_update",
     },
     "Sales Invoice": {
+        "validate": "pet_app.utils.driver_orders.guard_document",
+        "before_cancel": "pet_app.utils.driver_orders.guard_document",
+        "before_update_after_submit": "pet_app.utils.driver_orders.guard_document",
+        "on_trash": "pet_app.utils.driver_orders.guard_document",
         "before_insert": [
             "pet_app.utils.sales_invoice_guard.before_insert",
             # Scopes the invoice LIST to the raising clinic. Does not touch the
@@ -402,9 +453,32 @@ doc_events = {
         # before_validate, not validate: SalesInvoice.validate() moves posting_date
         # (validate_auto_set_posting_time) and then throws on the stale due_date
         # (validate_due_date), both before any doc_event validate hook can run.
-        "before_validate": "pet_app.utils.sales_invoice_guard.fix_due_date",
+        "before_validate": [
+            "pet_app.utils.sales_invoice_guard.fix_due_date",
+            "pet_app.utils.invoice_stock.prepare_invoice_stock",
+            # The warehouse comes from the branch, not from the item - see
+            # pet_app/utils/branch_warehouse.py. Stamped on every save so the draft
+            # shows the shelf it will actually relieve, and re-asserted on submit so a
+            # hand-edit between the last save and the submit cannot redirect the stock.
+            "pet_app.utils.branch_warehouse.stamp_branch_and_warehouse",
+        ],
+        "before_submit": [
+            "pet_app.utils.invoice_stock.prepare_invoice_stock",
+            "pet_app.utils.branch_warehouse.stamp_branch_and_warehouse",
+        ],
+    },
+    "Stock Reservation Entry": {
+        "before_submit": "pet_app.stock_transfer.guards.native_reservation_guard",
+        "before_update_after_submit": "pet_app.stock_transfer.guards.native_reservation_guard",
+    },
+    "Stock Ledger Entry": {
+        "before_submit": "pet_app.stock_transfer.guards.ledger_guard",
     },
     "Stock Entry": {
+        "validate": "pet_app.utils.driver_orders.guard_document",
+        "before_cancel": "pet_app.utils.driver_orders.guard_document",
+        "before_update_after_submit": "pet_app.utils.driver_orders.guard_document",
+        "on_trash": "pet_app.utils.driver_orders.guard_document",
         "on_submit": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_cancel": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
@@ -421,10 +495,24 @@ doc_events = {
         "on_update": "pet_app.api.mobile.home_builder.clear_home_cache",
         "on_trash": "pet_app.api.mobile.home_builder.clear_home_cache",
     },
-    # "Item" doc_events entry removed entirely: its ONLY handler was the reverse
-    # Item -> Product projection. Item saves still fire the wildcard "*" on_update
-    # (notifications.actions.on_update) declared at the top of this dict, plus every
-    # ERPNext/Frappe core Item hook - none of which are touched here.
+    # The reverse Item -> Product projection that used to be the ONLY handler here is
+    # still gone; this entry came back for an unrelated reason. Item saves also fire the
+    # wildcard "*" on_update (notifications.actions.on_update) declared at the top of
+    # this dict, plus every ERPNext/Frappe core Item hook - none of which are touched.
+    #
+    # before_validate is the only seam available for normalising custom_barcode: Item is
+    # an ERPNext doctype, so unlike Product there is no controller of ours to put a
+    # validate() on, and the app has ten separate Item writers that must not each be
+    # trusted to trim for themselves.
+    "Item": {
+        "before_validate": "pet_app.utils.item_barcode.before_validate_item_barcode",
+        # Refuses deleting an Item clinical rows still name. on_trash is the one hook
+        # delete_doc runs even with force=True; see utils/delete_guards.py.
+        "on_trash": "pet_app.utils.delete_guards.refuse_referenced_item_delete",
+    },
+    "Medication": {
+        "on_trash": "pet_app.utils.delete_guards.refuse_referenced_medication_delete",
+    },
     #
     # Item Price -> Product projection removed for the same reason: the overlay reads
     # prices from Item Price at request time instead of mirroring them onto Product.
@@ -471,12 +559,26 @@ doc_events = {
         "after_rename": "pet_app.utils.auto_update_links.after_rename",
     },
     "Driver": {
+        "validate": "pet_app.utils.driver_orders.guard_driver",
+        "on_trash": "pet_app.utils.driver_orders.guard_driver",
         "before_save": "pet_app.api.driver.before_driver_save",
         "after_insert": "pet_app.api.driver.after_driver_insert",
         "on_update": "pet_app.api.driver.on_driver_update",
     },
     "Customer": {
         "validate": "pet_app.utils.guardian_customer.validate_customer_identity_projection",
+    },
+    "Payment Entry": {
+        "validate": "pet_app.utils.driver_orders.guard_document",
+        "before_cancel": "pet_app.utils.driver_orders.guard_document",
+        "before_update_after_submit": "pet_app.utils.driver_orders.guard_document",
+        "on_trash": "pet_app.utils.driver_orders.guard_document",
+    },
+    "Journal Entry": {"validate": "pet_app.utils.driver_orders.guard_document"},
+    "Stock Reconciliation": {"validate": "pet_app.utils.driver_orders.guard_document"},
+    "Comment": {
+        "validate": "pet_app.utils.driver_orders.guard_audit",
+        "on_trash": "pet_app.utils.driver_orders.guard_audit",
     },
     # Pricing Rule owns discount configuration; the coupon no longer projects itself
     # onto one, so after_insert/on_update are gone. Rules are created and updated by the
@@ -580,6 +682,9 @@ fixtures = [
             "File-custom_is_default",
             "File-custom_sha1_hash",
             "Item Group-arabic_name",
+            "Item-arabic_name",
+            "Item-custom_barcode",
+            "Item-custom_generate_barcode",
             "Item-custom_store_published",
             "POS Profile-branch",
             "POS Profile-cashier",
@@ -698,3 +803,7 @@ fixtures = [
         "dt": "Custom DocPerm",
     },
 ]
+
+# Stock transfer reads use native DocPerm plus either endpoint warehouse scope.
+permission_query_conditions["Stock Transfer Order"] = "pet_app.stock_transfer.access.query_conditions"
+has_permission = {"Stock Transfer Order": "pet_app.stock_transfer.access.document_permission"}

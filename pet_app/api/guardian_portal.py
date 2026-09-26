@@ -74,7 +74,7 @@ def get_pet_documents(pet=None, pet_id=None):
 		pet_name = cstr(pet or pet_id).strip()
 		_assert_pet_access(guardian, pet_name)
 		documents = []
-		for doctype in ("Pet Vaccination Record", "Pet Deworming Record", "Pet Death Record"):
+		for doctype in (PREVENTIVE_DOCTYPE, "Pet Death Record"):
 			if not frappe.db.exists("DocType", doctype):
 				continue
 			rows = frappe.get_all(
@@ -302,20 +302,27 @@ def _procedure_events(pet: str, limit: int) -> list[dict]:
 	]
 
 
+PREVENTIVE_DOCTYPE = "Preventive Care Record"
+
+
 def _vaccination_events(pet: str, limit: int) -> list[dict]:
-	return _preventive_events("Pet Vaccination Record", pet, "vaccination", "vaccine_name", limit)
+	return _preventive_events(PREVENTIVE_DOCTYPE, pet, "vaccination", "medication_name", limit, kind="Vaccination")
 
 
 def _deworming_events(pet: str, limit: int) -> list[dict]:
-	return _preventive_events("Pet Deworming Record", pet, "deworming", "medication_name", limit)
+	return _preventive_events(PREVENTIVE_DOCTYPE, pet, "deworming", "medication_name", limit, kind="Deworming")
 
 
-def _preventive_events(doctype, pet, event_type, summary_field, limit):
+def _preventive_events(doctype, pet, event_type, summary_field, limit, *, kind=None):
 	if not frappe.db.exists("DocType", doctype):
 		return []
+	filters = {"pet": pet}
+	if kind:
+		# A guardian's history shows doses that were GIVEN. A cancelled order is not one.
+		filters.update({"kind": kind, "status": ["!=", "Cancelled"]})
 	rows = frappe.get_all(
 		doctype,
-		filters={"pet": pet},
+		filters=filters,
 		fields=["name", "visit", summary_field, "administered_on", "next_due_date", "reminder_status"],
 		order_by="administered_on desc, modified desc",
 		limit_page_length=limit,

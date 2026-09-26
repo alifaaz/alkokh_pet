@@ -62,6 +62,21 @@ TRANSITIONS = {
 		"Closed": set(),
 		"Cancelled": set(),
 	},
+	# Preventive care has no result to enter and nothing to release, so its ladder is
+	# deliberately shorter than Lab's rather than a copy of it: a dose is ordered, optionally
+	# started, and then either given or not. `Administered` is the terminal success state and
+	# the billing moment - the equivalent of Lab's `Released`, not of its `Result Entered`.
+	#
+	# No `Pending` entry state, unlike Lab and Imaging. Nothing writes one: a record is
+	# created at `Ordered` by its schema default, whether it came from a visit order or
+	# straight off a pet's record. A state no path can produce is a state nobody can reason
+	# about.
+	"Preventive Care Record": {
+		"Ordered": {"In Progress", "Administered", "Cancelled"},
+		"In Progress": {"Administered", "Cancelled"},
+		"Administered": set(),
+		"Cancelled": set(),
+	},
 }
 
 
@@ -115,6 +130,22 @@ ACTION_ALLOWED_STATUSES = {
 		"close_procedure": {"Pending", "In Progress", "Completed"},
 		"cancel_procedure": {"Pending", "In Progress"},
 	},
+	# Named distinctly from the PetCareService actions above, and that is not cosmetic.
+	# `perform_action` dispatches purely on the action name, resolving the record from
+	# whatever the caller passed - so reusing `start_service` / `finish_service` here would
+	# let one client drive a preventive record down the care-service path and back again,
+	# which is the exact conflation this doctype exists to end. A distinct verb makes the
+	# routing total: an action either belongs to this doctype or it does not.
+	#
+	# `Administered` appears in no set, including its own action's - the same rule
+	# `finish_service` learned directly above, for the same reason. `administer_preventive`
+	# raises a charge and relieves stock, so admitting the terminal status would let a second
+	# call bill and dispense the same dose twice.
+	"Preventive Care Record": {
+		"start_preventive": {"Ordered", "In Progress"},
+		"administer_preventive": {"Ordered", "In Progress"},
+		"cancel_preventive": {"Ordered", "In Progress"},
+	},
 }
 
 TERMINAL_STATUSES = {
@@ -125,6 +156,7 @@ TERMINAL_STATUSES = {
 	"Imaging": {"Released", "Completed", "Cancelled"},
 	"PetCareService": {"completed", "cancelled", "Completed", "Cancelled"},
 	"Pet Procedure": {"Closed", "Cancelled"},
+	"Preventive Care Record": {"Administered", "Cancelled"},
 }
 
 VISIT_CLINICAL_ACTIONS = {

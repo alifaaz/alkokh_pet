@@ -18,6 +18,7 @@ from frappe import _
 from frappe.utils import cint, date_diff, flt, getdate, nowdate
 
 from pet_app.api.permissions import get_user_roles, user_has_full_access
+from pet_app.utils.rating_entities import INTERNAL_RATING, staff_record_filters
 from pet_app.api.response import standardize_response
 from pet_app.api.workspace import MANAGEMENT_ROLES
 from pet_app.utils.practitioner import get_practitioner_for_user
@@ -140,7 +141,11 @@ def _records_created(user, from_date, to_date):
     for doctype, label in RECORD_DOCTYPES:
         if not _table_exists(doctype):
             continue
-        filters = [["owner", "=", user]] + _date_filters("creation", from_date, to_date)
+        filters = (
+            [["owner", "=", user]]
+            + _date_filters("creation", from_date, to_date)
+            + staff_record_filters(doctype)
+        )
         rows = frappe.get_all(doctype, filters=filters, pluck="creation", ignore_permissions=True)
         if not rows:
             continue
@@ -179,9 +184,20 @@ def _completed_service_dates(practitioner, from_date, to_date):
 
 
 def _provider_section(practitioner, services_completed, from_date, to_date):
+    """Ratings this practitioner received. Internal only.
+
+    Per Mostafa's ruling: a customer's rating never counts toward a staff score. The
+    stars, the average and the distribution here are all a staff-review measure, so a
+    guardian's WhatsApp reply must not move any of them. Customer ratings of this
+    practitioner's work are reported separately, through get_ratings.
+    """
     rows = frappe.get_all(
         "Rating",
-        filters=[["performer_id", "=", practitioner]] + _date_filters("rated_at", from_date, to_date),
+        filters=[
+            ["performer_id", "=", practitioner],
+            ["rating_type", "=", INTERNAL_RATING],
+        ]
+        + _date_filters("rated_at", from_date, to_date),
         fields=["overall_rating"],
         ignore_permissions=True,
     )
@@ -211,10 +227,18 @@ def _rater_section(user, from_date, to_date):
 
     ``None`` when the user has given no ratings in range -> identity.is_rater
     becomes false.
+
+    Internal only. This measures staff review activity - how much reviewing this
+    person did - so it counts only the reviews they wrote as staff. A guardian rating
+    is not staff activity, and a Customer row's ``rated_by`` is not its author anyway.
     """
     rows = frappe.get_all(
         "Rating",
-        filters=[["rated_by", "=", user]] + _date_filters("rated_at", from_date, to_date),
+        filters=[
+            ["rated_by", "=", user],
+            ["rating_type", "=", INTERNAL_RATING],
+        ]
+        + _date_filters("rated_at", from_date, to_date),
         fields=["overall_rating", "reference_doctype", "rated_at"],
         ignore_permissions=True,
     )
@@ -255,7 +279,11 @@ def _activity_section(user, created_dates, from_date, to_date):
     for doctype, _label in RECORD_DOCTYPES:
         if not _table_exists(doctype):
             continue
-        filters = [["modified_by", "=", user]] + _date_filters("modified", from_date, to_date)
+        filters = (
+            [["modified_by", "=", user]]
+            + _date_filters("modified", from_date, to_date)
+            + staff_record_filters(doctype)
+        )
         for ts in frappe.get_all(doctype, filters=filters, pluck="modified", ignore_permissions=True):
             active.add(getdate(ts))
 

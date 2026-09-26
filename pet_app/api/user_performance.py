@@ -18,7 +18,12 @@ from frappe.utils import cint, cstr, date_diff, get_datetime, getdate, now_datet
 from pet_app.api.permissions import get_user_role_profiles, get_user_roles
 from pet_app.api.workspace import SERVICE_PROVIDER_ROLES
 from pet_app.utils.practitioner import get_practitioner_for_user
-from pet_app.utils.rating_entities import get_title, resolve_entity_name
+from pet_app.utils.rating_entities import (
+    INTERNAL_RATING,
+    get_title,
+    resolve_entity_name,
+    staff_record_filters,
+)
 
 
 USER_ADMIN_ROLES = {"Administrator", "Users", "System Manager", "Pet App Admin"}
@@ -764,8 +769,14 @@ def _get_ratings(user, practitioner, from_date, to_date):
     if practitioner:
         performer_ids.insert(0, practitioner["id"])
 
-    received = _rating_rows("performer_id", performer_ids, from_date, to_date)
-    given = _rating_rows("rated_by", [user], from_date, to_date)
+    # Two questions at one helper, so the helper does not get to answer either of them.
+    # "received" is what this practitioner was scored; "given" is how much reviewing
+    # this user did. Both are staff measures and both resolve to Internal today, but
+    # they resolve there for different reasons, so each call states its own type rather
+    # than sharing a default. If customer-facing received ratings are ever surfaced
+    # here, it is a change to one argument on one line, not a re-reading of the helper.
+    received = _rating_rows("performer_id", performer_ids, from_date, to_date, INTERNAL_RATING)
+    given = _rating_rows("rated_by", [user], from_date, to_date, INTERNAL_RATING)
 
     distribution = {str(i): 0 for i in range(1, 6)}
     for row in received:
@@ -798,11 +809,24 @@ def _get_ratings(user, practitioner, from_date, to_date):
     }
 
 
-def _rating_rows(field, values, from_date, to_date):
+def _rating_rows(field, values, from_date, to_date, rating_type):
+    """Rating rows matching ``field``, restricted to one declared ``rating_type``.
+
+    ``rating_type`` is required, with no default. This helper serves two callers that
+    ask opposite questions, and a default here would silently answer both the same way
+    forever - which is exactly how the mixing this change exists to fix got in.
+
+    Fails closed when the column is not there yet: no filter is possible, so no rows
+    are returned rather than every row untyped. This module is written to survive
+    missing fields, but surviving must not mean reverting to the blended behaviour.
+    """
     if not values or not _doctype_exists("Rating") or not _has_field("Rating", field):
+        return []
+    if not _has_field("Rating", "rating_type"):
         return []
     rows_by_name = OrderedDict()
     filters = [[field, "in", values]] if len(values) > 1 else [[field, "=", values[0]]]
+    filters.append(["rating_type", "=", rating_type])
     filters += _datetime_filters("Rating", "rated_at", from_date, to_date)
     fields = _existing_fields(
         "Rating",
@@ -879,7 +903,11 @@ def _records_created(user, from_date, to_date):
     for doctype, label in RECORD_DOCTYPES:
         if not _doctype_exists(doctype):
             continue
-        filters = [["owner", "=", user]] + _datetime_filters(doctype, "creation", from_date, to_date)
+        filters = (
+            [["owner", "=", user]]
+            + _datetime_filters(doctype, "creation", from_date, to_date)
+            + staff_record_filters(doctype)
+        )
         try:
             dates = frappe.get_all(doctype, filters=filters, pluck="creation", ignore_permissions=True)
         except Exception:
@@ -897,7 +925,11 @@ def _records_modified(user, from_date, to_date):
     for doctype, _label in RECORD_DOCTYPES:
         if not _doctype_exists(doctype):
             continue
-        filters = [["modified_by", "=", user]] + _datetime_filters(doctype, "modified", from_date, to_date)
+        filters = (
+            [["modified_by", "=", user]]
+            + _datetime_filters(doctype, "modified", from_date, to_date)
+            + staff_record_filters(doctype)
+        )
         try:
             modified_dates.extend(
                 frappe.get_all(doctype, filters=filters, pluck="modified", ignore_permissions=True)

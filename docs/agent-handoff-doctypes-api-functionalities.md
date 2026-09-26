@@ -110,7 +110,7 @@ File upload endpoints are multipart form-data and read `frappe.request.files`.
 
 Custom Appointment fields loaded from `pet_app/pet_app/custom/appointment.json`:
 
-- `custom_appointment_type`: `visit`, `follow_up`, `showering`, `barbering`
+- `custom_appointment_type`: `visit`, `follow_up`, `showering`, `barbering`, `surgery`, `examination`, `lab`, `radiology`, `advance`
 - `custom_customer`, `custom_guardian`, `custom_pet`
 - `custom_follow_up_of_visit_id`
 - `custom_linked_visit_id`
@@ -148,6 +148,7 @@ Custom Appointment fields loaded from `pet_app/pet_app/custom/appointment.json`:
 | `pet_app.api.pet.delete_multiple_files(file_names)` | Delete attached files after checking write permission; reassigns default image if needed. |
 | `pet_app.api.pet.set_default_file(file_id, doctype, docname)` | Marks file as default and updates the DocType's first `Attach Image` field. |
 | `pet_app.api.pet.get_pet_images(doctype, docname)` | List image files for a doc's first `Attach Image` field. |
+| `pet_app.api.mobile.pets.list_breeds(animal_type=None, animal_species=None, search=None, limit=100)` | Mobile-shaped breed picker list from `Pet Breed`, returning `items` with `id`, `name`, `arabic_name`, `species`, `type`. |
 | `pet_app.api.pet.list_pets(page=1, page_size=10, search=None)` | Paginated pet list with images. Guardian users only see linked pets. |
 | `pet_app.api.pet.get_pet(pet_id)` | Single pet detail with images. Guardian users must be linked via `PetGuardian`. |
 | `pet_app.api.pet.upload_single_file()` | Multipart single-image replace with duplicate detection; syncs Guardian/Practitioner image to `User.user_image` where linked. |

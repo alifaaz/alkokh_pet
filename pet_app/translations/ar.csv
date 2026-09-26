@@ -1,2 +1,7 @@
 "Missing required pet fields: {0}.","الحقول المطلوبة للحيوان الأليف مفقودة: {0}."
 "Row {0}: missing required Pet fields: {1}.","الصف {0}: حقول الحيوان الأليف المطلوبة مفقودة: {1}."
+"Item {0} already has the name ""{1}"", which was set outside {2}. The name was left unchanged; the link was saved.","الصنف {0} يحمل بالفعل الاسم ""{1}"" الذي تم تعيينه خارج {2}. لم يتم تغيير الاسم؛ تم حفظ الربط."
+"Linked Item name kept","تم الإبقاء على اسم الصنف المرتبط"
+"Stock Deduction Qty","كمية الخصم من المخزون"
+"Next Due Date","تاريخ الاستحقاق التالي"
+"Next Due Date must be after the date this service is given. {0} is on or before {1}. Set a later date, or leave it empty if there is no next dose.","يجب أن يكون تاريخ الاستحقاق التالي بعد تاريخ تقديم هذه الخدمة. {0} يقع في {1} أو قبله. حدد تاريخاً لاحقاً، أو اترك الحقل فارغاً إذا لم تكن هناك جرعة تالية."

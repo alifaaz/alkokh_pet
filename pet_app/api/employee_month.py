@@ -11,6 +11,7 @@ from frappe.utils import cint, cstr, flt, getdate
 from pet_app.api.dashboard import _require_analytics_access
 from pet_app.api.permissions import get_user_roles
 from pet_app.api.scoreboard import RECORD_DOCTYPES as SCOREBOARD_RECORD_DOCTYPES
+from pet_app.utils.rating_entities import INTERNAL_RATING, staff_record_filters
 
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -354,10 +355,22 @@ def _clinical_completed_counts(candidate_ids, df, dt):
 
 
 def _rating_stats(practitioner_ids, df, dt):
+	"""Average and count of ratings each practitioner received. Internal only.
+
+	This feeds the Employee of the Month leaderboard, which is the highest-stakes
+	consumer of this table, and per Mostafa's ruling a customer's rating never counts
+	toward a staff score. Every input it has ever had was a supervisor scoring a
+	colleague; from now on that is enforced rather than merely true.
+
+	``rating_type`` joins the required-field list, so a site without the column yet
+	returns nothing instead of quietly reverting to the blended average.
+	"""
 	if not practitioner_ids or not _doctype_exists("Rating"):
 		return {}
 	required = ("performer_id", "overall_rating", "rated_at")
 	if any(not _has_field("Rating", field) for field in required):
+		return {}
+	if not _has_field("Rating", "rating_type"):
 		return {}
 
 	try:
@@ -366,6 +379,7 @@ def _rating_stats(practitioner_ids, df, dt):
 			filters=_base_filters("Rating")
 			+ [
 				["performer_id", "in", list(practitioner_ids)],
+				["rating_type", "=", INTERNAL_RATING],
 				["rated_at", ">=", f"{df} 00:00:00"],
 				["rated_at", "<=", f"{dt} 23:59:59"],
 			],
@@ -545,7 +559,7 @@ def _staff_activity_counts(users, df, dt):
 
 def _staff_doctype_activity_count(doctype, user, df, dt):
 	seen = set()
-	filters = [["owner", "=", user]] + _datetime_filters("creation", df, dt)
+	filters = [["owner", "=", user]] + _datetime_filters("creation", df, dt) + staff_record_filters(doctype)
 	try:
 		created = frappe.get_all(doctype, filters=filters, pluck="name", ignore_permissions=True)
 	except Exception:
@@ -560,6 +574,7 @@ def _staff_doctype_activity_count(doctype, user, df, dt):
 					["docstatus", "=", 1],
 					["modified_by", "=", user],
 					* _datetime_filters("modified", df, dt),
+					* staff_record_filters(doctype),
 				],
 				pluck="name",
 				ignore_permissions=True,

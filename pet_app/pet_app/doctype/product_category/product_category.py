@@ -51,19 +51,29 @@ class ProductCategory(NestedSet):
 			frappe.throw(_("Category Name is required."))
 		self.name = self.category_name
 
-	# ── Confined one-way sync: Product Category → Item Group ────────────────────
-	# This doctype writes Item Groups again, but under three rules the severed mirror
-	# broke:
+	# ── Item Group is the source of truth; this doctype is its projection ────────
+	# The authority reversed. Item Group is the ONE tree anyone maintains - it carries
+	# the stock, the accounting and the clinical taxonomy - and Product Category exists
+	# so the mobile SDK's JSON contract does not have to change. Rows are regenerated
+	# from Item Group by pet_app.utils.store_category_mirror.
 	#
-	#   1. ONE DIRECTION. Nothing creates a Product Category from an Item Group. The
-	#      reverse writer was reachable from an ordinary Product.save and inserted ROOT
-	#      categories outside the store tree.
-	#   2. THE PARENT IS A CONSTANT. Every generated group is a direct child of
-	#      STORE_ROOT_ITEM_GROUP, asserted before AND after insert. The old mirror
-	#      DERIVED the parent and defaulted to "Pet Supplies", which is how storefront
-	#      groups became siblings of Pharmacy inside the clinical catalogue.
-	#   3. IN SCOPE ONLY. Categories outside the store subtree are never synced, so no
-	#      code path here can reach the clinical tree at all.
+	# A category can therefore no longer CREATE an Item Group. _ensure_store_item_group
+	# resolves and refuses; it does not mint. What remains here is the narrow legacy
+	# path for hand-made rows: keeping a category's item_group link honest, and carrying
+	# a rename across. Rows the mirror owns (auto_generated) opt out of all of it.
+	#
+	# The bound that made the severed mirror safe to bring back is unchanged in kind,
+	# only in shape:
+	#
+	#   1. IN SCOPE ONLY, BY INTERVAL. Membership is Store's lft/rgt interval, not a
+	#      parent name and not a derived parent. The old mirror DERIVED the parent and
+	#      defaulted to "Pet Supplies", which is how Antibiotics and Anesthetics became
+	#      storefront categories. Pharmacy sits outside the Store interval, so no
+	#      clinical group passes at any depth, whatever anyone names it.
+	#   2. DEPTH IS PERMITTED, THE BOUNDARY IS NOT. Store > Cat > Cat Dry Food is a
+	#      legitimate shape; Store > Antibiotics is not, and never becomes one.
+	#   3. GENERATED ROWS ARE MARKED. auto_generated separates what the mirror owns from
+	#      what a person made, so neither silently overwrites the other.
 	#
 	# Deleting a category still never deletes, moves or empties an Item Group.
 	# ────────────────────────────────────────────────────────────────────────────
@@ -122,6 +132,8 @@ class ProductCategory(NestedSet):
 		return False
 
 	def _syncable(self) -> bool:
+		if cint(self.get("auto_generated")):
+			return False  # the mirror wrote this row FROM an Item Group; do not write back
 		if self.name == STORE_ROOT_CATEGORY:
 			return False  # the root group IS the confining parent; never regenerated
 		if cint(self.is_group):
@@ -238,12 +250,41 @@ def _require_store_root_item_group() -> str:
 	return STORE_ROOT_ITEM_GROUP
 
 
-def _assert_group_is_adoptable(item_group, must_exist=False):
-	"""An existing group may be adopted ONLY if it already sits under the store root.
+def is_in_store_subtree(item_group) -> bool:
+	"""True when the group sits strictly inside the store root's nested-set interval.
 
-	This is the refusal that keeps the two trees from colliding. A category named
-	"Antibiotics" must not quietly adopt - or move - the clinical Item Group of the same
-	name, and a category rename must not drag a clinical group into the store.
+	An lft/rgt interval test rather than the parent-chain walk this module used to do,
+	because the storefront taxonomy is no longer flat: it is Store > Cat > Cat Dry Food,
+	two levels deep, so "direct child of Store" stopped describing a legitimate group.
+	The interval is one query at any depth, and it is the SAME bound the mirror and the
+	mobile catalogue use, so all three agree on what "in the shop" means.
+
+	Reads committed lft/rgt, so it must not be called against a doc mid-insert whose
+	nested set has not been rebuilt (they would both be 0 and every new group would read
+	as out of scope). The mirror's hook path walks parents instead, for that reason.
+	"""
+	root = _require_store_root_item_group()
+	if item_group == root:
+		return False  # the root confines; it is not itself confined
+	bounds = frappe.db.get_value("Item Group", root, ["lft", "rgt"], as_dict=True)
+	row = frappe.db.get_value("Item Group", item_group, ["lft", "rgt"], as_dict=True)
+	if not bounds or not row or not row.lft or not row.rgt:
+		return False
+	return bounds.lft < row.lft and row.rgt < bounds.rgt
+
+
+def _assert_group_is_adoptable(item_group, must_exist=False):
+	"""An existing group may be adopted ONLY if it already sits inside the store subtree.
+
+	This is the refusal that keeps the two trees from colliding, and it survives the move
+	to a nested storefront taxonomy unchanged in intent. A category named "Antibiotics"
+	must not quietly adopt - or move - the clinical Item Group of the same name, and a
+	category rename must not drag a clinical group into the store.
+
+	Widening this from "direct child of Store" to "anywhere under Store" loosens the
+	SHAPE it permits, not the BOUNDARY it enforces: Pharmacy sits outside the Store
+	interval, so no clinical group passes at any depth. That boundary is the property
+	being bought; depth never was.
 	"""
 	root = _require_store_root_item_group()
 	if not frappe.db.exists("Item Group", item_group):
@@ -256,54 +297,51 @@ def _assert_group_is_adoptable(item_group, must_exist=False):
 				frappe.bold(root)
 			)
 		)
-	parent = frappe.db.get_value("Item Group", item_group, "parent_item_group")
-	if parent != root:
+	if not is_in_store_subtree(item_group):
+		parent = frappe.db.get_value("Item Group", item_group, "parent_item_group")
 		frappe.throw(
-			_("Item Group {0} already exists under {1}, outside the store root {2}. Storefront categories may only own Item Groups directly beneath {2} - rename the category or move that group first.").format(
+			_("Item Group {0} sits under {1}, outside the store subtree {2}. Storefront categories may only own Item Groups beneath {2} - move that group into the store tree first.").format(
 				frappe.bold(item_group), frappe.bold(parent or _("no parent")), frappe.bold(root)
 			)
 		)
 
 
 def _assert_confined(item_group):
-	"""Post-write invariant: the group is a direct child of the store root, nowhere else."""
+	"""Post-write invariant: the group is somewhere inside the store subtree, nowhere else."""
 	root = _require_store_root_item_group()
-	parent = frappe.db.get_value("Item Group", item_group, "parent_item_group")
-	if parent != root:
+	if not is_in_store_subtree(item_group):
+		parent = frappe.db.get_value("Item Group", item_group, "parent_item_group")
 		frappe.throw(
-			_("Refusing to leave Item Group {0} under {1}. Generated storefront groups must sit directly under {2}.").format(
+			_("Refusing to leave Item Group {0} under {1}. Storefront groups must sit inside {2}.").format(
 				frappe.bold(item_group), frappe.bold(parent or _("no parent")), frappe.bold(root)
 			)
 		)
 
 
 def _ensure_store_item_group(category_name) -> str:
-	"""Adopt the same-named group under the store root, or create one there.
+	"""Resolve the same-named Item Group inside the store subtree. Never creates one.
 
-	The parent is the CONSTANT store root - never derived from the category's own
-	position, never from its parent category's group. A category nested three levels deep
-	in the storefront still gets a direct child of the store root, because "can never
-	appear elsewhere in the tree" is the property being bought and depth is not.
+	The direction of authority reversed. Item Group is now the single tree anyone
+	maintains, and Product Category is regenerated from it by
+	pet_app.utils.store_category_mirror - so a category minting an Item Group would be
+	the tail writing the dog. Every group this function can return was authored on the
+	Item Group side; a category that names one which does not exist is a mistake to
+	report, not a gap to fill silently.
+
+	Kept under its old name because it is still "give me the group this category owns",
+	and the callers' intent has not changed - only who is allowed to create.
 	"""
-	root = _require_store_root_item_group()
+	_require_store_root_item_group()
 
-	if frappe.db.exists("Item Group", category_name):
-		_assert_group_is_adoptable(category_name)
-		return category_name
+	if not frappe.db.exists("Item Group", category_name):
+		frappe.throw(
+			_("Item Group {0} does not exist. Item Group is the source of truth for the storefront taxonomy - create the group under {1} first, and its category is generated from it.").format(
+				frappe.bold(category_name), frappe.bold(STORE_ROOT_ITEM_GROUP)
+			)
+		)
 
-	item_group = frappe.new_doc("Item Group")
-	item_group.item_group_name = category_name
-	item_group.parent_item_group = root
-	item_group.is_group = 0
-
-	if item_group.parent_item_group != STORE_ROOT_ITEM_GROUP:
-		frappe.throw(_("Refusing to create an Item Group outside {0}.").format(frappe.bold(STORE_ROOT_ITEM_GROUP)))
-
-	item_group.flags.from_product_category = True
-	item_group.insert(ignore_permissions=True)
-
-	_assert_confined(item_group.name)
-	return item_group.name
+	_assert_group_is_adoptable(category_name)
+	return category_name
 
 
 def resolve_product_category(category) -> str | None:

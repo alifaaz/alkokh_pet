@@ -4,6 +4,7 @@ import re
 import math
 from frappe.utils import cint, cstr, sbool
 from pet_app.api.response import standardize_response
+from pet_app.utils.image_orientation import normalize_image_orientation
 from pet_app.utils.mortality import apply_pet_visibility_filters
 
 # Per-pet dashboard and doctor suggestions. Implemented in pet_dashboard.py and
@@ -162,6 +163,9 @@ def upload_multiple_files():
             if len(content) > MAX_SIZE:
                 errors.append({"file": safe_name, "error": "File too large"})
                 continue
+
+            # Rotate before hashing, so the hash describes the bytes we store.
+            content = normalize_image_orientation(content)
 
             sha1 = hashlib.sha1(content).hexdigest()
 
@@ -791,6 +795,9 @@ def upload_single_file():
 
         if len(content) > MAX_SIZE:
             frappe.throw("File too large")
+
+        # Rotate before hashing, so the hash describes the bytes we store.
+        content = normalize_image_orientation(content)
 
         sha1 = hashlib.sha1(content).hexdigest()
 

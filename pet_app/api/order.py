@@ -5,11 +5,6 @@ from frappe import _
 from frappe.rate_limiter import rate_limit
 from frappe.utils import cint, cstr, flt, nowdate, rounded
 from pet_app.api.link_aliases import with_link_aliases
-from pet_app.api.driver import (
-    _create_driver_debit_entry,
-    _collect_driver_cash,
-    _reverse_driver_entry,
-)
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.guardian_customer import (
     get_guardian_by_user,
@@ -909,13 +904,16 @@ def _session_driver():
 @frappe.whitelist()
 @standardize_response
 @rate_limit(limit=ORDER_RATE_LIMIT, seconds=ORDER_RATE_WINDOW)
-def assign_driver_to_order(order, driver, note=None):
+def assign_driver_to_order(order, driver, note=None, pos_profile=None, idempotency_key=None):
     """Attach a driver to a submitted Sales Order.
 
     One driver per order, never reassigned: this is the linkage model, and Delivery
     Assignment is not used. Gated exactly like transition_order - assignment is a
     dispatch decision, not something a driver does for themselves.
     """
+    if frappe.db.has_column("Sales Order", "custom_driver_flow") and frappe.db.get_value("Sales Order", order, "custom_driver_flow"):
+        from pet_app.api.driver_orders import assign_driver_to_order as assign
+        return assign(order=order, driver=driver, pos_profile=pos_profile, idempotency_key=idempotency_key)
     order = cstr(order).strip()
     driver = cstr(driver).strip()
 
@@ -976,7 +974,7 @@ def assign_driver_to_order(order, driver, note=None):
 @frappe.whitelist()
 @standardize_response
 @rate_limit(limit=ORDER_RATE_LIMIT, seconds=ORDER_RATE_WINDOW)
-def transition_order(order, target_status, note=None):
+def transition_order(order, target_status, note=None, pos_profile=None, idempotency_key=None):
     """
     POST /api/method/pet_app.api.order.transition_order
     {"order": "SAL-ORD-2026-00003", "target_status": "Preparing", "note": "picked"}
@@ -988,6 +986,24 @@ def transition_order(order, target_status, note=None):
     order = cstr(order).strip()
     target_status = cstr(target_status).strip()
 
+    if frappe.db.has_column("Sales Order", "custom_driver_flow") and frappe.db.get_value("Sales Order", order, "custom_driver_flow"):
+        from pet_app.api.driver_orders import prepare_order, close_order_remainder
+        from pet_app.utils.driver_orders import fail
+        action = {"Preparing": prepare_order, "Cancelled": close_order_remainder}.get(target_status)
+        if not action:
+            fail("Use dispatch_order, record_delivery_result, return_unsold_stock or receive_driver_cash with explicit quantities and payment details.", "DRIVER_ACTION_REQUIRED")
+        # transition_order predates the managed flow and every caller of it sends two
+        # arguments: the orders list's status control and CancelOrderBeforeDispatch both
+        # call updateOrderStatus(order, status), so the forward died on
+        # IDEMPOTENCY_KEY_REQUIRED before the managed call ever ran. The key is derived
+        # from the request instead of demanded from the caller: one status move, on one
+        # order, through one till is the same operation however often it is retried, and
+        # neither target is ever legitimately repeated - Preparing only leaves Draft and
+        # Cancelled is terminal - so a stable derivation replays a duplicated click
+        # rather than re-running its stock and cash side effects. A key the caller does
+        # send still wins.
+        key = cstr(idempotency_key).strip() or f"transition_order:{target_status}:{order}:{cstr(pos_profile).strip()}"
+        return action(order=order, pos_profile=pos_profile, idempotency_key=key[:140])
     if not order or not frappe.db.exists("Sales Order", order):
         frappe.throw(_("Sales Order {0} was not found.").format(order or _("(missing)")))
 
@@ -1100,53 +1116,6 @@ def _require_transition_access():
     )
 
 
-def _create_stock_issue(doc):
-    """
-    لما يصير Preparing — ينقص المخزن
-    """
-    existing = frappe.db.exists("Stock Entry", {
-        "custom_sales_order": doc.name,
-        "stock_entry_type": "Material Issue",
-        "docstatus": 1
-    })
-    if existing:
-        return
-
-    if not doc.company:
-        frappe.throw(
-            _("Sales Order {0} has no company; cannot issue stock against it.").format(doc.name)
-        )
-
-    se = frappe.new_doc("Stock Entry")
-    se.stock_entry_type = "Material Issue"
-    se.custom_sales_order = doc.name
-    se.company = doc.company
-    se.remarks = f"Order Preparing - {doc.name}"
-
-    # The warehouse is read off the Sales Order Item row rather than resolved again here:
-    # stock has to leave the warehouse the order reserved against, and re-deriving it would
-    # let the issue and the reservation drift apart. The restriction check stays inside the
-    # loop because the value is now per-row - hoisting it would mean asserting that every
-    # row shares one warehouse, which this function has no business assuming.
-    for item in doc.items:
-        if not item.warehouse:
-            frappe.throw(
-                _("Sales Order {0} item {1} has no warehouse; cannot issue stock for it.").format(
-                    doc.name, item.item_code
-                )
-            )
-        require_restriction_value("warehouse", item.warehouse)
-        se.append("items", {
-            "item_code": item.item_code,
-            "qty": item.qty,
-            "s_warehouse": item.warehouse,
-            "basic_rate": _get_stock_basic_rate(item.item_code, item.warehouse),
-        })
-
-    _require_stock_entry_access()
-    se.insert()
-    se.submit()
-    frappe.logger().info(f"[Stock] Issue created for {doc.name}")
 
 
 def _reverse_stock_issue(doc):
@@ -1207,24 +1176,20 @@ def _get_status_transition_context(doc, fallback_to_db=False):
     )
 
 
-def _driver_context(doc, driver):
-    # company is carried through because the driver Journal Entries derive it from the
-    # document rather than from a module constant, and these callers hand the driver
-    # helpers this dict instead of the Sales Order itself.
-    return frappe._dict(
-        name=doc.name,
-        custom_driver=driver,
-        custom_payment_method=doc.custom_payment_method,
-        customer=doc.customer,
-        grand_total=doc.grand_total,
-        company=doc.company,
-    )
 
 
 def before_sales_order_update(doc, method):
+    if doc.get("custom_driver_flow"):
+        from pet_app.utils.driver_orders import guard_document
+        guard_document(doc, method)
+        return
     if not doc.has_value_changed("custom_order_status"):
         doc.flags.order_status_transition = None
         return
+
+    if doc.custom_order_status != "Cancelled":
+        from pet_app.utils.driver_orders import fail
+        fail("Legacy orders cannot use the old stock-writeoff/cash-at-dispatch flow. Create a POS driver order using pet_app.api.driver_orders.create_pos_order.", "LEGACY_DELIVERY_REQUIRES_POS_ORDER")
 
     transition = _get_status_transition_context(doc, fallback_to_db=True)
     if not transition:
@@ -1252,6 +1217,8 @@ def before_sales_order_update(doc, method):
 
 
 def on_sales_order_update(doc, method):
+    if doc.get("custom_driver_flow"):
+        return
     transition = getattr(doc.flags, "order_status_transition", None)
     if not transition:
         transition = _get_status_transition_context(doc)
@@ -1261,33 +1228,9 @@ def on_sales_order_update(doc, method):
 
     old_status = transition.old_status
     new_status = transition.new_status
-    old_driver = transition.old_driver
-    current_driver = old_driver or doc.custom_driver
-
     frappe.logger().info(f"[ORDER] applying transition old={old_status} new={new_status} doc={doc.name}")
 
-    if new_status == "Preparing":
-        _create_stock_issue(doc)
-        return
-
-    if new_status == "Out for Delivery":
-        if doc.custom_payment_method == "Cash on Delivery":
-            _create_driver_debit_entry(doc)
-        return
-
-    if new_status == "Returned":
-        if doc.custom_payment_method == "Cash on Delivery":
-            _reverse_driver_entry(_driver_context(doc, current_driver))
-        return
-
-    if new_status == "Cash Collected":
-        if doc.custom_payment_method == "Cash on Delivery":
-            _collect_driver_cash(_driver_context(doc, current_driver))
-        return
-
+    # Only a historical cancellation may reverse its original Material Issue.
+    # New deliveries use driver_orders; status changes never recognize cash/revenue.
     if new_status == "Cancelled":
         _reverse_stock_issue(doc)
-        return
-
-    if new_status == "Completed" and doc.custom_payment_status != "Paid":
-        doc.db_set("custom_payment_status", "Paid", update_modified=False)

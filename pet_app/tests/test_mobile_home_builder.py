@@ -37,6 +37,9 @@ class TestMobileHomeBuilder(FrappeTestCase):
 		frappe.set_user("Administrator")
 		self._preexisting = self._snapshot_builder_state()
 		self._created_products = []
+		# Every Product insert projects an Item keyed on the sku. Deleting the Product does
+		# not remove that Item, so track the codes separately or they outlive the test.
+		self._created_item_codes = []
 		# Isolation, not cleanup: several tests assert an EXACT filter list, and two create
 		# rows named "cat"/"dog" that would collide with live chips of the same name. This
 		# empties the tables for the duration of the transaction only - the rows come back
@@ -276,7 +279,10 @@ class TestMobileHomeBuilder(FrappeTestCase):
 		doc.insert(ignore_permissions=True)
 		# Tracked so tearDown can remove it. Untracked, these leaked: 14 fixture products
 		# with names like "Stale Revision Food f492674b71" were left in a live catalogue.
+		# The projected Item leaks the same way and is NOT removed with the Product - by
+		# 2026-09-04 that had left 23 orphan Items in the live catalogue, so track it too.
 		self._created_products.append(doc.name)
+		self._created_item_codes.append(suffix)
 		return doc
 
 	def _publish(self, saved):
@@ -328,6 +334,16 @@ class TestMobileHomeBuilder(FrappeTestCase):
 			if frappe.db.exists("Product", product):
 				frappe.delete_doc("Product", product, force=True, ignore_permissions=True, delete_permanently=True)
 		self._created_products = []
+
+		# The Item the projection created outlives its Product. Item Price first: the Item
+		# cannot be deleted while a price row still links to it.
+		for item_code in reversed(self._created_item_codes):
+			if not frappe.db.exists("Item", item_code):
+				continue
+			for price in frappe.get_all("Item Price", filters={"item_code": item_code}, pluck="name"):
+				frappe.delete_doc("Item Price", price, force=True, ignore_permissions=True, delete_permanently=True)
+			frappe.delete_doc("Item", item_code, force=True, ignore_permissions=True, delete_permanently=True)
+		self._created_item_codes = []
 
 		for doctype in BUILDER_DOCTYPES:
 			if not frappe.db.exists("DocType", doctype):

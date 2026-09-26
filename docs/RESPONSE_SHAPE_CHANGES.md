@@ -72,6 +72,7 @@ New shape:
 
 Endpoints/files covered:
 - `pet_app.api.scheduling.get_available_slots`
+- `pet_app.api.scheduling.list_appointment_types`
 - `pet_app.api.scheduling.get_doctor_calendar`
 - `pet_app.api.scheduling.book_appointment`
 - `pet_app.api.scheduling.reschedule_appointment`
@@ -177,6 +178,7 @@ Endpoints wrapped in this pass:
 - `pet_app.api.order`: `place_order`
 - `pet_app.api.permissions`: `get_current_access`, `get_user_restrictions`, `update_user_restrictions`, `get_page_access_settings`, `sync_frontend_pages`, `update_page_access_settings`, `get_access_matrix`, `update_access_matrix`, `register_frontend_resources`, `get_permission_integrity_report`
 - `pet_app.api.pet`: `list_pet_breeds`, `upload_multiple_files`, `delete_multiple_files`, `set_default_file`, `get_pet_images`, `list_pets`, `get_pet`, `upload_single_file`
+- `pet_app.api.mobile.pets.list_breeds`
 - `pet_app.api.product`: `publish_product`, `restock_product`, `get_stock_info`, `get_products`
 - `pet_app.api.product_category`: `list_product_categories`, `get_product_category`, `save_product_category`, `delete_product_category`
 - `pet_app.api.ratings`: `get_ratings`

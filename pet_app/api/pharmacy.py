@@ -10,12 +10,10 @@ from pet_app.api.link_aliases import enrich_link_aliases
 from pet_app.api.permissions import require_restriction_value
 from pet_app.api.response import fail, ok
 from pet_app.utils.medication_stock import (
-	assert_row_can_record_stock,
-	is_opted_in,
-	issue_for_dispense,
 	receive_for_return,
 	returnable_stock_qty,
 )
+from pet_app.utils.order_billing import bill_visit_medications_at
 
 
 PENDING_STATUSES = ("", "Prescribed", "Pending Dispense", "Partially Dispensed")
@@ -111,28 +109,8 @@ def dispense_visit_medication(visit=None, row_name=None, medication_row=None, qt
 			row.warehouse = target_warehouse
 		_apply_invoice_metadata(row, payload)
 
-		# The goods leave here, before anything is written, because this is the step
-		# that can legitimately refuse - no stock, a fractional qty against a
-		# whole-number UOM, an unresolvable warehouse. Returns None and changes
-		# nothing for a medication with no dose option, which is all but four of
-		# them today. Row `qty` is a dose COUNT when a dose option is in play, so
-		# `dispense_qty` is the number of doses being handed over, never a stock
-		# quantity - the conversion happens once, inside issue_for_dispense.
-		if is_opted_in(row.medication):
-			assert_row_can_record_stock(row.meta, row.medication)
-		issued = issue_for_dispense(
-			medication=row.medication,
-			medication_item=row.medication_item,
-			dose_count=dispense_qty,
-			dose_option=row.get("dose_option"),
-			row_warehouse=row.get("warehouse"),
-			reference=_("Vet Visit {0} row {1}").format(doc.name, row.idx),
-			label=row.medication or row.medication_item,
-		)
-		if issued:
-			row.warehouse = issued["warehouse"]
-			row.stock_issued_qty = flt(row.get("stock_issued_qty")) + flt(issued["qty"])
-			row.stock_entry = issued["stock_entry"]
+		# Hand-over never posts stock. The Sales Invoice owns deduction.
+		# Keep historical issue fields intact for their existing return path.
 
 		row.dispensed_qty = flt(row.dispensed_qty) + dispense_qty
 		row.dispensed_by = frappe.session.user
@@ -141,6 +119,14 @@ def dispense_visit_medication(visit=None, row_name=None, medication_row=None, qt
 		target_status = row.dispense_status
 		doc.flags.ignore_billing_lock = True
 		doc.save(ignore_permissions=True)
+		# Dispense is the only later event a prescription has, so it carries both of the
+		# middle triggers: the first hand-over is the medication's "start", a complete one
+		# is its "release". Billed AFTER the save so the row exists in the state being
+		# charged for, and non-fatally - a prescription that cannot be billed must not undo
+		# a hand-over that physically happened. See bill_visit_medications_at.
+		bill_visit_medications_at(
+			doc, "on_release" if target_status == "Dispensed" else "on_start"
+		)
 		ledger = _create_dispense_ledger(
 			operation="Dispense",
 			visit=doc.name,

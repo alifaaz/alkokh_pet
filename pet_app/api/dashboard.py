@@ -590,7 +590,7 @@ def _build_medical(df, dt):
     pdf, pdt = _prev_range(df, dt)
     buckets = _buckets(df, dt)
     cats = [b["label"] for b in buckets]
-    vv, pvr = "Vet Visit", "Pet Vaccination Record"
+    vv, pvr = "Vet Visit", "Preventive Care Record"
 
     has_follow = _has(vv, "follow_up_required")
     has_type = _has(vv, "visit_type")
@@ -1030,12 +1030,15 @@ def _summary_activity(limit=8):
     except Exception:
         pass
     try:
-        if _table_exists("Pet Vaccination Record"):
-            for r in frappe.get_all("Pet Vaccination Record",
-                                    fields=["name", "pet", "creation"],
+        if _table_exists("Preventive Care Record"):
+            # Labelled by the row's own kind, so a deworming no longer reports itself as a
+            # vaccination in the activity feed - which is what reading one of two tables did.
+            for r in frappe.get_all("Preventive Care Record",
+                                    filters={"status": "Administered"},
+                                    fields=["name", "pet", "kind", "creation"],
                                     order_by="creation desc", limit=6):
-                add(r.creation, "tabler-vaccine", "primary",
-                    _("Vaccination recorded for {0}").format(r.pet or _("a pet")))
+                label = _("Deworming recorded for {0}") if r.kind == "Deworming" else _("Vaccination recorded for {0}")
+                add(r.creation, "tabler-vaccine", "primary", label.format(r.pet or _("a pet")))
     except Exception:
         pass
     try:

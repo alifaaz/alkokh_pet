@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
@@ -63,3 +65,31 @@ class TestMobilePets(FrappeTestCase):
 		self.assertEqual(updates["animal_species"], "Mammal")
 		self.assertEqual(updates["animal_type"], "Cat")
 		self.assertNotIn("pet_status", updates)
+
+	def test_list_breeds_returns_mobile_dtos(self):
+		if not frappe.db.exists("DocType", "Pet Breed"):
+			self.skipTest("Pet Breed DocType is not installed.")
+
+		breed_name = f"Mobile Breed {frappe.generate_hash(length=8)}"
+		frappe.get_doc(
+			{
+				"doctype": "Pet Breed",
+				"breed_name": breed_name,
+				"arabic_name": "Arabic Breed",
+				"animal_species": "Mammal",
+				"animal_type": "Cat",
+				"enabled": 1,
+			}
+		).insert(ignore_permissions=True)
+
+		with patch.object(pets, "_current_guardian", return_value="GUARDIAN-TEST"):
+			response = pets.list_breeds(animal_type="Cat", search=breed_name, limit=5)
+
+		self.assertTrue(response["ok"], response)
+		items = response["data"]["items"]
+		self.assertEqual(len(items), 1)
+		self.assertEqual(items[0]["id"], breed_name)
+		self.assertEqual(items[0]["name"], breed_name)
+		self.assertEqual(items[0]["arabic_name"], "Arabic Breed")
+		self.assertEqual(items[0]["species"], "Mammal")
+		self.assertEqual(items[0]["type"], "Cat")

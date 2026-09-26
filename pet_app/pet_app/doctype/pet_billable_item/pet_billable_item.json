@@ -14,6 +14,7 @@
   "rate",
   "amount",
   "status",
+  "sales_invoice",
   "dispense_status",
   "dose_option",
   "warehouse",
@@ -65,7 +66,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Item Type",
-   "options": "Room Stay\nService\nMedication\nLab\nImaging\nProcedure\nProduct\nOther"
+   "options": "Room Stay\nService\nMedication\nLab\nImaging\nProcedure\nPreventive\nProduct\nOther"
   },
   {
    "default": "1",
@@ -96,6 +97,15 @@
    "label": "Status",
    "options": "Draft\nBillable\nBilled\nCancelled\nIncluded",
    "description": "Included means the charge was genuinely incurred and is deliberately not invoiced - a medication absorbed by the medical boarding rate. It is NOT Cancelled: the medication was given, the row is its dispensing record, and its rate is the true cost the inclusive rate absorbed."
+  },
+  {
+   "description": "The invoice this row was billed onto, when it was billed on its own rather than with the visit. Medication has no order document of its own to record this on, and a cancellation has to find the line to remove, so it is recorded per row.",
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Sales Invoice",
+   "no_copy": 1,
+   "options": "Sales Invoice",
+   "read_only": 1
   },
   {
    "fieldname": "dispense_status",
@@ -252,7 +262,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-08-20 10:00:00.000000",
+ "modified": "2026-09-05 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet Billable Item",

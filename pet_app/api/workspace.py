@@ -12,6 +12,9 @@ from pet_app.api.healthcare.boarding import checked_in_boarding_for_visit
 from pet_app.api.link_aliases import enrich_link_aliases, with_link_aliases
 from pet_app.api.permissions import get_user_roles, require_restriction_value, user_has_full_access
 from pet_app.utils import order_billing
+from pet_app.api.preventive_care import ACTION_TARGET_STATUS as PREVENTIVE_ACTION_STATUS
+from pet_app.api.preventive_care import DOCTYPE as PREVENTIVE_DOCTYPE
+from pet_app.api.preventive_care import update_preventive_status
 from pet_app.utils.branch import apply_branch_filter
 from pet_app.utils.guardian_customer import get_or_create_customer_from_guardian
 from pet_app.utils.clinical_options import (
@@ -72,6 +75,14 @@ SOURCE_DOCTYPE_ALIASES = {
 	"lab": "Lab",
 	"radiology": "Imaging",
 	"imaging": "Imaging",
+	# One doctype, several words a caller might reach for. `vaccination` and `deworming`
+	# both land here because the record derives which it is from its catalogue category.
+	"preventive": "Preventive Care Record",
+	"preventive care": "Preventive Care Record",
+	"preventive_care": "Preventive Care Record",
+	"preventive care record": "Preventive Care Record",
+	"vaccination": "Preventive Care Record",
+	"deworming": "Preventive Care Record",
 	"invoice": "Sales Invoice",
 	"sales invoice": "Sales Invoice",
 	"sales_invoice": "Sales Invoice",
@@ -87,9 +98,15 @@ SOURCE_LABELS = {
 	"Pet Procedure": "Procedure",
 	"Lab": "Lab",
 	"Imaging": "Radiology",
+	"Preventive Care Record": "Preventive Care",
 	"Sales Invoice": "Invoice",
 	"Payment Entry": "Payment",
 }
+
+# Derived from the one map that defines them, never retyped: a verb that exists here but
+# not there would be dispatched and then refused, and a verb that exists there but not here
+# would be unreachable.
+PREVENTIVE_ACTIONS = frozenset(PREVENTIVE_ACTION_STATUS)
 
 DIAGNOSTIC_RESULT_FILE_FIELDS = {
 	"Lab": ("result_file",),
@@ -105,7 +122,14 @@ DIAGNOSTIC_TEXT_FIELDS = {
 # Exact Select value. "Reported" / "Result Entered" / "Completed" are NOT released.
 DIAGNOSTIC_RELEASED_STATUS = "Released"
 DIAGNOSTIC_CANCEL_ACTIONS = {"cancel_test", "cancel_lab", "cancel_imaging", "cancel_lab_order", "cancel_imaging_order"}
-IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+# Drives the `is_image` flag on diagnostic result files, i.e. "render this inline
+# rather than as a download link". Phone-camera formats belong here: iPhones upload
+# .heic and Androids .avif, and omitting them stamped is_image=False on files that
+# are images, on the Lab/Imaging surface where they land. Whether the browser can
+# decode a given format is a separate question answered by the Content-Type nginx
+# serves - .heic needs an explicit mime.types entry or it goes out as
+# application/octet-stream under nosniff and no browser will render it.
+IMAGE_FILE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".heic", ".heif", ".avif"}
 
 # Workspace authorization must stay on DocPerm-backed operational roles.
 # Page/sidebar-only roles belong in page access settings, not here.
@@ -375,6 +399,27 @@ def perform_action(source_type, name, action, payload=None):
 			_update_procedure_status(procedure_name, action, payload)
 		return get_record("procedure", procedure_name)
 
+	if action in PREVENTIVE_ACTIONS:
+		# THE EXPLICIT GUARD, half one of two. `clinical_state.assert_action_allowed` ends
+		# with `if not allowed: return`, so it would let a preventive action pass silently on
+		# a doctype that does not declare it. This refuses by name instead. Half two lives in
+		# `preventive_care._update_preventive_status_atomic`, which refuses an action this
+		# doctype does not declare - so neither direction can slip through.
+		record_name = name if doctype == PREVENTIVE_DOCTYPE else cstr(
+			payload.get("preventive_care_record") or payload.get("record")
+		).strip()
+		if not record_name:
+			frappe.throw(
+				_("{0} needs a {1}. Pass it as the record, or name it in the payload.").format(
+					frappe.bold(action), frappe.bold(_("Preventive Care Record"))
+				)
+			)
+		# Re-checked against the RECORD, not against whatever was passed as `name`: the
+		# caller may have proved access to a visit and named a dose in the payload.
+		_assert_record_access(PREVENTIVE_DOCTYPE, record_name, write=True, action=action)
+		update_preventive_status(record_name, action, payload)
+		return get_record(PREVENTIVE_DOCTYPE, record_name)
+
 	if action in {"start_service", "finish_service", "close_service", "cancel_service"}:
 		service_name = name if doctype == "PetCareService" else _linked_service_for_source(doctype, name)
 		if not service_name:
@@ -528,7 +573,10 @@ def _assert_record_access(doctype: str, name: str, write: bool = False, action: 
 		frappe.throw(_("{0} {1} was not found.").format(doctype, name))
 
 	roles = get_user_roles(user)
-	_assert_source_restrictions(doctype, name, user)
+	# write is passed explicitly and is required on the callee. This gate runs *before*
+	# the page-role check below, so relaxing it never grants entry on its own - a user
+	# without the page role still falls through to the throw at the end of this block.
+	_assert_source_restrictions(doctype, name, user, write)
 	if roles & GUARDIAN_ROLES and not write and _guardian_can_read_source(user, doctype, name):
 		return
 
@@ -559,6 +607,9 @@ def _assert_record_access(doctype: str, name: str, write: bool = False, action: 
 		):
 			return
 	elif doctype == "Vet Case Sheet":
+		if _has_legacy_or_doctype_permission(roles, doctor_roles | coordinator_roles | management_roles, doctype, write, user):
+			return
+	elif doctype == PREVENTIVE_DOCTYPE:
 		if _has_legacy_or_doctype_permission(roles, doctor_roles | coordinator_roles | management_roles, doctype, write, user):
 			return
 	elif doctype in {"Lab", "Imaging"}:
@@ -1265,8 +1316,26 @@ def _case_sheet_aggregate(name: str) -> dict:
 
 
 def _source_aggregate(doctype: str, name: str) -> dict:
+	"""The shape for a record that hangs off no visit.
+
+	`focus_source` IS THE RECORD ITSELF, and it is here so that ONE read path answers both
+	kinds of record. A dose ordered on a visit comes back as the visit aggregate with the dose
+	at `focus_source.detail`; a dose given straight on a pet - 28 of the 29 on this site - used
+	to come back as this skeleton with the dose NOWHERE IN IT. `summary` carries a name, a
+	status and a title, and that is all it has ever carried, so a detail screen built on the
+	documented read had nothing to render for the majority case and no way to tell that it had
+	been handed an empty shell rather than an empty record.
+	Read `data.focus_source.detail` and it is now one expression for both kinds of dose.
+
+	Additive for every other doctype that lands here: `_focus_source` returns the same brief
+	`summary` already holds, plus a `detail` for the three doctypes that build one (Imaging,
+	Pet Procedure, Preventive Care Record). Nothing that reads `summary` today has to change.
+	"""
 	return {
 		"summary": _source_brief(doctype, name),
+		# Same key, same sub-shape and same builder the visit branch of `get_record` attaches,
+		# so a client reads one path regardless of which branch answered it.
+		"focus_source": _focus_source(doctype, name),
 		"pet": {},
 		"guardian": {},
 		"assignee": {},
@@ -1771,6 +1840,12 @@ def _save_diagnoses(visit_name: str, payload: dict):
 	sync_diagnoses_from_visit(visit)
 
 
+# The `item_type` each order doctype occupies on the visit's billable table. Mirrors
+# order_billing.ORDER_ITEM_TYPES; kept as its own name here so the creation path reads as
+# a lookup rather than as a reach into another module's internals.
+ORDER_KIND_ITEM_TYPES = dict(order_billing.ORDER_ITEM_TYPES)
+
+
 def _create_orders(visit_name: str, payload: dict):
 	savepoint = f"create_orders_{frappe.generate_hash(length=10)}"
 	frappe.db.savepoint(savepoint)
@@ -1809,13 +1884,33 @@ def _create_orders_atomic(visit_name: str, payload: dict):
 	visit.save(ignore_permissions=True)
 
 	linked_updates = []
+	billed_now = []
 	for order_row, raw in created_rows:
 		linked = _create_linked_record_for_order(visit, order_row, raw)
 		target_status = "Ordered" if order_row.status in {"", "Draft"} else order_row.status
 		if linked:
 			linked_updates.append((order_row.order_id, linked.doctype, linked.name, target_status))
+			billed_now.append(linked)
 		else:
 			linked_updates.append((order_row.order_id, None, None, target_status))
+
+	# on_request: the charge is raised the moment the order exists.
+	#
+	# Inside the savepoint _create_orders opened, deliberately. A billing failure here -
+	# no guardian on file, a care service with no item code, a branch that no longer
+	# exists - throws, and the whole batch rolls back with it. That is the intended
+	# trade: under on_request an order and its charge are one act, and an order that
+	# exists without its invoice line is exactly the billing error this setting is meant
+	# to prevent. It also means one unbillable order refuses the batch it arrived in,
+	# which is visible to the person ordering rather than discovered at the till.
+	#
+	# Before the re-fetch below, so the visit picked up there already carries the Billed
+	# rows commit_order_billing wrote.
+	for linked in billed_now:
+		plan = order_billing.plan_order_billing_at(
+			linked, "on_request", item_type=ORDER_KIND_ITEM_TYPES.get(linked.doctype)
+		)
+		order_billing.commit_order_billing(linked, plan)
 
 	visit = frappe.get_doc("Vet Visit", visit.name)
 	changed = False
@@ -1885,6 +1980,22 @@ def _complete_case_atomic(visit_name: str, payload: dict):
 			visit.diagnosis = diagnosis_text
 	_validate_visit_completion_requirements(visit)
 
+	# on_visit_close: every charge is raised here, and this is the ONLY trigger under which
+	# that happens. The per-order call sites all stand down (should_bill_now returns False
+	# for every moment), so each order's row reaches this point still Billable and is
+	# emitted by get_billable_invoice_items below.
+	#
+	# It comes at a known cost, and choosing it is choosing to pay it: BRANCH SEPARATION IS
+	# LOST. _create_sales_invoice_for_visit bills to `visit.branch`, one branch for the
+	# whole visit, while per-order billing bills each order to its own `performing_branch`.
+	# A main-clinic doctor who orders radiology performed at the boarding facility puts
+	# that revenue on the CLINIC's invoice under this trigger, not the facility's - which
+	# is precisely the misattribution utils/order_billing.py was written to fix, and
+	# `branch` is a live accounting dimension, so it reaches the ledger. Under the other
+	# three triggers the money follows the machine.
+	#
+	# Anything with no order and no earlier moment - manual rows, and medication that was
+	# never dispensed - reaches its invoice here under every trigger.
 	invoice_items, total_billable_amount = get_billable_invoice_items(visit, allow_non_invoiceable=True)
 	if invoice_items and flt(total_billable_amount) > 0:
 		invoice_result = _create_sales_invoice_for_visit(visit.name)
@@ -1967,7 +2078,23 @@ def _cancel_medication(visit_name: str, payload: dict):
 	if flt(row.get("dispensed_qty")) > 0:
 		frappe.throw(_("Medication must be returned or reversed before cancellation."))
 
+	# Take the charge back with the prescription. Under an early billing trigger the
+	# medication is already on a draft invoice by the time anyone cancels it, and a
+	# cancelled prescription left on an invoice is a billing error. Refuses instead, with
+	# ISSUED_INVOICE_CANCEL_MESSAGE, when that invoice has already been submitted.
+	#
+	# save=False and the visit passed in: this operates on the copy already in hand, and
+	# the save below persists the cancelled billable row and the dispense status together.
+	cancel_visit_billable_item_by_link(
+		visit.name,
+		linked_service_id=f"medication::{row.name}",
+		item_type="Medication",
+		visit=visit,
+		save=False,
+	)
+
 	row.dispense_status = "Cancelled"
+	visit.flags.ignore_billing_lock = True
 	visit.save(ignore_permissions=True)
 	reason = cstr(payload.get("reason") or payload.get("note")).strip()
 	comment = _("Medication row {0} cancelled by {1}.").format(row.idx, frappe.session.user)
@@ -2238,7 +2365,7 @@ def _order_scheduled_datetime(raw: dict):
 
 def _create_linked_record_for_order(visit, order_row, raw: dict):
 	kind = _normalize_order_kind(order_row.kind)
-	if kind not in {"lab", "radiology", "service", "procedure"}:
+	if kind not in {"lab", "radiology", "service", "procedure", "preventive"}:
 		return None
 
 	existing_linked = _existing_linked_record_for_order(kind, visit.name, order_row.order_id, order_row.linked_doctype, order_row.linked_name)
@@ -2246,7 +2373,7 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 		return existing_linked
 
 	template_id = order_row.template_id or raw.get("template_id") or raw.get("care_service") or raw.get("care_service_id")
-	if kind != "procedure" and not template_id:
+	if kind not in {"procedure", "preventive"} and not template_id:
 		frappe.throw(_("Order {0} requires a Care Service template.").format(order_row.title))
 
 	scheduled_datetime = _order_scheduled_datetime(raw)
@@ -2302,6 +2429,37 @@ def _create_linked_record_for_order(visit, order_row, raw: dict):
 				"due_date": raw.get("due_date") or nowdate(),
 				"scheduled_datetime": scheduled_datetime,
 				"description": order_row.note,
+			}
+		)
+	elif kind == "preventive":
+		service_option = cstr(raw.get("service_option") or raw.get("band") or "").strip() or None
+		if not template_id and not service_option:
+			frappe.throw(
+				_("Order {0} requires a Care Service or a Service Option.").format(order_row.title)
+			)
+		doc = frappe.get_doc(
+			{
+				"doctype": "Preventive Care Record",
+				"visit": visit.name,
+				"order_id": order_row.order_id,
+				"pet": visit.animal_patient,
+				"guardian": visit.guardian,
+				# The visit's practitioner ORDERED it. Who administers it is set when the
+				# dose is started, and is deliberately left empty here.
+				"doctor": visit.doctor,
+				"provider": raw.get("provider"),
+				"care_service": template_id,
+				"service_option": service_option,
+				"status": "Ordered",
+				"priority": order_row.priority,
+				# Inherited rather than stamped: `stamp_branch_on_insert` would otherwise
+				# refuse for any user not restricted to one clinic, and the visit already
+				# knows which clinic this is happening at.
+				"branch": visit.get("branch"),
+				"due_date": raw.get("due_date") or nowdate(),
+				"scheduled_datetime": scheduled_datetime,
+				"weight": raw.get("weight"),
+				"notes": order_row.note,
 			}
 		)
 	else:
@@ -2362,6 +2520,7 @@ def _existing_linked_record_for_order(kind: str, visit_name: str, order_id: str,
 		"radiology": "Imaging",
 		"service": "PetCareService",
 		"procedure": "Pet Procedure",
+		"preventive": "Preventive Care Record",
 	}.get(kind)
 	if not doctype or not frappe.db.exists("DocType", doctype):
 		return None
@@ -2419,7 +2578,69 @@ def _stamp_billed_item_on_service(service, billing_plan) -> None:
 		service.price = billing_plan.rate
 
 
+def _service_transition_refusal(action: str) -> str:
+	"""What the operator is told when a transition is refused.
+
+	The *reason* is never invented here - `order_billing`
+	already names the record and the fix ("Care Service X is missing Item Code, so ...",
+	"... must have a positive rate before it can be billed", "... is performed at branch Y,
+	which no longer exists. Fix the service before releasing it."). That text is carried
+	through verbatim. This only adds the half the operator could not otherwise know: that
+	the transition did NOT happen and nothing was written.
+	"""
+	if action == "start_service":
+		return _("This service was not started and nothing was changed.")
+	if action in {"finish_service", "close_service"}:
+		return _("This service was not completed and nothing was changed.")
+	if action == "cancel_service":
+		return _("This service was not cancelled and nothing was changed.")
+	return _("This action was not applied and nothing was changed.")
+
+
 def _update_service_status(service_name: str, action: str, payload: dict):
+	"""Savepoint boundary for the whole transition.
+
+	Same shape as `_create_orders` (workspace.py:1792-1801) and `_complete_case`
+	(workspace.py:1879-1888). Without it the status transition, the `end_date` stamp and
+	the save all landed before the billing commit that follows them, and a throw there
+	could not undo any of it - `@standardize_response` (api/response.py:52-67) catches
+	every exception and returns an envelope, so nothing reaches Frappe's request handler
+	and the request commits anyway.
+	A service came out `completed` with `billed = 0` and no invoice, and no Error Log said
+	so. The completion and its charge are one act or they are neither.
+
+	Two deliberate additions to the pattern above, both because this is the path that was
+	silently losing money:
+
+	`frappe.log_error` after the rollback, never before - the row has to survive it. Same
+	ordering, and the same reason, as `api/item_barcode.py:186-190`.
+
+	The re-throw composes the refusal with the original message instead of a bare `raise`,
+	so the operator learns the transition was refused as well as why. The exception class
+	is preserved when it is a ValidationError - every deliberate billing refusal is one,
+	`NegativeStockError` included - so the `code` in the envelope does not change.
+	"""
+	savepoint = f"update_service_{frappe.generate_hash(length=10)}"
+	frappe.db.savepoint(savepoint)
+	try:
+		_update_service_status_atomic(service_name, action, payload)
+	except Exception as exc:
+		frappe.db.rollback(save_point=savepoint)
+		frappe.log_error(
+			title="SERVICE_STATUS_TRANSITION_FAILED",
+			message=f"{service_name} / {action}: {frappe.get_traceback()}",
+		)
+		reason = cstr(exc).strip()
+		refusal = _service_transition_refusal(action)
+		message = _("{0} {1}").format(refusal, reason) if reason else refusal
+		if isinstance(exc, frappe.ValidationError):
+			frappe.throw(message, exc=exc.__class__, title=_("Service not updated"))
+		frappe.throw(message, title=_("Service not updated"))
+	else:
+		frappe.db.release_savepoint(savepoint)
+
+
+def _update_service_status_atomic(service_name: str, action: str, payload: dict):
 	service = frappe.get_doc("PetCareService", service_name)
 	if action == "cancel_service":
 		_assert_service_cancellable(service)
@@ -2427,11 +2648,14 @@ def _update_service_status(service_name: str, action: str, payload: dict):
 	clinical_state.assert_action_allowed(service, action)
 	# Pre-flight before anything is written. finish_service/close_service are aliases and
 	# assert_action_allowed above has already refused either on a completed service.
-	billing_plan = (
-		order_billing.plan_order_billing(service, item_type="Service")
-		if action in {"finish_service", "close_service"}
-		else None
-	)
+	# One planner, one moment per action. `plan_order_billing_at` returns None unless the
+	# moment is the clinic's configured trigger, so this maps actions to moments and holds
+	# no policy of its own.
+	billing_plan = None
+	if action == "start_service":
+		billing_plan = order_billing.plan_order_billing_at(service, "on_start", item_type="Service")
+	elif action in {"finish_service", "close_service"}:
+		billing_plan = order_billing.plan_order_billing_at(service, "on_release", item_type="Service")
 	started_weight = None
 	if action == "start_service":
 		started_weight = _positive_payload_weight(payload)
@@ -2579,6 +2803,17 @@ def _update_diagnostic_status(doctype: str, name: str, action: str, payload: dic
 		_assert_linked_order_billing_cancellable(doc, "Lab" if doctype == "Lab" else "Imaging")
 		doc.flags.allow_billed_visit_cancellation = True
 	clinical_state.assert_action_allowed(doc, state_action)
+	item_type = "Lab" if doctype == "Lab" else "Imaging"
+	# This endpoint reached no billing at all before. `release` here and
+	# `release_lab_result`/`release_imaging_report` in api/diagnostics.py are two routes to
+	# the same clinical state, and only the diagnostics pair raised a charge - so a client
+	# using perform_action released orders that were never billed per-order and silently
+	# fell back to the visit. Planned before the transitions below, like every other site.
+	billing_plan = None
+	if action == "start_test":
+		billing_plan = order_billing.plan_order_billing_at(doc, "on_start", item_type=item_type)
+	elif action == "release":
+		billing_plan = order_billing.plan_order_billing_at(doc, "on_release", item_type=item_type)
 	if action == "start_test":
 		clinical_state.transition_status(doc, "In Progress", action=action)
 	if action in {"save_result", "release"}:
@@ -2612,6 +2847,7 @@ def _update_diagnostic_status(doctype: str, name: str, action: str, payload: dic
 			comment = _("{0} Reason: {1}").format(comment, reason)
 		doc.add_comment("Comment", comment)
 		return
+	order_billing.commit_order_billing(doc, billing_plan)
 	target_status = "Completed" if doc.status in {"Released", "Completed"} else "In Progress"
 	_update_order_status_for_link(doc.visit, doc.get("order_id"), target_status, doctype, doc.name)
 
@@ -2625,19 +2861,28 @@ def _update_procedure_status(procedure_name: str, action: str, payload: dict):
 	clinical_state.assert_action_allowed(doc, action)
 	billing_plan = None
 	if action == "start_procedure":
+		# Pre-flight before the transition, as everywhere else.
+		billing_plan = order_billing.plan_order_billing_at(doc, "on_start", item_type="Procedure")
 		clinical_state.transition_status(doc, "In Progress", action=action)
 		doc.started_at = doc.started_at or now_datetime()
 		if payload.get("provider"):
 			doc.provider = payload.get("provider")
 	elif action == "complete_procedure":
 		_save_procedure_note(doc.name, payload, save=False, doc=doc, action=action)
+		# Completion bills too, not only close. A procedure left Completed-but-not-Closed
+		# is finished work, and before this it reached no invoice until the visit closed -
+		# so a clinic that never uses close_procedure billed no procedures per-order at
+		# all. `plan_order_billing` returns None once billed, so the close below cannot
+		# raise the charge a second time.
+		billing_plan = order_billing.plan_order_billing_at(doc, "on_release", item_type="Procedure")
 		clinical_state.transition_status(doc, "Completed", action=action)
 		doc.completed_at = doc.completed_at or now_datetime()
 	elif action == "close_procedure":
 		_save_procedure_note(doc.name, payload, save=False, doc=doc, action=action)
-		# Pre-flight before anything is written. close_procedure is the billing moment for
-		# a procedure, and assert_action_allowed above has already refused a second close.
-		billing_plan = order_billing.plan_order_billing(doc, item_type="Procedure")
+		# Pre-flight before anything is written. assert_action_allowed above has already
+		# refused a second close, and a procedure billed at complete_procedure plans
+		# nothing here.
+		billing_plan = order_billing.plan_order_billing_at(doc, "on_release", item_type="Procedure")
 		if doc.status not in {"Completed", "Closed"}:
 			clinical_state.transition_status(doc, "Completed", action=action)
 			doc.completed_at = doc.completed_at or now_datetime()
@@ -2937,6 +3182,8 @@ def _linked_visit_for_source(doctype: str, name: str) -> str | None:
 		return _get_optional_value(doctype, name, "visit")
 	if doctype == "Pet Procedure":
 		return _get_optional_value(doctype, name, "visit")
+	if doctype == "Preventive Care Record":
+		return _get_optional_value(doctype, name, "visit")
 	if doctype == "Appointment" and _has_field("Appointment", "custom_linked_visit_id"):
 		return frappe.db.get_value("Appointment", name, "custom_linked_visit_id")
 	return None
@@ -2956,6 +3203,8 @@ def _focus_source(doctype: str, name: str) -> dict:
 		focus["detail"] = _diagnostic_detail(doctype, name)
 	if doctype == "Pet Procedure":
 		focus["detail"] = _procedure_detail(name)
+	if doctype == "Preventive Care Record":
+		focus["detail"] = _preventive_detail(name)
 	return focus
 
 
@@ -2964,6 +3213,8 @@ def _source_brief(doctype: str, name: str) -> dict:
 	title = name
 	if doctype == "Pet Procedure":
 		title = _procedure_template_label(_get_optional_value(doctype, name, "procedure_template")) or name
+	if doctype == "Preventive Care Record":
+		title = _get_optional_value(doctype, name, "medication_name") or name
 	return {
 		"name": name,
 		"source_type": SOURCE_LABELS.get(doctype, doctype),
@@ -3012,6 +3263,67 @@ def _diagnostic_detail(doctype: str, name: str) -> dict:
 		"result_files": result_files,
 	}
 	return with_link_aliases(payload, pet_field="pet", doctor_field="doctor", include_guardian=False, include_provider=False)
+
+
+def _preventive_detail(name: str) -> dict:
+	"""Everything a screen needs about one dose, resolved once.
+
+	Labels are included alongside their links for the same reason `_procedure_detail`
+	includes them: a client that has to fetch `CareService template` to render a row ends up
+	issuing one request per row.
+	"""
+	doc = frappe.get_doc("Preventive Care Record", name)
+	return {
+		"name": doc.name,
+		"doctype": doc.doctype,
+		"kind": doc.get("kind"),
+		"category": doc.get("category"),
+		"visit": doc.get("visit"),
+		"source_doctype": doc.get("source_doctype"),
+		"source_name": doc.get("source_name"),
+		"order_id": doc.get("order_id"),
+		"pet": doc.get("pet"),
+		"guardian": doc.get("guardian"),
+		"doctor": doc.get("doctor"),
+		"doctor_label": _doctor_payload(doc.get("doctor")).get("name_label"),
+		"provider": doc.get("provider"),
+		"provider_label": _doctor_payload(doc.get("provider")).get("name_label"),
+		"care_service": doc.get("care_service"),
+		"care_service_label": _care_service_label(doc.get("care_service")),
+		"service_option": doc.get("service_option"),
+		"service_option_label": _billing_option_label(doc.get("service_option")),
+		"medication": doc.get("medication"),
+		"medication_name": doc.get("medication_name"),
+		"vaccine_type": doc.get("vaccine_type"),
+		"dose": doc.get("dose"),
+		"batch_no": doc.get("batch_no"),
+		"weight": doc.get("weight"),
+		"qty": doc.get("qty"),
+		"status": doc.get("status"),
+		"priority": doc.get("priority"),
+		"due_date": doc.get("due_date"),
+		"scheduled_datetime": doc.get("scheduled_datetime"),
+		"start_at": doc.get("start_at"),
+		"end_at": doc.get("end_at"),
+		"administered_on": doc.get("administered_on"),
+		"administered_by": doc.get("administered_by"),
+		"administered_at": doc.get("administered_at"),
+		"next_due_date": doc.get("next_due_date"),
+		"reminder_enabled": cint(doc.get("reminder_enabled")),
+		"reminder_status": doc.get("reminder_status"),
+		"item_code": doc.get("item_code"),
+		"rate": doc.get("rate"),
+		"branch": doc.get("branch"),
+		"performing_branch": doc.get("performing_branch"),
+		"billed": cint(doc.get("billed")),
+		"sales_invoice": doc.get("sales_invoice"),
+		"stock_warehouse": doc.get("stock_warehouse"),
+		"stock_issued_qty": doc.get("stock_issued_qty"),
+		"cancelled_by": doc.get("cancelled_by"),
+		"cancelled_at": doc.get("cancelled_at"),
+		"cancellation_reason": doc.get("cancellation_reason"),
+		"notes": doc.get("notes"),
+	}
 
 
 def _procedure_detail(name: str) -> dict:
@@ -3493,7 +3805,48 @@ def _guardian_can_read_source(user: str, doctype: str, name: str) -> bool:
 	return bool(row.get("animal_patient") and frappe.db.exists("PetGuardian", {"guardian_id": guardian, "pet_id": row.get("animal_patient")}))
 
 
-def _assert_source_restrictions(doctype: str, name: str, user: str):
+def _open_clinical_read_allowed(user: str) -> bool:
+	"""Whether this user may open a colleague's clinical record for reading.
+
+	Three conditions, all required: the global setting is on, the acting user is an
+	active Doctor, and their User is enabled. Service Providers and Coordinators are
+	excluded deliberately - a pet's clinical record is readable by any doctor, and by
+	nobody else who is merely a practitioner.
+
+	Deliberately not get_practitioner_for_user: that helper falls back to a *disabled*
+	practitioner row when no enabled one exists (utils/practitioner.py:16-18), which
+	would admit a practitioner the clinic has switched off. The filter here is explicit.
+	"""
+	# Checked before the read, not after: get_single_value *throws* when the field is
+	# absent rather than returning None, so between deploying this code and running
+	# migrate every clinical read would raise instead of falling through to the
+	# restriction. Missing field means the relaxation does not exist yet, which is the
+	# same answer as the setting being off.
+	if not frappe.get_meta("Pet App Access Settings").has_field("open_clinical_read_for_doctors"):
+		return False
+	if not cint(
+		frappe.db.get_single_value("Pet App Access Settings", "open_clinical_read_for_doctors")
+	):
+		return False
+	practitioner = frappe.db.get_value(
+		"Healthcare Practitioner",
+		{"user_id": user, "disabled": 0},
+		["name", "practitioner_type"],
+		as_dict=True,
+	)
+	if not practitioner or practitioner.practitioner_type != "Doctor":
+		return False
+	return bool(frappe.db.get_value("User", user, "enabled"))
+
+
+def _assert_source_restrictions(doctype: str, name: str, user: str, write: bool):
+	"""Practitioner User Permission gate for a source record.
+
+	``write`` has no default on purpose. This function is called from exactly one place,
+	so requiring it costs nothing - and a permission check that defaults to the
+	permissive value would silently relax any call site a later change adds without
+	knowing this history.
+	"""
 	if user_has_full_access(user):
 		return
 	doctor = None
@@ -3512,6 +3865,11 @@ def _assert_source_restrictions(doctype: str, name: str, user: str):
 				if doctor:
 					break
 	if doctor:
+		# Reads only. Every write path reaches here with write=True and keeps the
+		# restriction exactly as before, so dispensing, invoicing, closing, follow-up
+		# writes and case ownership are untouched.
+		if not write and _open_clinical_read_allowed(user):
+			return
 		require_restriction_value("practitioner", doctor, user=user)
 
 
@@ -3554,6 +3912,14 @@ def _diagnostic_has_result(doctype: str, name: str) -> bool:
 	if doctype == "Imaging":
 		return bool(_get_optional_value("Imaging", name, "report"))
 	return False
+
+
+def _billing_option_label(service_option: str | None) -> str | None:
+	"""A weight band's own name, for an order that has no template to take one from."""
+	service_option = cstr(service_option).strip()
+	if not service_option:
+		return None
+	return cstr(frappe.db.get_value("Care Service Billing Option", service_option, "service_title")).strip() or None
 
 
 def _care_service_label(care_service: str | None) -> str | None:
@@ -3678,19 +4044,28 @@ def _new_order_id(visit) -> str:
 def _deterministic_order_id(visit, row: dict, kind: str, template_id: str | None) -> str:
 	procedure_template = cstr(row.get("procedure_template") or row.get("procedure")).strip()
 	title = cstr(row.get("title") or row.get("name")).strip()
-	identity = "|".join(
-		[
-			visit.name,
-			kind,
-			cstr(template_id).strip(),
-			procedure_template,
-			cstr(row.get("item_code")).strip(),
-			title,
-			cstr(row.get("body_part") or row.get("bodyPart")).strip(),
-			cstr(row.get("modality")).strip(),
-			cstr(row.get("note")).strip(),
-		]
-	)
+	parts = [
+		visit.name,
+		kind,
+		cstr(template_id).strip(),
+		procedure_template,
+		cstr(row.get("item_code")).strip(),
+		title,
+		cstr(row.get("body_part") or row.get("bodyPart")).strip(),
+		cstr(row.get("modality")).strip(),
+		cstr(row.get("note")).strip(),
+	]
+	if kind == "preventive":
+		# A deworming order identifies by its weight band, not by a template - it has none.
+		# Without this, two bands of the same drug on one visit hash identically, the second
+		# is matched as "already ordered", and only one dose is ever created.
+		#
+		# APPENDED ONLY FOR THIS KIND, deliberately. Adding a component unconditionally
+		# would change the digest of EVERY kind, and a client re-posting an existing order
+		# without its `order_id` would then get a new id and a duplicate row instead of a
+		# match. Every other kind's identity is byte-identical to what it was.
+		parts.append(cstr(row.get("service_option")).strip())
+	identity = "|".join(parts)
 	digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10].upper()
 	return f"{visit.name}-ORD-{digest}"
 
@@ -3709,6 +4084,7 @@ def _update_order_row_from_payload(visit, order_row, row: dict, kind: str, templ
 		or row.get("name")
 		or _procedure_template_label(row.get("procedure_template") or row.get("procedure") or row.get("template_id"))
 		or _care_service_label(template_id)
+		or _billing_option_label(row.get("service_option"))
 		or kind.title()
 	)
 	order_row.item_code = row.get("item_code")
@@ -3735,6 +4111,12 @@ def _normalize_order_kind(kind: str) -> str:
 		return "service"
 	if kind in {"procedure", "proc"}:
 		return "procedure"
+	# One kind covers both, because one doctype does: `Preventive Care Record` derives
+	# whether it is a vaccination or a deworming from its catalogue category, so the client
+	# does not have to say and cannot say it wrongly. Both words are accepted as input for
+	# a caller that finds them natural.
+	if kind in {"preventive", "vaccination", "vaccine", "deworming", "deworm"}:
+		return "preventive"
 	if kind in {"medication", "medicine", "drug"}:
 		return "medication"
 	return "other"

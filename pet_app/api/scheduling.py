@@ -15,6 +15,24 @@ from pet_app.utils.offline import run_idempotent
 
 
 @frappe.whitelist()
+def list_appointment_types():
+	try:
+		field = frappe.get_meta("Appointment").get_field("custom_appointment_type")
+		if not field:
+			return fail(_("Appointment type field is missing."), code="CONFIGURATION_ERROR")
+		options = _select_options(field.options)
+		return ok(
+			{
+				"appointment_types": [_appointment_type_payload(option) for option in options],
+				"types": options,
+			},
+			meta={"total": len(options)},
+		)
+	except Exception as exc:
+		return _error_response(exc)
+
+
+@frappe.whitelist()
 def get_available_slots(date=None, doctor=None, practitioner=None, room=None, service_type="Visit", duration_minutes=None):
 	try:
 		doctor = practitioner or doctor
@@ -298,6 +316,23 @@ def _appointment_payload(doc) -> dict:
 		"duration_minutes": doc.get("custom_duration_minutes"),
 	}
 	return with_link_aliases(payload, pet_field="pet", guardian_field="guardian", doctor_field="doctor", include_provider=False)
+
+
+def _appointment_type_payload(value: str) -> dict:
+	label = cstr(value).replace("_", " ").strip().title()
+	return {"value": value, "label": _(label)}
+
+
+def _select_options(options) -> list[str]:
+	seen = set()
+	values = []
+	for option in cstr(options).splitlines():
+		value = option.strip()
+		if not value or value in seen:
+			continue
+		seen.add(value)
+		values.append(value)
+	return values
 
 
 def _current_user_guardian() -> str | None:

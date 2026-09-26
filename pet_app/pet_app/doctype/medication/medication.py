@@ -12,6 +12,11 @@ from frappe.utils import cint, cstr, flt
 
 from pet_app.api.permissions import require_doctype_permission, require_restriction_value
 from pet_app.utils.price_list import get_veterinary_selling_price_list
+from pet_app.utils.item_name_guard import (
+	may_rename_linked_item,
+	previous_master_values,
+	warn_linked_item_rename_skipped,
+)
 
 
 DOSE_OPTION_PLACEHOLDER_UOM = "Nos"
@@ -154,8 +159,12 @@ class Medication(Document):
 		changed = False
 
 		if item.item_name != self.medication_name:
-			item.item_name = self.medication_name
-			changed = True
+			previous = previous_master_values(self, ("medication_name",)).get("medication_name")
+			if may_rename_linked_item(item, previous):
+				item.item_name = self.medication_name
+				changed = True
+			else:
+				warn_linked_item_rename_skipped(item, self)
 
 		description_parts = [self.strength, self.default_instructions]
 		description = "\n".join(part for part in description_parts if part)
@@ -198,6 +207,16 @@ class Medication(Document):
 
 		if not cint(item.is_purchase_item):
 			item.is_purchase_item = 1
+			changed = True
+
+		# Medicine may be dispensed the ledger has not caught up with yet - an opened vial,
+		# a miscount, a bin that was never opening-balanced - and a blocked dispense does not
+		# make the count correct. Asserted on every save like its neighbours above, so a
+		# medication created tomorrow needs no backfill; see the
+		# medication_items_allow_negative_stock patch for why this is per-Item rather than
+		# the global Stock Settings flag.
+		if not cint(item.allow_negative_stock):
+			item.allow_negative_stock = 1
 			changed = True
 
 		if changed:

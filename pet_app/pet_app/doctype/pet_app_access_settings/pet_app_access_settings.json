@@ -5,10 +5,70 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+  "billing_section",
+  "billing_trigger",
+  "medication_billing_trigger",
+  "include_visit_medication_in_boarding",
+  "clinical_access_section",
+  "open_clinical_read_for_doctors",
+  "send_defaults_section",
+  "send_defaults",
   "pages_section",
   "pages"
  ],
  "fields": [
+  {
+   "fieldname": "billing_section",
+   "fieldtype": "Section Break",
+   "label": "Billing"
+  },
+  {
+   "default": "on_release",
+   "description": "When a billable item becomes a Sales Invoice line, for every service type - Lab, Imaging, Procedure, Service and Medication alike. on_request bills the moment an order is created; on_start when it is started; on_release when the result is released or the service completed; on_visit_close when the case is completed. on_release is the behaviour that predates this setting. Cancelling an order always removes its invoice line while the invoice is still a Draft; once the invoice is submitted, cancellation is refused and referred to the cashier.",
+   "fieldname": "billing_trigger",
+   "fieldtype": "Select",
+   "label": "Billing Trigger",
+   "options": "\non_request\non_start\non_release\non_visit_close"
+  },
+  {
+   "default": "on_request",
+   "description": "When a prescribed medication becomes a Sales Invoice line. Overrides Billing Trigger for medication only; Lab, Imaging, Procedure and Service continue to follow Billing Trigger. on_request (at prescribe). on_release (at dispense, else at visit close). on_visit_close bills everything when the case is completed. on_start is not offered: a prescription has no start of its own, and the only moment it could map to - a partial dispense - is indistinguishable from on_release in practice. Once a medication has been billed its quantity is locked; to correct a dose, cancel the medication and prescribe it again.",
+   "fieldname": "medication_billing_trigger",
+   "fieldtype": "Select",
+   "label": "Medication Billing Trigger",
+   "options": "\non_request\non_release\non_visit_close"
+  },
+  {
+   "default": "1",
+   "description": "When on, medication prescribed on a visit is treated as covered by the Treatment boarding rate whenever the pet is on an active Treatment boarding stay: the billable row is created and priced, marked Included, and never becomes an invoice line - the same treatment boarding-ordered medication already gets. When off, visit medication is billed normally whatever the pet's boarding status. Affects only medication prescribed on a Vet Visit; boarding-ordered medication is unaffected either way.",
+   "fieldname": "include_visit_medication_in_boarding",
+   "fieldtype": "Check",
+   "label": "Include Visit Medication In Boarding Rate"
+  },
+  {
+   "fieldname": "clinical_access_section",
+   "fieldtype": "Section Break",
+   "label": "Clinical Access"
+  },
+  {
+   "default": "0",
+   "description": "When on, any active Doctor may OPEN a colleague's Vet Visit, Lab, Imaging, PetCareService or Pet Procedure record for reading. Writing, closing, dispensing, invoicing and case ownership stay restricted exactly as before, and the page roles (Visits / Visits Read / Visits Update) still decide whether the user reaches the record at all. Applies only to practitioner_type = Doctor, on a practitioner that is not disabled, whose User is enabled. Service Providers and Coordinators are unaffected.",
+   "fieldname": "open_clinical_read_for_doctors",
+   "fieldtype": "Check",
+   "label": "Open Clinical Read For Doctors"
+  },
+  {
+   "fieldname": "send_defaults_section",
+   "fieldtype": "Section Break",
+   "label": "WhatsApp Send Defaults"
+  },
+  {
+   "description": "The default template each send surface offers. This is the only place a default lives: SEND_SURFACES (pet_app/notifications/send_targets.py) says which surfaces exist, this table says what each one sends. A surface with no row here, a blank row, and a row with Enabled off all mean the same thing - that surface's picker opens with nothing selected. There is no code-side fallback, so deleting a row cannot resurrect an older default.",
+   "fieldname": "send_defaults",
+   "fieldtype": "Table",
+   "label": "Send Defaults",
+   "options": "Pet App WhatsApp Send Default"
+  },
   {
    "fieldname": "pages_section",
    "fieldtype": "Section Break",
@@ -25,7 +85,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-05-15 00:00:00.000000",
+ "modified": "2026-09-05 00:00:03.000000",
  "modified_by": "Administrator",
  "module": "Pet App",
  "name": "Pet App Access Settings",

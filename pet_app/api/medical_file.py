@@ -290,8 +290,10 @@ def _linked_clinical_events(pet: str, limit: int) -> list[dict]:
 					"summary": row.procedure_template,
 				}
 			)
-	events.extend(_record_events("Pet Vaccination Record", pet, "vaccination", "vaccine_name", "administered_on", limit))
-	events.extend(_record_events("Pet Deworming Record", pet, "deworming", "medication_name", "administered_on", limit))
+	# One doctype, two event types. Still two calls rather than one: the timeline labels each
+	# event, and a single query would have to re-derive the label per row anyway.
+	events.extend(_record_events(PREVENTIVE_DOCTYPE, pet, "vaccination", "medication_name", "administered_on", limit, extra_filters={"kind": "Vaccination"}))
+	events.extend(_record_events(PREVENTIVE_DOCTYPE, pet, "deworming", "medication_name", "administered_on", limit, extra_filters={"kind": "Deworming"}))
 	events.extend(_boarding_events(pet, limit))
 	events.extend(_death_events(pet, limit))
 	return events
@@ -434,12 +436,15 @@ def _invoice_events(visit_names: list[str], limit: int) -> list[dict]:
 	return events
 
 
-def _record_events(doctype: str, pet: str, event_type: str, summary_field: str, date_field: str, limit: int) -> list[dict]:
+PREVENTIVE_DOCTYPE = "Preventive Care Record"
+
+
+def _record_events(doctype: str, pet: str, event_type: str, summary_field: str, date_field: str, limit: int, *, extra_filters: dict | None = None) -> list[dict]:
 	if not frappe.db.exists("DocType", doctype):
 		return []
 	rows = frappe.get_all(
 		doctype,
-		filters={"pet": pet},
+		filters={"pet": pet, **(extra_filters or {})},
 		fields=["name", "visit", "pet", "doctor", summary_field, date_field, "next_due_date", "reminder_status", "modified"],
 		order_by=f"{date_field} desc, modified desc",
 		limit_page_length=limit,
