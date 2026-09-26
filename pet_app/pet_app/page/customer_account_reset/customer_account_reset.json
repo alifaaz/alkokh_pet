@@ -1,0 +1,10 @@
+{
+ "doctype": "Page",
+ "name": "customer-account-reset",
+ "page_name": "customer-account-reset",
+ "title": "Customer Account Reset",
+ "module": "Pet App",
+ "standard": "Yes",
+ "system_page": 0,
+ "roles": [{"role": "Administrator"}]
+}

@@ -83,6 +83,8 @@ def _create_cashier_custom_fields():
 				"allow_on_submit": 1,
 				"in_standard_filter": 1,
 				"read_only": 1,
+				# Provenance, not scope: see sales_invoice_ignore_till_permissions.
+				"ignore_user_permissions": 1,
 			},
 			{
 				"fieldname": "custom_cashier_user",

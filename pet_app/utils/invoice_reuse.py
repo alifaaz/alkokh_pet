@@ -1,27 +1,8 @@
-"""One open Draft per customer, per company, per branch, per stock kind.
+"""One open regular draft per customer, company and branch, across dates.
 
-Before this, all four backend creation paths called frappe.get_doc({...}).insert()
-unconditionally: nothing looked for an existing Draft, and two identical invoices for one
-customer on one day was the normal outcome rather than a race. This is the only place
-that decides whether to create or append.
-
-The match key is deliberate:
-
-  customer   - the grain the rule is stated on.
-  company    - never left to ERPNext's default here; the lookup filter and the created
-               row must agree, and all four call sites used to omit it entirely.
-  branch     - a live accounting dimension. Merging the clinic's and the boarding
-               facility's charges onto one invoice would misattribute revenue in the
-               ledger, not merely in a report.
-  update_stock - a document-level flag with no per-row equivalent. Appending a stock line
-               to a non-stock draft would leave that line moving no stock; flipping the
-               flag would retroactively change lines already agreed. Keying on it means a
-               customer may hold two open drafts at once, which is correct - they are not
-               mergeable documents.
-
-POS invoices are excluded in both directions: is_pos = 1 always creates, is never looked
-up, and is never returned by a lookup. They demand immediate payment and must not absorb
-or be absorbed. Returns (is_return = 1) are excluded for the same structural reason.
+Stock and non-stock services share a draft. ERPNext deducts stock Items (including
+Product Bundle contents) on submission. POS, returns and driver operations stay
+standalone. Existing historical stock issues are refused for cashier review.
 """
 
 from __future__ import annotations
@@ -32,6 +13,7 @@ from frappe.utils import cint, cstr, getdate, nowdate
 
 from pet_app.utils.branch import BRANCH_AUTHORISED_FLAG
 from pet_app.utils.invoice_source import append_marker
+from pet_app.utils.invoice_stock import items_require_stock, prepare_invoice_stock
 
 GUARDIAN_FIELD_CANDIDATES = ("guardian_id", "guardian", "custom_guardian_id", "custom_guardian")
 
@@ -100,29 +82,35 @@ def find_open_invoice(
     company: str,
     branch: str | None = None,
     requires_stock: bool = False,
+    for_update: bool = False,
 ) -> str | None:
-    """The newest reusable Draft for this match key, or None."""
-    filters = {
-        "docstatus": 0,
-        "customer": customer,
-        "company": company,
-        "is_pos": 0,
-        "is_return": 0,
-        "update_stock": 1 if requires_stock else 0,
-    }
-    # A blank branch is its own bucket, not a wildcard - otherwise an unbranched draft
-    # would silently absorb branched charges.
-    filters["branch"] = branch or ""
+    """Newest regular draft. requires_stock is retained for caller compatibility.
 
-    rows = frappe.get_all(
-        "Sales Invoice",
-        filters=filters,
-        fields=["name"],
-        order_by="creation desc",
-        limit_page_length=1,
-        ignore_permissions=True,
+    The locked lookup is a current read: a transaction may already have a snapshot
+    from planning charges before it acquired the Customer lock.
+    """
+    conditions = ["docstatus = 0", "customer = %(customer)s", "company = %(company)s",
+                  "COALESCE(branch, '') = %(branch)s", "is_pos = 0", "is_return = 0"]
+    for field in ("custom_driver_flow", "is_created_using_pos"):
+        if frappe.db.has_column("Sales Invoice", field):
+            conditions.append(f"COALESCE({field}, 0) = 0")
+    for field in ("custom_driver_operation", "pos_profile"):
+        if frappe.db.has_column("Sales Invoice", field):
+            conditions.append(f"COALESCE({field}, '') = ''")
+    conditions.append("NOT EXISTS (SELECT 1 FROM `tabSales Invoice Item` item "
+                      "WHERE item.parent = `tabSales Invoice`.name AND COALESCE(item.delivery_note, '') != '')")
+    # An unpaid counter sale has is_pos=0 and no pos_profile. Its source marker
+    # identifies it without excluding regular drafts merely stamped by a cashier.
+    conditions.append("NOT EXISTS (SELECT 1 FROM `tabSales Invoice Item` counter_item "
+                      "WHERE counter_item.parent = `tabSales Invoice`.name "
+                      "AND counter_item.description LIKE %(counter_marker)s)")
+    rows = frappe.db.sql(
+        "SELECT name FROM `tabSales Invoice` WHERE " + " AND ".join(conditions)
+        + " ORDER BY creation DESC, name DESC LIMIT 1" + (" FOR UPDATE" if for_update else ""),
+        {"customer": customer, "company": company, "branch": branch or "",
+         "counter_marker": "%[alkokh-source-group:POS Profile:%"},
     )
-    return rows[0].name if rows else None
+    return rows[0][0] if rows else None
 
 
 SOURCE_ROW_KEYS = ("source_doctype", "source_name")
@@ -194,10 +182,21 @@ def get_or_create_open_invoice(
     pos_profile: str | None = None,
     ignore_permissions: bool = False,
     branch_authorised: bool = False,
+    force_new: bool = False,
+    extra_fields: dict | None = None,
 ) -> frappe._dict:
     """Append to the customer's open Draft, or create one.
 
     Returns {invoice, created, guardian_reference_field, appended_row_count}.
+
+    `force_new` skips the lookup entirely and always creates, for a caller that knows its
+    document is not mergeable even though is_pos is 0 - see the module docstring. It also
+    skips `_lock_customer`: the lock exists to serialise lookup -> decide -> insert, and a
+    caller that never looks up has no decision to serialise.
+
+    `extra_fields` are header fields set on the CREATE path only. They are applied
+    verbatim, so a caller must build them from values it has already validated and must
+    never pass request data through unfiltered.
 
     `branch_authorised` is the elevation for service-owned branches: the work happened
     where the service lives, so the invoice belongs to that branch even when the person
@@ -228,28 +227,28 @@ def get_or_create_open_invoice(
     posting_date = getdate(posting_date) if posting_date else getdate(nowdate())
     due_date = getdate(due_date) if due_date else posting_date
 
-    if requires_stock is None:
-        requires_stock = any(row.get("warehouse") for row in items)
-    requires_stock = bool(requires_stock)
+    requires_stock = bool(requires_stock or items_require_stock(items))
 
     marked_items = _mark_items(items, source_doctype, source_name)
 
     # POS never participates: not looked up, not found, always new.
-    if cint(is_pos):
+    standalone = extra_fields or {}
+    if cint(is_pos) or force_new or source_doctype == "POS Profile" or any(standalone.get(key) for key in ("is_return", "custom_driver_flow", "custom_driver_operation")):
         return _create_invoice(
             customer=customer, company=company, branch=branch, items=marked_items,
             posting_date=posting_date, due_date=due_date,
             selling_price_list=selling_price_list, ignore_pricing_rule=ignore_pricing_rule,
             remarks=remarks, guardian=guardian, requires_stock=requires_stock,
-            is_pos=1, pos_profile=pos_profile, ignore_permissions=ignore_permissions,
-            branch_authorised=branch_authorised,
+            is_pos=cint(is_pos), pos_profile=pos_profile,
+            ignore_permissions=ignore_permissions,
+            branch_authorised=branch_authorised, extra_fields=extra_fields,
         )
 
     # Taken BEFORE the lookup and held for the transaction.
     _lock_customer(customer)
 
     existing = find_open_invoice(
-        customer=customer, company=company, branch=branch, requires_stock=requires_stock
+        customer=customer, company=company, branch=branch, for_update=True
     )
     if not existing:
         return _create_invoice(
@@ -261,13 +260,14 @@ def get_or_create_open_invoice(
             branch_authorised=branch_authorised,
         )
 
-    invoice = frappe.get_doc("Sales Invoice", existing)
+    invoice = frappe.get_doc("Sales Invoice", existing, for_update=True)
     for row in marked_items:
         invoice.append("items", row)
     _append_remark(invoice, remarks)
     guardian_field = _set_guardian(invoice, guardian) if guardian else None
 
     invoice.flags.from_custom_flow = True
+    prepare_invoice_stock(invoice)
     invoice.flags.ignore_permissions = True
     invoice.save(ignore_permissions=True)
     invoice.add_comment(
@@ -287,7 +287,7 @@ def get_or_create_open_invoice(
 def _create_invoice(
     *, customer, company, branch, items, posting_date, due_date, selling_price_list,
     ignore_pricing_rule, remarks, guardian, requires_stock, is_pos, pos_profile,
-    ignore_permissions, branch_authorised=False,
+    ignore_permissions, branch_authorised=False, extra_fields=None,
 ) -> frappe._dict:
     payload = {
         "doctype": "Sales Invoice",
@@ -307,6 +307,12 @@ def _create_invoice(
         payload["remarks"] = remarks
 
     invoice = frappe.get_doc(payload)
+    # Set before the branch/pos stamping below so a caller cannot use extra_fields to
+    # overwrite either of them by the back door.
+    for fieldname, value in (extra_fields or {}).items():
+        if value in (None, "") or not invoice.meta.has_field(fieldname):
+            continue
+        invoice.set(fieldname, value)
     # Written after construction so it lands even when the field is a custom one.
     if branch and invoice.meta.has_field("branch"):
         invoice.branch = branch
@@ -315,6 +321,7 @@ def _create_invoice(
     guardian_field = _set_guardian(invoice, guardian)
 
     invoice.flags.from_custom_flow = True
+    prepare_invoice_stock(invoice)
 
     if branch_authorised:
         # Both halves are required and neither substitutes for the other.
