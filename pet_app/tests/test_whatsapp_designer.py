@@ -238,6 +238,12 @@ class TestWhatsAppRuleDesigner(FrappeTestCase):
 				"pet_name": f"Designer Pet {suffix}",
 				"animal_species": "Mammal",
 				"animal_type": "Dog",
+				# Same pre-existing fixture gap repaired in test_whatsapp_actions:
+				# birth_date, gender and weight became mandatory on Pet after this helper
+				# was written. Values are arbitrary; nothing here reads them.
+				"birth_date": "2024-01-01",
+				"gender": "Unknown",
+				"weight": 10,
 				"pet_status": "Approved",
 			}
 		).insert(ignore_permissions=True)

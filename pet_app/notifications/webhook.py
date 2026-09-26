@@ -139,6 +139,21 @@ def _apply_event(event):
 			conversation.status = "Blocked"
 			conversation.save(ignore_permissions=True)
 			return
+		# A tap on a template that promised the record's report is answered with that
+		# report. Queued, never sent inline: this is the first inbound path that would
+		# make an outbound HTTP call, and processed=1 is written only after this function
+		# returns, so a slow send would leave Meta free to redeliver into the unique
+		# constraint on the stored event row.
+		#
+		# Placed before process_inbound_action, and after the opt-out return above, so a
+		# guardian who just sent STOP is never answered with a document. The two are
+		# independent: this one only fires for a template that declared it promises a
+		# report, and enqueue_after_commit means neither sends anything if the other
+		# raises and the transaction rolls back.
+		from pet_app.notifications.reports import enqueue_reply_report_delivery
+
+		enqueue_reply_report_delivery(message, conversation)
+
 		from pet_app.notifications.actions import process_inbound_action
 
 		process_inbound_action(message, conversation)
@@ -260,6 +275,22 @@ def _message_event(message, phone_number_id):
 	caption = None
 	provider_media_id = None
 	filename = None
+	# Meta puts the message being replied to in ``context.id`` - its wamid, which is the
+	# same value this app stores as provider_message_id on the outbound row. It is the
+	# only link from an inbound reply back to the message that prompted it: a quick-reply
+	# tap carries the button's label and nothing about the record the template was about.
+	# Read on every message type, not just taps, because a typed reply that quotes a
+	# message carries it too.
+	#
+	# Defensive for the same reason the button branch is: an unexpected shape here must
+	# not take down the webhook, because the stored row and the 24-hour session window
+	# both depend on this function returning. context also carries ``forwarded``,
+	# ``frequently_forwarded`` and ``referred_product`` in other flows; only ``id`` is
+	# read, and the whole object survives verbatim in raw_json either way.
+	context = message.get("context")
+	if not isinstance(context, dict):
+		context = {}
+	context_message_id = cstr(context.get("id")).strip() or None
 
 	if message_type == "interactive":
 		interactive = message.get("interactive") or {}
@@ -267,6 +298,42 @@ def _message_event(message, phone_number_id):
 		interactive_id = reply.get("id")
 		interactive_title = reply.get("title")
 		body = interactive_title or body
+		resolved_type = "Interactive"
+	elif message_type == "button":
+		# A tap on a template's quick-reply button. Meta sends this as its own top-level
+		# type rather than as an "interactive" message, which is why it used to fall
+		# through to Unsupported with a blank body - a row that recorded that something
+		# arrived and nothing about what.
+		#
+		# Read defensively. No button tap has ever been observed on this site (zero
+		# across 109 stored webhook events and 73 inbound messages), so these key names
+		# come from Meta's documentation and not from a payload anyone here has seen. Any
+		# of them being absent yields an empty body rather than an exception: the row
+		# still has to be stored and the session window still has to open, and both of
+		# those happen downstream of this function.
+		button = message.get("button")
+		# Not just "or {}": a payload where button is a bare string rather than an object
+		# would sail past that and raise on .get, taking the webhook - and with it the
+		# stored row and the session window - down with it. The shape is unverified, so
+		# anything that is not an object is treated as no object at all.
+		if not isinstance(button, dict):
+			button = {}
+		# ``text`` is the visible label. ``payload`` is the developer value, which for a
+		# template button carrying no per-send payload is the same string; either is a
+		# better record than nothing.
+		interactive_title = cstr(button.get("text") or button.get("payload")).strip() or None
+		body = interactive_title or body
+		# interactive_id is deliberately left unset. It means "a payload this app minted
+		# and can parse": match_response reads it as wa:<request>:<key> and returns
+		# no-match *without* falling back to the text path when it does not parse
+		# (actions.py:514), and process_inbound_action gates comment capture on its
+		# absence (:347). A constant string we did not mint belongs in neither place.
+		#
+		# Interactive rather than a new Button value, because message_type is a Select
+		# and "Button" is not one of its options - writing it would fail validation and
+		# take the whole webhook down with it, losing the row and the window. A tap is
+		# still distinguishable from a list pick: only the pick carries interactive_id,
+		# and raw_json records type "button" verbatim either way.
 		resolved_type = "Interactive"
 	elif message_type in {"image", "document", "video", "audio", "sticker"}:
 		media = message.get(message_type) or {}
@@ -290,6 +357,7 @@ def _message_event(message, phone_number_id):
 	return {
 		"event_type": "message",
 		"provider_message_id": message.get("id"),
+		"context_message_id": context_message_id,
 		"status": "received",
 		"timestamp": message.get("timestamp"),
 		"phone_number_id": phone_number_id,

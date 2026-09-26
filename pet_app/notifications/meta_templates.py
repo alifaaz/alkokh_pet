@@ -661,6 +661,24 @@ def stored_source_doctype(meta_template) -> str:
 	).strip()
 
 
+def promises_reviewed_report(meta_template) -> bool:
+	"""Whether this template tells the customer a report is coming.
+
+	The one thing that distinguishes lab_result_ready from boarding_checkin, and it is
+	configuration rather than code: no module lists which templates promise a report, so
+	the radiology template - and whatever comes after it - needs no change anywhere.
+
+	False on a site where the column does not exist yet, so every send path keeps its
+	pre-field behaviour exactly. Same defensive shape as stored_source_doctype.
+	"""
+	if not frappe.get_meta(MIRROR_DOCTYPE).has_field("delivers_reviewed_report"):
+		return False
+	name = cstr(meta_template).strip()
+	if not name:
+		return False
+	return bool(cint(frappe.db.get_value(MIRROR_DOCTYPE, name, "delivers_reviewed_report")))
+
+
 def source_doctype_options() -> list:
 	"""The doctypes a template may declare as its source, sorted.
 
@@ -1308,7 +1326,48 @@ MIRROR_FIELDS = (
 	"binding_state",
 	"missing_on_meta",
 	"provider_account",
+	"surface_category",
 )
+
+
+def pair_surface_category(local_value, mirror_value, *, bound: bool) -> tuple[str | None, str | None]:
+	"""The screen category of a template, and which row it came from.
+
+	PRECEDENCE, ONE RULE FOR BOTH ENTRIES OF A BOUND PAIR. A bound mirror row and its local
+	row are one template offered as two picker entries, so they must land on the same
+	screen. The LOCAL row's value wins whenever it is set; the mirror row's own value is a
+	fallback only, kept so a value stored on the mirror before it was bound (a sync rebinds
+	by name and language) is not silently dropped. The mirror side of a bound pair cannot
+	be written through the API - `set_meta_template_surface_category` refuses it - so the
+	local row is where a bound pair is categorised.
+
+	An unbound row has no partner: its own value is the answer.
+
+	Returns ``(value or None, "local" | "mirror" | None)``.
+	"""
+	local_value = cstr(local_value).strip()
+	mirror_value = cstr(mirror_value).strip()
+	if bound and local_value:
+		return local_value, "local"
+	if mirror_value:
+		return mirror_value, "mirror"
+	return None, None
+
+
+def local_surface_categories(local_names) -> dict:
+	"""``surface_category`` of these local rows, in one query. Missing rows map to nothing."""
+	names = sorted({cstr(name) for name in (local_names or []) if cstr(name)})
+	if not names:
+		return {}
+	return {
+		row.name: cstr(row.surface_category)
+		for row in frappe.get_all(
+			LOCAL_TEMPLATE_DOCTYPE,
+			filters={"name": ["in", names]},
+			fields=["name", "surface_category"],
+			ignore_permissions=True,
+		)
+	}
 
 
 def slot_map_sizes(meta_template_ids) -> dict:
@@ -1333,9 +1392,21 @@ def slot_map_sizes(meta_template_ids) -> dict:
 	return {cstr(row.parent): cint(row.mapped) for row in rows}
 
 
-def mirror_payload(row, *, mapped_slot_count=None) -> dict:
-	"""The frozen MetaTemplate shape the frontend is built against."""
+def mirror_payload(row, *, mapped_slot_count=None, local_surface=_UNSET) -> dict:
+	"""The frozen MetaTemplate shape the frontend is built against.
+
+	``local_surface`` is the bound local row's ``surface_category`` when the caller already
+	has it (a list batches it); left unset, it is read here for a bound row.
+	"""
 	get = row.get if hasattr(row, "get") else (lambda key, default=None: getattr(row, key, default))
+	bound = bool(get("local_template"))
+	if local_surface is _UNSET:
+		local_surface = (
+			local_surface_categories([get("local_template")]).get(cstr(get("local_template")))
+			if bound
+			else None
+		)
+	surface, surface_source = pair_surface_category(local_surface, get("surface_category"), bound=bound)
 	meta_template_id = cstr(get("meta_template_id"))
 	components = declared_components(row)
 	# Same counting function validation and the send path use. None means the shape is
@@ -1370,6 +1441,16 @@ def mirror_payload(row, *, mapped_slot_count=None) -> dict:
 		# with no variables at all - none is needed, and none exists. A picker asking
 		# "can a rule send this" wants `declared_count == 0 || slot_map_present`.
 		"slot_map_present": bool(declared_count is not None and mapped > 0 and mapped == declared_count),
+		# Which of OUR screens offers this template - internal only, never sent to Meta.
+		# The effective value, resolved by pair_surface_category exactly as the picker
+		# resolves it, so the panel shows what the picker will do.
+		"surface_category": surface,
+		# "local" = inherited from the bound local template, "mirror" = stored on this row,
+		# None = uncategorised (offered on every screen).
+		"surface_category_source": surface_source,
+		# False on a bound row: set_meta_template_surface_category refuses it, and the
+		# category is edited on the local template instead.
+		"surface_category_editable": not bound,
 	}
 
 
@@ -1447,9 +1528,14 @@ def list_mirror_templates(status=None, language=None, limit=None, after=None) ->
 		paging["after"] = encode_cursor(rows[-1].get("template_name"), rows[-1].get("meta_template_id"))
 
 	mapped = slot_map_sizes([row.get("meta_template_id") for row in rows])
+	local_surface = local_surface_categories([row.get("local_template") for row in rows])
 	return {
 		"templates": [
-			mirror_payload(row, mapped_slot_count=mapped.get(cstr(row.get("meta_template_id")), 0))
+			mirror_payload(
+				row,
+				mapped_slot_count=mapped.get(cstr(row.get("meta_template_id")), 0),
+				local_surface=local_surface.get(cstr(row.get("local_template"))),
+			)
 			for row in rows
 		],
 		"paging": paging,
@@ -1710,4 +1796,533 @@ def delete_meta_template(*, name, account=None) -> dict:
 		"removed_mirror_rows": removed,
 		# True when Meta had already lost the template and only local work remained.
 		"already_absent_on_meta": already_absent,
+	}
+
+
+# ---------------------------------------------------------------------------
+# unified picker options
+# ---------------------------------------------------------------------------
+
+# Reason codes the picker can attach to an entry. The first seven are the codes the
+# send path already raises, reused verbatim so the reason an operator reads in the
+# dropdown is the same string the refusal would carry. The last four have no send-path
+# equivalent because they describe states the send path never reaches - it resolves a
+# template first and only then checks it, whereas the picker has to describe rows
+# nobody has chosen yet.
+REASON_MISSING_ON_META = "META_TEMPLATE_MISSING_ON_META"
+REASON_NOT_APPROVED = "META_TEMPLATE_NOT_APPROVED"
+REASON_SLOT_MAP_MISSING = "SEND_TARGET_SLOT_MAP_MISSING"
+REASON_SLOT_MAP_STALE = "META_TEMPLATE_SLOT_MAP_STALE"
+REASON_MARKETING_DISABLED = "MARKETING_DISABLED"
+REASON_NOT_LINKED = "META_TEMPLATE_NOT_LINKED"
+REASON_AMBIGUOUS = "META_TEMPLATE_AMBIGUOUS"
+REASON_SHAPE_UNREADABLE = "META_TEMPLATE_SHAPE_UNREADABLE"
+REASON_SLOT_MAP_COUNT = "META_TEMPLATE_SLOT_MAP_COUNT"
+REASON_TEMPLATE_DISABLED = "TEMPLATE_DISABLED"
+REASON_CONTENT_INVALID = "TEMPLATE_CONTENT_INVALID"
+# Session-only: a local template with no body and no media has nothing to send as a
+# normal message - the send path would otherwise fall back to sending its event key.
+REASON_BODY_EMPTY = "TEMPLATE_BODY_EMPTY"
+
+# THE SESSION VERDICT. `sendable` / `reasons` describe sending a row AS A META TEMPLATE,
+# which is the only thing that can reach a customer whose 24-hour window is closed.
+# `session_sendable` / `session_reasons` describe sending it INSIDE an open window.
+#
+# A mirror row is a Meta template in any window, so both verdicts are the same list.
+#
+# A LOCAL row inside an open window is sent as a normal message: its own body_preview,
+# rendered from the source record by the local renderer. Nothing Meta-side is consulted -
+# not the binding, not the bound row's approval, not its variable map - so every reason
+# about the Meta route lifts: NOT_LINKED, AMBIGUOUS, MISSING_ON_META, NOT_APPROVED,
+# SHAPE_UNREADABLE, SLOT_MAP_MISSING, SLOT_MAP_COUNT, SLOT_MAP_STALE, and the Meta
+# category's MARKETING_DISABLED. What stays is what is true of the row itself:
+LOCAL_ABSOLUTE_REASONS = frozenset({REASON_TEMPLATE_DISABLED, REASON_CONTENT_INVALID})
+# plus MARKETING_DISABLED judged on the LOCAL row's own category (the one the send-time
+# gate reads for a local send - engine._queue_category), and TEMPLATE_BODY_EMPTY.
+
+MARKETING_LOCAL_CATEGORY = "Marketing"
+
+
+def _reason(code, message, field):
+	"""One refusal, carrying everything the frontend needs to render it.
+
+	``field`` names what the operator would have to change, so a picker can point at
+	the right screen without a lookup table keyed on the code.
+	"""
+	return {"code": code, "message": message, "field": field}
+
+
+def _picker_marketing_blocked(local_category, allow_marketing) -> bool:
+	return cstr(local_category).strip() == MARKETING_LOCAL_CATEGORY and not cint(allow_marketing)
+
+
+def _mirror_reasons(row, *, declared, mapped, local_category, allow_marketing) -> list:
+	"""Why this mirror row could not be sent, as the send source it represents.
+
+	Deliberately says nothing about binding. A mirror-direct send needs no local
+	template behind it - 19 of the 21 rows on this site are unbound and 11 of those
+	are perfectly sendable - so treating "unbound" as a refusal here would hide most
+	of the usable Meta templates behind a warning that does not apply to them.
+	Binding is reported separately, as state, on ``binding_state``.
+	"""
+	reasons = []
+	if cint(row.get("missing_on_meta")):
+		reasons.append(
+			_reason(
+				REASON_MISSING_ON_META,
+				_("{0} no longer exists on Meta. Recreate it in the Meta Templates tab, then sync.").format(
+					row.get("template_name")
+				),
+				"meta_template",
+			)
+		)
+	if cstr(row.get("status")) != SENDABLE_STATUS:
+		reasons.append(
+			_reason(
+				REASON_NOT_APPROVED,
+				_("Meta reports {0} as {1}. It can only be sent once Meta reports it as {2}.").format(
+					row.get("template_name"), cstr(row.get("status")) or _("(none)"), SENDABLE_STATUS
+				),
+				"status",
+			)
+		)
+	if declared is None:
+		reasons.append(
+			_reason(
+				REASON_SHAPE_UNREADABLE,
+				_(
+					"The variables {0} declares cannot be read, so the message cannot be built. "
+					"Run a sync; if it persists the template uses a component this app does not support."
+				).format(row.get("template_name")),
+				"components",
+			)
+		)
+	elif declared and not mapped:
+		reasons.append(
+			_reason(
+				REASON_SLOT_MAP_MISSING,
+				_("{0} has {1} variable(s) and no saved variable map, so nothing can fill them.").format(
+					row.get("template_name"), declared
+				),
+				"slot_map",
+			)
+		)
+	elif declared and mapped != declared:
+		reasons.append(
+			_reason(
+				REASON_SLOT_MAP_COUNT,
+				_("{0} has {1} variable(s) but its saved map has {2}.").format(
+					row.get("template_name"), declared, mapped
+				),
+				"slot_map",
+			)
+		)
+	if cint(row.get("slot_map_stale")):
+		reasons.append(
+			_reason(
+				REASON_SLOT_MAP_STALE,
+				_("{0} changed on Meta since its variable map was saved. Re-map its variables.").format(
+					row.get("template_name")
+				),
+				"slot_map",
+			)
+		)
+	if _picker_marketing_blocked(local_category, allow_marketing):
+		reasons.append(
+			_reason(
+				REASON_MARKETING_DISABLED,
+				_("{0} is a Marketing template and marketing messages are disabled in Notification Settings.").format(
+					row.get("template_name")
+				),
+				"category",
+			)
+		)
+	return reasons
+
+
+def _local_reasons(row, bound_rows, *, declared, mapped, local_category, allow_marketing) -> list:
+	"""Why this local template could not be sent.
+
+	A local send resolves its identity through the bound mirror row, so everything
+	that makes that row unsendable makes this one unsendable too - and on top of it,
+	being unbound at all is fatal here in a way it never is for a mirror row.
+	"""
+	reasons = []
+	if not cint(row.get("enabled")):
+		reasons.append(
+			_reason(
+				REASON_TEMPLATE_DISABLED,
+				_("{0} is disabled.").format(row.get("template_key")),
+				"enabled",
+			)
+		)
+
+	if len(bound_rows) > 1:
+		reasons.append(
+			_reason(
+				REASON_AMBIGUOUS,
+				_("{0} is linked to more than one Meta template ({1}), so there is no single template to send.").format(
+					row.get("template_key"), ", ".join(sorted(r.get("name") for r in bound_rows))
+				),
+				"meta_template",
+			)
+		)
+	elif not bound_rows:
+		reasons.append(
+			_reason(
+				REASON_NOT_LINKED,
+				_(
+					"{0} is not linked to a Meta template. Binding is an exact match on name and "
+					"language: this row is {1} / {2}."
+				).format(row.get("template_key"), row.get("template_name"), row.get("language")),
+				"meta_template",
+			)
+		)
+	else:
+		reasons.extend(
+			_mirror_reasons(
+				bound_rows[0],
+				declared=declared,
+				mapped=mapped,
+				local_category=local_category,
+				allow_marketing=allow_marketing,
+			)
+		)
+
+	for message in row.get("content_errors") or []:
+		reasons.append(_reason(REASON_CONTENT_INVALID, message, "body_preview"))
+	return reasons
+
+
+def _local_session_reasons(row, reasons, *, allow_marketing) -> list:
+	"""Why this local row could not be sent as a normal message in an open window.
+
+	See LOCAL_ABSOLUTE_REASONS. The codes kept from ``reasons`` are reused verbatim, so
+	an absolute refusal reads the same in both lists.
+	"""
+	session = [reason for reason in reasons if reason["code"] in LOCAL_ABSOLUTE_REASONS]
+	if _picker_marketing_blocked(row.get("category"), allow_marketing):
+		session.append(
+			_reason(
+				REASON_MARKETING_DISABLED,
+				_("{0} is a Marketing template and marketing messages are disabled in Notification Settings.").format(
+					row.get("template_key")
+				),
+				"category",
+			)
+		)
+	if not cstr(row.get("body_preview")).strip() and not row.get("media_file"):
+		session.append(
+			_reason(
+				REASON_BODY_EMPTY,
+				_("{0} has no message body, so there is nothing to send as a normal message.").format(
+					row.get("template_key")
+				),
+				"body_preview",
+			)
+		)
+	return session
+
+
+def _surface_category_filter(value):
+	"""One key, a list of keys, or a JSON array of them -> a set. None means no filter.
+
+	Returning None for empty is the point: a caller that passes an empty string or an
+	empty list is asking for everything, not for nothing. A value that is not valid JSON
+	is taken as the literal key it looks like, so a plain ``lab`` works over the wire.
+
+	The keys are not validated against the category doctype. An unknown key filters
+	everything categorised away and leaves the uncategorised templates, which is the
+	honest answer to "show me the templates for a screen that has none yet".
+	"""
+	if value is None:
+		return None
+	if isinstance(value, str):
+		value = value.strip()
+		if not value:
+			return None
+		if value.startswith("["):
+			try:
+				value = json.loads(value)
+			except Exception:
+				value = [value]
+		else:
+			value = [value]
+	if not isinstance(value, (list, tuple, set)):
+		value = [value]
+	wanted = {cstr(item).strip() for item in value if cstr(item).strip()}
+	return wanted or None
+
+
+def unified_template_options(surface_category=None) -> dict:
+	"""Every Meta and local template as one list, in one shape, with sendability.
+
+	The data source for a single picker. Everything is returned, including what cannot
+	be sent: a template hidden from the list is one an operator concludes was deleted,
+	so unsendable rows come back marked and explained rather than filtered out.
+
+	Reads local data only - no Graph call. ``status`` and ``missing_on_meta`` are the
+	mirror's last-synced word, which is exactly what every send path already trusts;
+	calling Meta per row would make the picker unusable and would still be stale by the
+	time the operator clicked.
+
+	Fixed query count, independent of how many templates exist: the mirror, the slot
+	counts grouped by parent, the local rows, the category map, and the marketing
+	setting. Nothing runs per row.
+
+	``surface_category`` narrows the list to one screen: a single key, or several as a
+	list or a JSON array. Absent or empty means no filter and the full catalogue, which
+	is what every existing caller gets. A template that declares no surface category is
+	returned by EVERY screen - the field starts empty on all 36 templates, so filtering
+	must not make a picker look empty on the day it is switched on, and "not yet sorted"
+	must never read as "not for you". Filtering happens after sendability is computed, so
+	``counts`` describes what is returned. This is not Meta's ``category``
+	(MARKETING / UTILITY / AUTHENTICATION), which is a separate axis and is still
+	returned unchanged under ``category``.
+	"""
+	# Imported inside the function, not at module level: engine imports this module
+	# lazily for the same reason, and a module-level import either way closes the loop.
+	from pet_app.notifications.designer import template_content_errors
+	from pet_app.notifications.engine import TEMPLATE_SOURCE_LOCAL, TEMPLATE_SOURCE_META
+	from pet_app.notifications.renderer import declared_parameter_count
+	from pet_app.notifications.send_targets import defaults_by_template
+
+	# The configured surface defaults, inverted once in the module that owns them. ONE
+	# query, and no growth with the number of templates: every entry below is a dict
+	# lookup on an identity it already has.
+	defaults_for = defaults_by_template()
+
+	settings_doctype = "Pet App Notification Settings"
+	allow_marketing = (
+		frappe.db.get_single_value(settings_doctype, "allow_marketing_messages")
+		if frappe.db.exists("DocType", settings_doctype)
+		else 0
+	)
+
+	category_map = {}
+	if frappe.db.exists("DocType", CATEGORY_MAP_DOCTYPE):
+		category_map = {
+			row.meta_category: row.local_category
+			for row in frappe.get_all(
+				CATEGORY_MAP_DOCTYPE, fields=["meta_category", "local_category"], ignore_permissions=True
+			)
+			if row.meta_category
+		}
+
+	mirror_rows = (
+		frappe.get_all(
+			MIRROR_DOCTYPE,
+			fields=[
+				"name",
+				"meta_template_id",
+				"template_name",
+				"language",
+				"category",
+				"status",
+				"missing_on_meta",
+				"slot_map_stale",
+				"local_template",
+				"binding_state",
+				"source_doctype",
+				"surface_category",
+				"components_json",
+			],
+			order_by="template_name asc, language asc",
+			ignore_permissions=True,
+		)
+		if frappe.db.exists("DocType", MIRROR_DOCTYPE)
+		else []
+	)
+
+	# One grouped read, not one per template. stored_slot_map() is the per-row helper
+	# and is deliberately not used here - in a loop it would be a query per entry.
+	slot_counts = {}
+	if frappe.db.exists("DocType", SLOT_DOCTYPE):
+		slot_counts = {
+			row[0]: cint(row[1])
+			for row in frappe.db.sql(
+				"""
+				select parent, count(*)
+				from `tab{table}`
+				where parenttype = %s
+				group by parent
+				""".format(table=SLOT_DOCTYPE.replace("`", "``")),
+				MIRROR_DOCTYPE,
+			)
+		}
+
+	local_rows = (
+		frappe.get_all(
+			LOCAL_TEMPLATE_DOCTYPE,
+			fields=[
+				"name",
+				"template_key",
+				"template_name",
+				"language",
+				"category",
+				"enabled",
+				"delivery_mode",
+				"source_doctype",
+				"surface_category",
+				"body_preview",
+				"footer_text",
+				"media_file",
+			],
+			order_by="template_key asc",
+			ignore_permissions=True,
+		)
+		if frappe.db.exists("DocType", LOCAL_TEMPLATE_DOCTYPE)
+		else []
+	)
+
+	def _declared(components_json):
+		"""(count, None) or (None, unreadable) - never raises out of the listing."""
+		try:
+			return declared_parameter_count(json.loads(components_json or "[]"))
+		except Exception:
+			return None
+
+	mirror_by_local = {}
+	for row in mirror_rows:
+		if row.get("local_template"):
+			mirror_by_local.setdefault(row["local_template"], []).append(row)
+	local_key_by_name = {row["name"]: row.get("template_key") for row in local_rows}
+	# A bound pair is two entries over one template, so both entries resolve through
+	# pair_surface_category: the local row wins, the mirror row is a fallback. From the rows
+	# already in hand - no query per entry.
+	local_surface_by_name = {row["name"]: cstr(row.get("surface_category")) for row in local_rows}
+
+	entries = []
+
+	for row in mirror_rows:
+		declared = _declared(row.get("components_json"))
+		mapped = slot_counts.get(row["name"], 0)
+		local_category = category_map.get(cstr(row.get("category"))) or cstr(row.get("category"))
+		reasons = _mirror_reasons(
+			row,
+			declared=declared,
+			mapped=mapped,
+			local_category=local_category,
+			allow_marketing=allow_marketing,
+		)
+		# From the local rows already in hand. A get_value here would be one query per
+		# bound mirror row - invisible at two bound rows, one query per entry at
+		# twenty-one - and this listing holds to a fixed query count by construction.
+		bound_key = local_key_by_name.get(row.get("local_template")) if row.get("local_template") else None
+		entries.append(
+			{
+				"source": TEMPLATE_SOURCE_META,
+				"template_key": None,
+				"meta_template": row["name"],
+				"label": f"{row.get('template_name')} ({row.get('language')})",
+				"template_name": row.get("template_name"),
+				"language": row.get("language"),
+				"category": local_category or None,
+				"status": row.get("status"),
+				"declared_count": declared,
+				"slot_map_present": bool(declared is not None and mapped and mapped == declared),
+				"missing_on_meta": bool(cint(row.get("missing_on_meta"))),
+				"local_template": bound_key,
+				"binding_state": BINDING_BOUND if row.get("local_template") else BINDING_UNBOUND,
+				# The surfaces whose configured default is this row, by mirror docname -
+				# the same identity the send path resolves. Always a list: [] means no
+				# surface defaults to it, which is a different fact from the mapping being
+				# unknown, and is also what a blank or disabled default produces.
+				"default_for": defaults_for["meta"].get(row["name"], []),
+				# The name this field had in Phase 9, kept so the frontend does not have to
+				# cut over in the same release. Same value, and now the same single source:
+				# before Phase 11a it was inverted from a template map in code, which no
+				# longer exists.
+				"event_keys": defaults_for["meta"].get(row["name"], []),
+				"sendable": not reasons,
+				"reasons": reasons,
+				# A Meta template is one in any window: see LOCAL_ABSOLUTE_REASONS.
+				"session_sendable": not reasons,
+				"session_reasons": list(reasons),
+				"source_doctype": row.get("source_doctype") or None,
+				# Which screen offers this template. A bound pair: the local row's value
+				# wins, this row's own is the fallback - see pair_surface_category.
+				"surface_category": pair_surface_category(
+					local_surface_by_name.get(row.get("local_template")),
+					row.get("surface_category"),
+					bound=bool(row.get("local_template")),
+				)[0],
+			}
+		)
+
+	for row in local_rows:
+		bound = mirror_by_local.get(row["name"], [])
+		single = bound[0] if len(bound) == 1 else None
+		declared = _declared(single.get("components_json")) if single else None
+		mapped = slot_counts.get(single["name"], 0) if single else 0
+		meta_category = cstr(single.get("category")) if single else ""
+		local_category = (category_map.get(meta_category) or meta_category) if single else cstr(row.get("category"))
+		row = dict(row)
+		row["content_errors"] = template_content_errors(row, row.get("source_doctype"))
+		reasons = _local_reasons(
+			row,
+			bound,
+			declared=declared,
+			mapped=mapped,
+			local_category=local_category,
+			allow_marketing=allow_marketing,
+		)
+		session_reasons = _local_session_reasons(row, reasons, allow_marketing=allow_marketing)
+		entries.append(
+			{
+				"source": TEMPLATE_SOURCE_LOCAL,
+				"template_key": row.get("template_key"),
+				"meta_template": single["name"] if single else None,
+				"label": cstr(row.get("template_key")),
+				# The Meta-side name, which for a local row is what it would bind by -
+				# not necessarily what it is bound to, since it may be bound to nothing.
+				"template_name": row.get("template_name"),
+				"language": row.get("language"),
+				"category": local_category or None,
+				"status": single.get("status") if single else None,
+				"declared_count": declared,
+				"slot_map_present": bool(declared is not None and mapped and mapped == declared),
+				"missing_on_meta": bool(cint(single.get("missing_on_meta"))) if single else False,
+				"local_template": row.get("template_key"),
+				"binding_state": BINDING_BOUND if single else BINDING_UNBOUND,
+				# By template_key, which is how a local default addresses a local row -
+				# not through the mirror row it happens to be bound to. A surface set to
+				# the bound MIRROR row is that mirror entry's default_for, not this one's:
+				# they are two selectable entries and a picker must not report the same
+				# default on both.
+				"default_for": defaults_for["local"].get(cstr(row.get("template_key")), []),
+				"event_keys": defaults_for["local"].get(cstr(row.get("template_key")), []),
+				"sendable": not reasons,
+				"reasons": reasons,
+				# Inside an open window: sent as a normal message - see LOCAL_ABSOLUTE_REASONS.
+				"session_sendable": not session_reasons,
+				"session_reasons": session_reasons,
+				"source_doctype": row.get("source_doctype") or None,
+				# The same rule from the other side: this row wins, the one bound mirror
+				# row is the fallback. With two bound mirror rows there is no single
+				# fallback, so only this row's own value counts.
+				"surface_category": pair_surface_category(
+					row.get("surface_category"),
+					single.get("surface_category") if single else None,
+					bound=True,
+				)[0],
+			}
+		)
+
+	wanted = _surface_category_filter(surface_category)
+	if wanted is not None:
+		entries = [
+			entry for entry in entries if not entry["surface_category"] or entry["surface_category"] in wanted
+		]
+
+	sendable = sum(1 for entry in entries if entry["sendable"])
+	return {
+		"templates": entries,
+		"counts": {
+			"total": len(entries),
+			"sendable": sendable,
+			"unsendable": len(entries) - sendable,
+			"meta": sum(1 for entry in entries if entry["source"] == TEMPLATE_SOURCE_META),
+			"local": sum(1 for entry in entries if entry["source"] == TEMPLATE_SOURCE_LOCAL),
+		},
 	}

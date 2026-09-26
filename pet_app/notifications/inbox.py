@@ -89,6 +89,7 @@ def record_inbound_message(event, account=None):
 			"provider_message_id": event.get("provider_message_id"),
 			"interactive_id": event.get("interactive_id"),
 			"interactive_title": event.get("interactive_title"),
+			"replied_to_message": replied_to_message(event.get("context_message_id")),
 			"status": "Received",
 			"message_at": message_at,
 			"raw_json": json.dumps(event.get("raw_message") or event, default=str),
@@ -114,6 +115,30 @@ def record_inbound_message(event, account=None):
 			filename=event.get("filename"),
 		)
 	return doc, conversation
+
+
+def replied_to_message(context_message_id):
+	"""Resolve the wamid an inbound reply quotes to the message row it answers.
+
+	Meta sends it as ``message.context.id``. That is the same value this app already
+	stores as provider_message_id, which is unique-indexed, so this is a single indexed
+	read and not a scan.
+
+	No match is normal and is not an error. The quoted message can predate this app's
+	records, or have been sent by a path that stored no row - two of the eleven inbound
+	messages on this site carrying a context resolve to nothing for that reason. The raw
+	wamid is not lost either way: record_inbound_message stores Meta's message object
+	verbatim in raw_json, context included.
+
+	Direction is deliberately not filtered. A guardian can quote their own earlier
+	message, and the field says which message was replied to, not which of ours.
+	"""
+	context_message_id = cstr(context_message_id).strip()
+	if not context_message_id:
+		return None
+	return frappe.db.get_value(
+		"Pet App WhatsApp Message", {"provider_message_id": context_message_id}, "name"
+	)
 
 
 def record_outbound_message(queue, response, *, message_type=None, body=None):
@@ -219,11 +244,20 @@ def send_conversation_message(conversation_name, message=None, file_name=None, *
 		file_doc = frappe.get_doc("File", file_name)
 		file_doc.check_permission("read")
 		resolved_name, content = get_file(file_doc.file_url)
-		media_type = _media_type(file_doc.file_name or resolved_name)
+		# ONE name decides both things, and it is the File document's own. The customer
+		# reads it in WhatsApp (it becomes document.filename) and _media_type reads its
+		# extension to pick the message type; deciding the type from file_name while
+		# sending resolved_name let the two disagree for no reason. resolved_name - the
+		# basename of the bytes on disk - stays as the fallback for a File row whose
+		# file_name is empty. They are the same string for every file this app stores:
+		# frappe writes the disk copy from file_name and suffixes both together when a
+		# name collides, which is where "...-lab-report1dafaa.pdf" comes from.
+		display_name = cstr(file_doc.file_name).strip() or resolved_name
+		media_type = _media_type(display_name)
 		response = channel.send_media(
 			to_phone=conversation.normalized_phone,
 			media_type=media_type,
-			file_name=resolved_name,
+			file_name=display_name,
 			content=content,
 			caption=message,
 		)
