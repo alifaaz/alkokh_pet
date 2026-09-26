@@ -2,7 +2,7 @@
 
 This document is the current backend contract for Visit V11 medication prescribing, dispensing, billing, and invoice stock timing in `pet_app`.
 
-Generated from the current codebase on 2026-07-09. It is descriptive, not aspirational.
+Invoice reuse and stock ownership updated 2026-09-09. See [Invoice reuse and stock policy](INVOICE_REUSE_CONTRACT.md) for boundaries, historical issues, included medication, verification, and deployment. Earlier line-number references below describe the original V11 implementation; the current policy is authoritative for stock timing.
 
 ## 1. Prescribed Medication Save
 
@@ -260,7 +260,7 @@ What return writes:
 - Saves the Vet Visit with `ignore_billing_lock` (`pharmacy.py:155-156`).
 - Inserts a custom `Medication Dispense Ledger` row (`pharmacy.py:157-167`, `pharmacy.py:206-225`).
 
-Return does not restore ERPNext stock. ERPNext stock has not moved at dispense time.
+For current dispensing, a clinical return does not restore stock: dispensing did not issue it. Submitted invoice quantities must be reversed through the existing ERPNext credit-note workflow. Historical rows with `stock_issued_qty > 0` retain their existing Material Receipt return behavior; this evidence is not cleared by the new dispensing policy.
 
 ## 5. Visit Close -> Draft Sales Invoice
 
@@ -311,16 +311,9 @@ The Sales Invoice is created as Draft:
 - Backend calls `sales_invoice.insert()` (`vet_visit.py:823`).
 - There is no `sales_invoice.submit()` in this path.
 
-The invoice sets `update_stock` based on invoice items containing warehouse:
+`get_or_create_open_invoice` reuses one regular draft per customer/company/branch across dates. Services and stock items share it in either arrival order. `invoice_stock.prepare_invoice_stock` enables `update_stock` from stock Items and enabled Product Bundle stock contents, irrespective of warehouse presence. It runs before validation and submission; ordinary non-stock services produce no stock entries.
 
-```python
-updates_stock = any(item.get("warehouse") for item in items)
-"update_stock": 1 if updates_stock else 0
-```
-
-Evidence: `vet_visit.py:801-811`.
-
-For stock medications, `_get_stock_invoice_context()` now resolves a warehouse or throws before invoice insert (`vet_visit.py:900-958`). Therefore medication invoices with stock items should have `update_stock = 1` once preconditions pass.
+`medication_invoice_context` resolves the warehouse and snapshots the prescribed UOM/conversion on the invoice line. Recorded historical stock issues are refused for cashier review instead of enabling a second deduction or disabling stock for the entire invoice.
 
 ### Invoice preconditions and errors
 
@@ -350,7 +343,7 @@ Stock does not move at dispense time. Dispense only updates medication workflow 
 
 Stock does not move at visit close because the Sales Invoice is inserted as Draft only (`vet_visit.py:823`).
 
-ERPNext stock movement occurs later when the cashier submits the Draft Sales Invoice, provided `update_stock = 1` and invoice item warehouse/UOM data are valid. The visit invoice builder sets `update_stock = 1` when any invoice item has a warehouse (`vet_visit.py:801-811`).
+ERPNext stock movement occurs later when the cashier submits the Draft Sales Invoice, provided `update_stock = 1` and invoice item warehouse/UOM data are valid. The shared stock policy enables `update_stock` for stock Items and stock-bearing bundles. Dispensing and care-service completion do not create Material Issues.
 
 ## 7. Warehouse / UOM / Batch Invoice Mapping
 
@@ -370,10 +363,10 @@ For stock items only, `_get_stock_invoice_context()` adds:
 
 | Sales Invoice Item field | Source |
 | --- | --- |
-| `warehouse` | medication row `warehouse`, else Medication `default_warehouse`, else Stock Settings `default_warehouse` (`vet_visit.py:910-932`) |
+| `warehouse` | Shared warehouse resolution; invoice rows are stamped to the performing invoice branch by `branch_warehouse`. |
 | `uom` | medication row `dispense_uom`, else Medication `default_dispense_uom`, else Item `stock_uom` (`vet_visit.py:934-949`) |
-| `stock_uom` | medication row `stock_uom`, else Item `stock_uom` (`vet_visit.py:934-951`) |
-| `conversion_factor` | medication row `conversion_factor`, else Medication `default_conversion_factor`, else `1` when UOM equals stock UOM (`vet_visit.py:941-953`) |
+| `stock_uom` | Item stock UOM. |
+| `conversion_factor` | Prescription UOM/conversion snapshot; otherwise a configured dose option, then Medication defaults, or `1` for the stock UOM. Ambiguous doses or missing conversions are refused. |
 | `batch_no` | medication row `batch_no`; also sets `use_serial_batch_fields = 1` (`vet_visit.py:954-958`) |
 
 Medication defaults are loaded by `Medication` name first, then by `Medication.linked_item == medication_item` (`vet_visit.py:960-981`). This is important because frontend payloads may include only `medication_item`.
